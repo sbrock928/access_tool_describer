@@ -23,6 +23,7 @@ class ApplicationRow(Base):
     __tablename__ = "applications"
     tool_inventory_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     tool_name: Mapped[str] = mapped_column(String(512))
+    inventory_filename: Mapped[str] = mapped_column(String(1024))
     stated_description: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     source_path: Mapped[str] = mapped_column(String(4000))
     staged_path: Mapped[str | None] = mapped_column(String(4000), nullable=True)

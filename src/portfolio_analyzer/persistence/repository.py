@@ -16,6 +16,7 @@ def save_inventory_and_artifact(
         app = ApplicationRow(
             tool_inventory_id=record.tool_inventory_id,
             tool_name=record.tool_name,
+            inventory_filename=record.inventory_filename,
             stated_description=record.stated_description,
             source_path=str(record.filepath),
             staged_path=str(artifact.local_staged_path) if artifact.local_staged_path else None,

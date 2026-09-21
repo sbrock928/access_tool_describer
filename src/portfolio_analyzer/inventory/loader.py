@@ -8,7 +8,7 @@ from openpyxl import load_workbook
 
 from portfolio_analyzer.models import InventoryRecord
 
-REQUIRED_COLUMNS = ("Tool Inventory ID", "Tool Name", "Description", "Filepath")
+REQUIRED_COLUMNS = ("INVENTORY_ID", "EUCTNAME", "FILE_NAME", "FULLPATH", "DESCRIPTION")
 
 
 class InventoryValidationError(ValueError):
@@ -35,18 +35,20 @@ def load_inventory(path: Path) -> list[InventoryRecord]:
         }
         if all(value is None for value in values.values()):
             continue
-        tool_id = values["Tool Inventory ID"]
-        tool_name = values["Tool Name"]
-        filepath = values["Filepath"]
-        if tool_id in (None, "") or tool_name in (None, "") or filepath in (None, ""):
+        tool_id = values["INVENTORY_ID"]
+        tool_name = values["EUCTNAME"]
+        filename = values["FILE_NAME"]
+        filepath = values["FULLPATH"]
+        if any(value in (None, "") for value in (tool_id, tool_name, filename, filepath)):
             raise InventoryValidationError(
-                f"Row {row_number} lacks Tool Inventory ID, Tool Name, or Filepath"
+                f"Row {row_number} lacks INVENTORY_ID, EUCTNAME, FILE_NAME, or FULLPATH"
             )
         records.append(
             InventoryRecord(
                 tool_inventory_id=str(tool_id).strip(),
                 tool_name=str(tool_name).strip(),
-                stated_description=_optional_string(values["Description"]),
+                inventory_filename=str(filename).strip(),
+                stated_description=_optional_string(values["DESCRIPTION"]),
                 filepath=Path(str(filepath).strip()),
                 original_values=values,
             )

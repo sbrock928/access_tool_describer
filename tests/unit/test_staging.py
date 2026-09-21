@@ -12,7 +12,12 @@ from portfolio_analyzer.staging.validation import (
 
 
 def record(source: Path) -> InventoryRecord:
-    return InventoryRecord(tool_inventory_id="1", tool_name="Sample", filepath=source)
+    return InventoryRecord(
+        tool_inventory_id="1",
+        tool_name="Sample",
+        inventory_filename=source.name,
+        filepath=source,
+    )
 
 
 def test_stager_copies_and_hashes_without_using_source_for_analysis(tmp_path: Path) -> None:

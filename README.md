@@ -4,6 +4,8 @@ An evidence-driven, static-analysis system for a portfolio of Microsoft Access a
 
 The system has one non-negotiable safety invariant: source applications are copied to a verified local workspace before any extraction or analysis. The original inventory path is never passed to an extractor.
 
+The input workbook must contain `INVENTORY_ID`, `EUCTNAME`, `FILE_NAME`, `FULLPATH`, and `DESCRIPTION`. `FULLPATH` is source-only; it is never an analysis path.
+
 ## Current MVP
 
 The repository provides the cross-platform foundation: inventory ingestion, safe local staging, provenance and hashing, deterministic SQL/VBA/connection/path analysis, evidence and dependency models, SQLite persistence, capability aggregation, similarity signals, and Excel/CSV/PDF reporting. The Windows adapter performs metadata-only Access inspection behind a guarded interface; it is intentionally unavailable on non-Windows hosts.

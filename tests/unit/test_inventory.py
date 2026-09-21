@@ -9,13 +9,14 @@ from portfolio_analyzer.inventory.loader import InventoryValidationError, load_i
 def test_load_inventory_preserves_description_and_values(tmp_path: Path) -> None:
     workbook = Workbook()
     sheet = workbook.active
-    sheet.append(["Tool Inventory ID", "Tool Name", "Description", "Filepath", "Owner"])
+    sheet.append(["INVENTORY_ID", "EUCTNAME", "FILE_NAME", "FULLPATH", "DESCRIPTION", "Owner"])
     sheet.append(
         [
             "100",
             "Payment Tool",
-            "Old stated description",
+            "payment.accdb",
             r"\\server\share\payment.accdb",
+            "Old stated description",
             "Finance",
         ]
     )
@@ -25,13 +26,14 @@ def test_load_inventory_preserves_description_and_values(tmp_path: Path) -> None
     record = load_inventory(path)[0]
 
     assert record.tool_inventory_id == "100"
+    assert record.inventory_filename == "payment.accdb"
     assert record.stated_description == "Old stated description"
     assert record.original_values["Owner"] == "Finance"
 
 
 def test_inventory_requires_expected_columns(tmp_path: Path) -> None:
     workbook = Workbook()
-    workbook.active.append(["Tool Name"])
+    workbook.active.append(["EUCTNAME"])
     path = tmp_path / "bad.xlsx"
     workbook.save(path)
 

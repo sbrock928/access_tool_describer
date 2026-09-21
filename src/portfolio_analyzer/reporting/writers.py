@@ -47,11 +47,18 @@ def write_workbook(
         workbook,
         "Applications",
         [
-            ["Tool Inventory ID", "Tool Name", "Stated Description", "Original Source Path"],
+            [
+                "Tool Inventory ID",
+                "Tool Name",
+                "Inventory File Name",
+                "Stated Description",
+                "Original Source Path",
+            ],
             *[
                 [
                     item.tool_inventory_id,
                     item.tool_name,
+                    item.inventory_filename,
                     item.stated_description or "",
                     str(item.filepath),
                 ]

@@ -210,6 +210,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
             {
                 "tool_inventory_id": item.tool_inventory_id,
                 "tool_name": item.tool_name,
+                "inventory_file_name": item.inventory_filename,
                 "stated_description": item.stated_description or "",
                 "original_source_path": str(item.filepath),
             }

@@ -28,6 +28,7 @@ class InventoryRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
     tool_inventory_id: str
     tool_name: str
+    inventory_filename: str
     stated_description: str | None = None
     filepath: Path
     original_values: dict[str, Any] = Field(default_factory=dict)

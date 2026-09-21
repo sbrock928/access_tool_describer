@@ -13,8 +13,8 @@ def test_stage_and_report_keep_source_and_staged_paths_separate(tmp_path: Path) 
     inventory = tmp_path / "inventory.xlsx"
     workbook = Workbook()
     sheet = workbook.active
-    sheet.append(["Tool Inventory ID", "Tool Name", "Description", "Filepath"])
-    sheet.append(["42", "Tool", "Claim", str(source)])
+    sheet.append(["INVENTORY_ID", "EUCTNAME", "FILE_NAME", "FULLPATH", "DESCRIPTION"])
+    sheet.append(["42", "Tool", "tool.accdb", str(source), "Claim"])
     workbook.save(inventory)
     workspace = tmp_path / "workspace"
     runner = CliRunner()
