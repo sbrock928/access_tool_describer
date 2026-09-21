@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -26,8 +27,9 @@ def test_stage_and_report_keep_source_and_staged_paths_separate(tmp_path: Path) 
 
     assert staged.exit_code == 0, staged.output
     assert reported.exit_code == 0, reported.output
-    state = (workspace / "analysis" / "staging_state.json").read_text()
-    assert str(source) in state
-    assert str(workspace / "staged_tools") in state
+    state = json.loads((workspace / "analysis" / "staging_state.json").read_text())
+    primary = next(item for item in state["artifacts"] if item["is_primary"])
+    assert Path(primary["original_source_path"]) == source
+    assert Path(primary["local_staged_path"]).is_relative_to(workspace / "staged_tools")
     assert (workspace / "reports" / "Portfolio_Analysis.xlsx").exists()
     assert (workspace / "reports" / "applications.csv").exists()

@@ -113,3 +113,14 @@ class SimilarityRelationship(BaseModel):
     score: float
     reasons: list[str]
     confidence: Confidence
+
+
+class Recommendation(BaseModel):
+    """An evidence-backed modernization opportunity, not an automatic decision."""
+
+    category: str
+    title: str
+    rationale: str
+    affected_tool_ids: list[str]
+    confidence: Confidence
+    evidence: list[Evidence] = Field(default_factory=list)

@@ -22,6 +22,7 @@ from portfolio_analyzer.models import (
 )
 from portfolio_analyzer.persistence.database import create_session_factory
 from portfolio_analyzer.persistence.repository import save_inventory_and_artifact
+from portfolio_analyzer.portfolio.recommendations import build_recommendations
 from portfolio_analyzer.reporting.writers import write_csv, write_executive_pdf, write_workbook
 from portfolio_analyzer.staging.copying import ArtifactStager
 
@@ -192,6 +193,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
         for value in result.get("dependencies", [])
     ]
     capabilities = discover_capabilities(evidence)
+    recommendations = build_recommendations(capabilities, datasources)
     write_workbook(
         settings.reports_dir / "Portfolio_Analysis.xlsx",
         inventory,
@@ -202,7 +204,14 @@ def report(workspace: Path = typer.Option(...)) -> None:
         capabilities,
     )
     write_executive_pdf(
-        settings.reports_dir / "Portfolio_Analysis.pdf", inventory, artifacts, capabilities
+        settings.reports_dir / "Portfolio_Analysis.pdf",
+        inventory,
+        artifacts,
+        capabilities,
+        recommendations=recommendations,
+        evidence=evidence,
+        datasources=datasources,
+        dependencies=dependencies,
     )
     write_csv(
         settings.reports_dir / "applications.csv",
