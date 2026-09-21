@@ -48,7 +48,6 @@ class WindowsAccessExtractor:
             # msoAutomationSecurityForceDisable. This is requested before opening the staged copy.
             access.AutomationSecurity = 3
             access.Visible = False
-            access.DisplayAlerts = False
             _progress(progress, "Opening verified local staged copy")
             self._open_with_startup_bypass(access, database_path, win32api, win32con, progress)
             database = access.CurrentDb()
