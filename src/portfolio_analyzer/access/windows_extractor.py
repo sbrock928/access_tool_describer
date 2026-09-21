@@ -20,7 +20,7 @@ from portfolio_analyzer.staging.hashing import sha256_file
 
 
 class WindowsAccessExtractor:
-    version = "windows-com-metadata-v5"
+    version = "windows-com-metadata-v6"
 
     def __init__(self, settings: AnalyzerSettings) -> None:
         self.settings = settings
@@ -160,7 +160,10 @@ class WindowsAccessExtractor:
                         ExtractedObject(
                             object_type="linked_table" if table.Connect else "table",
                             name=str(table.Name),
-                            properties={"connect": str(table.Connect or "")},
+                            properties={
+                                "connect": str(table.Connect or ""),
+                                "source_table_name": str(table.SourceTableName or ""),
+                            },
                         )
                     )
             for query in database.QueryDefs:

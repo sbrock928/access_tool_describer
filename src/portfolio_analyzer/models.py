@@ -124,3 +124,20 @@ class Recommendation(BaseModel):
     affected_tool_ids: list[str]
     confidence: Confidence
     evidence: list[Evidence] = Field(default_factory=list)
+
+
+class AnalysisCoverage(BaseModel):
+    """Per-application pipeline coverage used to qualify absence-of-evidence claims."""
+
+    tool_inventory_id: str
+    tool_name: str
+    staging_status: str
+    extraction_status: str
+    analysis_status: str
+    extracted_object_count: int = 0
+    extraction_warning_count: int = 0
+    evidence_count: int = 0
+    datasource_count: int = 0
+    dependency_count: int = 0
+    capability_count: int = 0
+    notes: list[str] = Field(default_factory=list)

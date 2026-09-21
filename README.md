@@ -27,3 +27,7 @@ portfolio-analyzer report --workspace .\workspace
 `extract` only considers successful staged artifacts and is the only command that opens Access. It persists
 snapshots under `workspace/extracted/`. `analyze --force` can be run repeatedly against those snapshots as
 rules evolve, without opening Access or the original source file again.
+
+`report` writes an Excel workbook, an executive PDF, and normalized CSV datasets. The reports make
+pipeline coverage explicit so zero findings are not confused with missing or incomplete analysis.
+See [docs/REPORTS.md](docs/REPORTS.md) and [docs/REFACTOR_PLAN.md](docs/REFACTOR_PLAN.md).

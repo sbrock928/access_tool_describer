@@ -42,6 +42,22 @@ def modernization_risks(evidence: list[Evidence]) -> list[tuple[str, list[str], 
         "Database access": (
             "Embedded data access may duplicate connection and error handling logic."
         ),
+        "Dynamic SQL execution": (
+            "Runtime SQL construction limits static dependency completeness and needs "
+            "injection review."
+        ),
+        "HTTP integration": (
+            "External endpoints, authentication, timeouts, and retry behavior require validation."
+        ),
+        "Suppressed VBA errors": (
+            "Suppressed errors can hide production failures and complicate behavior validation."
+        ),
+        "Filesystem dependency": (
+            "Hard-coded or network paths create environment-specific deployment dependencies."
+        ),
+        "Broken Access/VBA reference": (
+            "A missing or incompatible library can prevent compilation and safe migration."
+        ),
     }
     results: list[tuple[str, list[str], str]] = []
     for inference, implication in themes.items():

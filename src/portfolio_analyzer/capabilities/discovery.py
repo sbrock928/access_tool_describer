@@ -6,6 +6,8 @@ from collections import defaultdict
 
 from portfolio_analyzer.models import CapabilityFinding, Confidence, Evidence
 
+_CONFIDENCE_RANK = {Confidence.LOW: 0, Confidence.MEDIUM: 1, Confidence.HIGH: 2}
+
 
 def discover_capabilities(evidence: list[Evidence]) -> list[CapabilityFinding]:
     """Build technical candidates from observed inference labels, without domain taxonomy."""
@@ -18,7 +20,11 @@ def discover_capabilities(evidence: list[Evidence]) -> list[CapabilityFinding]:
             tool_inventory_id=tool_id,
             capability=capability,
             layer="technical",
-            confidence=min((fact.confidence for fact in facts), default=Confidence.LOW),
+            confidence=min(
+                (fact.confidence for fact in facts),
+                key=_CONFIDENCE_RANK.__getitem__,
+                default=Confidence.LOW,
+            ),
             evidence=facts,
         )
         for (tool_id, capability), facts in sorted(grouped.items())

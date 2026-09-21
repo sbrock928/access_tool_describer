@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Alignment, Font, PatternFill
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -18,6 +18,7 @@ from reportlab.lib.units import inch
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from portfolio_analyzer.models import (
+    AnalysisCoverage,
     CapabilityFinding,
     Datasource,
     Dependency,
@@ -28,14 +29,22 @@ from portfolio_analyzer.models import (
 )
 
 
-def write_csv(path: Path, rows: Iterable[dict[str, Any]]) -> None:
+def write_csv(
+    path: Path,
+    rows: Iterable[dict[str, Any]],
+    *,
+    headers: Sequence[str] | None = None,
+) -> None:
     records = list(rows)
     path.parent.mkdir(parents=True, exist_ok=True)
-    headers = list(dict.fromkeys(key for row in records for key in row))
+    fieldnames = list(headers or dict.fromkeys(key for row in records for key in row))
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=headers)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(records)
+        writer.writerows(
+            {key: _spreadsheet_safe(value) for key, value in record.items()}
+            for record in records
+        )
 
 
 def write_workbook(
@@ -46,9 +55,82 @@ def write_workbook(
     datasources: list[Datasource],
     dependencies: list[Dependency],
     capabilities: list[CapabilityFinding],
+    *,
+    recommendations: list[Recommendation] | None = None,
+    coverage: list[AnalysisCoverage] | None = None,
 ) -> None:
+    recommendations = recommendations or []
+    coverage = coverage or []
     workbook = Workbook()
     workbook.remove(workbook.active)
+    analyzed = (
+        sum(item.analysis_status == "complete" for item in coverage)
+        if coverage
+        else len({item.tool_inventory_id for item in evidence})
+    )
+    extraction_attention = (
+        sum(
+            item.extraction_status in {"failed", "complete_with_warnings"}
+            for item in coverage
+        )
+        if coverage
+        else sum(item.is_primary and bool(item.error) for item in artifacts)
+    )
+    _sheet(
+        workbook,
+        "Portfolio Summary",
+        [
+            ["Measure", "Value"],
+            ["Inventory applications", len(inventory)],
+            ["Successfully staged primary artifacts", sum(
+                item.is_primary and item.status.value == "staged" for item in artifacts
+            )],
+            ["Applications analyzed", analyzed],
+            ["Extraction failures or warnings", extraction_attention],
+            ["Evidence items", len(evidence)],
+            ["Normalized datasource interactions", len(datasources)],
+            ["External dependencies", len(dependencies)],
+            ["Evidence-backed recommendations", len(recommendations)],
+        ],
+    )
+    if coverage:
+        _sheet(
+            workbook,
+            "Analysis Coverage",
+            [
+                [
+                    "Application",
+                    "Tool Name",
+                    "Staging",
+                    "Extraction",
+                    "Analysis",
+                    "Objects",
+                    "Warnings",
+                    "Evidence",
+                    "Data Sources",
+                    "Dependencies",
+                    "Capabilities",
+                    "Notes",
+                ],
+                *[
+                    [
+                        item.tool_inventory_id,
+                        item.tool_name,
+                        item.staging_status,
+                        item.extraction_status,
+                        item.analysis_status,
+                        item.extracted_object_count,
+                        item.extraction_warning_count,
+                        item.evidence_count,
+                        item.datasource_count,
+                        item.dependency_count,
+                        item.capability_count,
+                        " | ".join(item.notes),
+                    ]
+                    for item in coverage
+                ],
+            ],
+        )
     _sheet(
         workbook,
         "Applications",
@@ -110,6 +192,8 @@ def write_workbook(
                 "Object",
                 "Operation",
                 "Confidence",
+                "Evidence Items",
+                "Connection Summary",
             ],
             *[
                 [
@@ -121,6 +205,8 @@ def write_workbook(
                     d.object_name or "",
                     d.operation,
                     d.confidence,
+                    len(d.evidence),
+                    d.connection_summary or "",
                 ]
                 for d in datasources
             ],
@@ -148,8 +234,38 @@ def write_workbook(
         workbook,
         "Application Capabilities",
         [
-            ["Application", "Capability", "Layer", "Confidence"],
-            *[[c.tool_inventory_id, c.capability, c.layer, c.confidence] for c in capabilities],
+            ["Application", "Capability", "Layer", "Confidence", "Evidence Items"],
+            *[
+                [c.tool_inventory_id, c.capability, c.layer, c.confidence, len(c.evidence)]
+                for c in capabilities
+            ],
+        ],
+    )
+    _sheet(
+        workbook,
+        "Recommendations",
+        [
+            [
+                "Category",
+                "Title",
+                "Confidence",
+                "Affected Applications",
+                "Application Count",
+                "Evidence Items",
+                "Rationale",
+            ],
+            *[
+                [
+                    item.category,
+                    item.title,
+                    item.confidence,
+                    ", ".join(item.affected_tool_ids),
+                    len(item.affected_tool_ids),
+                    len(item.evidence),
+                    item.rationale,
+                ]
+                for item in recommendations
+            ],
         ],
     )
     _sheet(
@@ -200,9 +316,12 @@ def write_workbook(
 def _sheet(workbook: Workbook, title: str, rows: Sequence[Sequence[object]]) -> None:
     sheet = workbook.create_sheet(title)
     for row in rows:
-        sheet.append(row)
+        sheet.append([_spreadsheet_safe(value) for value in row])
     for cell in sheet[1]:
         cell.font = Font(bold=True)
+        cell.fill = PatternFill("solid", fgColor="123047")
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
     for column in sheet.columns:
@@ -210,6 +329,9 @@ def _sheet(workbook: Workbook, title: str, rows: Sequence[Sequence[object]]) -> 
         sheet.column_dimensions[letter].width = min(
             max(len(str(cell.value or "")) for cell in column) + 2, 60
         )
+    for row in sheet.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
 
 
 def write_executive_pdf(
@@ -222,6 +344,7 @@ def write_executive_pdf(
     evidence: list[Evidence] | None = None,
     datasources: list[Datasource] | None = None,
     dependencies: list[Dependency] | None = None,
+    coverage: list[AnalysisCoverage] | None = None,
 ) -> None:
     """Render an evidence-backed, multi-page executive and architecture report."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,6 +352,7 @@ def write_executive_pdf(
     evidence = evidence or []
     datasources = datasources or []
     dependencies = dependencies or []
+    coverage = coverage or []
     successful = sum(a.status.value == "staged" and a.is_primary for a in artifacts)
     failed = sum(a.status.value == "failed" and a.is_primary for a in artifacts)
     styles = getSampleStyleSheet()
@@ -284,8 +408,10 @@ def write_executive_pdf(
                     ["Successfully staged primary artifacts", str(successful)],
                     ["Failed primary staging attempts", str(failed)],
                     [
-                        "Applications with static evidence",
-                        str(len({item.tool_inventory_id for item in evidence})),
+                        "Applications with completed static analysis",
+                        str(sum(item.analysis_status == "complete" for item in coverage))
+                        if coverage
+                        else str(len({item.tool_inventory_id for item in evidence})),
                     ],
                     ["Evidence-backed modernization opportunities", str(len(recommendations))],
                 ],
@@ -315,24 +441,106 @@ def write_executive_pdf(
         ]
     )
     story.append(PageBreak())
+    story.extend(_coverage_section(coverage, styles))
+    story.append(PageBreak())
     story.extend(_capability_section(capabilities, styles))
     story.append(PageBreak())
     story.extend(_dependency_section(datasources, dependencies, styles))
     story.append(PageBreak())
     story.extend(_recommendation_section(recommendations, styles))
     story.append(PageBreak())
-    story.extend(_risk_and_next_steps_section(evidence, artifacts, styles))
+    story.extend(_risk_and_next_steps_section(evidence, artifacts, coverage, styles))
     document.build(story, onFirstPage=_footer, onLaterPages=_footer)
+
+
+def _coverage_section(
+    coverage: list[AnalysisCoverage], styles: dict[str, ParagraphStyle]
+) -> list[object]:
+    content: list[object] = [Paragraph("Analysis Coverage and Confidence", styles["ReportHeading"])]
+    if not coverage:
+        content.append(
+            Paragraph(
+                "Pipeline coverage was not available; absence of findings must not be "
+                "interpreted as absence of functionality.",
+                styles["ReportBody"],
+            )
+        )
+        return content
+    counts = Counter(item.analysis_status for item in coverage)
+    content.extend(
+        [
+            Paragraph(
+                "Findings are conclusive only for applications with completed analysis. "
+                "Extraction warnings may reduce completeness even when analysis ran successfully.",
+                styles["ReportBody"],
+            ),
+            Spacer(1, 0.12 * inch),
+            _table(
+                [["Analysis state", "Applications"]]
+                + [
+                    [status.replace("_", " ").title(), str(count)]
+                    for status, count in sorted(counts.items())
+                ],
+                [4.65 * inch, 1.45 * inch],
+            ),
+        ]
+    )
+    attention = [
+        item
+        for item in coverage
+        if item.analysis_status != "complete" or item.extraction_warning_count
+    ]
+    if attention:
+        content.extend(
+            [
+                Spacer(1, 0.18 * inch),
+                Paragraph("Applications requiring attention", styles["Heading2"]),
+                _table(
+                    [["Application", "Extraction", "Analysis", "Warnings"]]
+                    + [
+                        [
+                            item.tool_inventory_id,
+                            item.extraction_status.replace("_", " "),
+                            item.analysis_status.replace("_", " "),
+                            str(item.extraction_warning_count),
+                        ]
+                        for item in attention[:25]
+                    ],
+                    [1.45 * inch, 1.8 * inch, 1.65 * inch, 1.2 * inch],
+                ),
+            ]
+        )
+    return content
 
 
 def _capability_section(
     capabilities: list[CapabilityFinding], styles: dict[str, ParagraphStyle]
 ) -> list[object]:
-    counts = Counter(item.capability for item in capabilities)
-    rows: list[list[str]] = [["Observed technical capability", "Applications"]]
-    rows.extend([[name, str(count)] for name, count in counts.most_common()])
+    grouped: dict[str, list[CapabilityFinding]] = {}
+    for item in capabilities:
+        grouped.setdefault(item.capability, []).append(item)
+    confidence_rank = {"high": 3, "medium": 2, "low": 1}
+    rows: list[list[str]] = [
+        ["Observed technical capability", "Applications", "Evidence", "Confidence"]
+    ]
+    for name, findings in sorted(
+        grouped.items(),
+        key=lambda pair: (-len({item.tool_inventory_id for item in pair[1]}), pair[0]),
+    ):
+        confidence = min(
+            (item.confidence.value for item in findings),
+            key=lambda value: confidence_rank[value],
+        )
+        rows.append(
+            [
+                name,
+                str(len({item.tool_inventory_id for item in findings})),
+                str(sum(len(item.evidence) for item in findings)),
+                confidence.title(),
+            ]
+        )
     content: list[object] = [Paragraph("Capability Map", styles["ReportHeading"])]
-    if counts:
+    if grouped:
         content.extend(
             [
                 Paragraph(
@@ -348,7 +556,7 @@ def _capability_section(
                     styles["ReportBody"],
                 ),
                 Spacer(1, 0.12 * inch),
-                _table(rows, [4.65 * inch, 1.45 * inch]),
+                _table(rows, [3.25 * inch, 0.95 * inch, 0.85 * inch, 1.05 * inch]),
             ]
         )
     else:
@@ -369,24 +577,45 @@ def _dependency_section(
 ) -> list[object]:
     content: list[object] = [Paragraph("Dependency Analysis", styles["ReportHeading"])]
     if datasources:
-        content.append(Paragraph("Top observed datasource interactions", styles["ReportBody"]))
-        rows = [["Platform", "Server / database", "Object", "Operation", "Application"]]
+        content.append(Paragraph("Most-used datasource interactions", styles["ReportBody"]))
+        grouped: dict[tuple[str, str, str, str], list[Datasource]] = {}
+        for item in datasources:
+            key = (
+                item.platform,
+                " / ".join(value for value in (item.server, item.database) if value),
+                ".".join(value for value in (item.schema_name, item.object_name) if value),
+                item.operation,
+            )
+            grouped.setdefault(key, []).append(item)
+        rows = [["Platform", "Server / database", "Object", "Operation", "Apps", "Evidence"]]
+        ranked = sorted(
+            grouped.items(),
+            key=lambda pair: (
+                -len({item.tool_inventory_id for item in pair[1]}),
+                -sum(len(item.evidence) for item in pair[1]),
+                pair[0],
+            ),
+        )
         rows.extend(
             [
                 [
-                    item.platform,
-                    " / ".join(value for value in (item.server, item.database) if value),
-                    ".".join(value for value in (item.schema_name, item.object_name) if value),
-                    item.operation,
-                    item.tool_inventory_id,
+                    platform,
+                    location,
+                    object_name,
+                    operation,
+                    str(len({item.tool_inventory_id for item in items})),
+                    str(sum(len(item.evidence) for item in items)),
                 ]
-                for item in datasources[:20]
+                for (platform, location, object_name, operation), items in ranked[:20]
             ]
         )
         content.extend(
             [
                 Spacer(1, 0.1 * inch),
-                _table(rows, [0.8 * inch, 1.65 * inch, 1.55 * inch, 0.7 * inch, 1.4 * inch]),
+                _table(
+                    rows,
+                    [0.8 * inch, 1.45 * inch, 1.35 * inch, 0.7 * inch, 0.6 * inch, 0.7 * inch],
+                ),
             ]
         )
     else:
@@ -464,6 +693,7 @@ def _recommendation_section(
                 Paragraph(escape(recommendation.title), styles["Heading2"]),
                 Paragraph(
                     f"<b>Candidate boundary:</b> {escape(recommendation.category)}<br/>"
+                    f"<b>Confidence:</b> {escape(recommendation.confidence.value.title())}<br/>"
                     f"<b>Applications affected:</b> {escape(affected)}<br/>"
                     f"<b>Evidence items:</b> {len(recommendation.evidence)}<br/>"
                     f"{escape(recommendation.rationale)}",
@@ -475,7 +705,10 @@ def _recommendation_section(
 
 
 def _risk_and_next_steps_section(
-    evidence: list[Evidence], artifacts: list[StagedArtifact], styles: dict[str, ParagraphStyle]
+    evidence: list[Evidence],
+    artifacts: list[StagedArtifact],
+    coverage: list[AnalysisCoverage],
+    styles: dict[str, ParagraphStyle],
 ) -> list[object]:
     from portfolio_analyzer.portfolio.recommendations import modernization_risks
 
@@ -503,33 +736,38 @@ def _risk_and_next_steps_section(
             )
         )
     failed = [item for item in artifacts if item.is_primary and item.error]
+    coverage_attention = [
+        item
+        for item in coverage
+        if item.analysis_status != "complete" or item.extraction_warning_count
+    ]
     content.extend(
         [
             Spacer(1, 0.22 * inch),
             Paragraph("Recommended Next Steps", styles["Heading2"]),
             Paragraph(
-                " ".join(
-                    (
-                        "1. Validate a representative sample with application owners.",
-                        (
-                            "2. Resolve staging and extraction limitations before inferring "
-                            "absence of functionality."
-                        ),
-                        (
-                            "3. Review opportunities with business and operational constraints "
-                            "before choosing a boundary."
-                        ),
-                    )
-                ),
+                "1. Validate a representative sample with application owners.",
+                styles["ReportBody"],
+            ),
+            Paragraph(
+                "2. Resolve staging and extraction limitations before inferring absence of "
+                "functionality.",
+                styles["ReportBody"],
+            ),
+            Paragraph(
+                "3. Review opportunities with business and operational constraints before "
+                "choosing a boundary.",
                 styles["ReportBody"],
             ),
         ]
     )
-    if failed:
+    if failed or coverage_attention:
         content.append(Spacer(1, 0.12 * inch))
         content.append(
             Paragraph(
-                f"Manual review queue: {len(failed)} primary artifact(s) failed staging or extraction.",  # noqa: E501
+                "Manual review queue: "
+                f"{len(coverage_attention) if coverage else len(failed)} application(s) have "
+                "incomplete or warning-qualified coverage.",
                 styles["ReportBody"],
             )
         )
@@ -537,7 +775,28 @@ def _risk_and_next_steps_section(
 
 
 def _table(rows: list[list[str]], widths: list[float]) -> Table:
-    table = Table(rows, colWidths=widths, repeatRows=1, hAlign="LEFT")
+    header_style = ParagraphStyle(
+        name="TableHeader",
+        fontName="Helvetica-Bold",
+        fontSize=8,
+        leading=10,
+        textColor=colors.white,
+    )
+    body_style = ParagraphStyle(
+        name="TableBody",
+        fontName="Helvetica",
+        fontSize=8,
+        leading=10,
+        textColor=colors.black,
+    )
+    wrapped = [
+        [
+            Paragraph(escape(str(value)), header_style if row_index == 0 else body_style)
+            for value in row
+        ]
+        for row_index, row in enumerate(rows)
+    ]
+    table = Table(wrapped, colWidths=widths, repeatRows=1, hAlign="LEFT")
     table.setStyle(
         TableStyle(
             [
@@ -568,3 +827,10 @@ def _footer(canvas: Any, document: Any) -> None:
     )
     canvas.drawRightString(7.88 * inch, 0.38 * inch, f"Page {document.page}")
     canvas.restoreState()
+
+
+def _spreadsheet_safe(value: object) -> object:
+    """Prevent report text from being interpreted as a spreadsheet formula."""
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@")):
+        return f"'{value}"
+    return value

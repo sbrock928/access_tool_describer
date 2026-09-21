@@ -31,11 +31,12 @@ from portfolio_analyzer.models import (
 from portfolio_analyzer.persistence.database import create_session_factory
 from portfolio_analyzer.persistence.repository import save_inventory_and_artifact
 from portfolio_analyzer.portfolio.recommendations import build_recommendations
+from portfolio_analyzer.reporting.coverage import build_analysis_coverage
 from portfolio_analyzer.reporting.writers import write_csv, write_executive_pdf, write_workbook
 from portfolio_analyzer.staging.copying import ArtifactStager
 
 app = typer.Typer(no_args_is_help=True, help="Static, evidence-driven Access portfolio analysis.")
-STATIC_ANALYSIS_VERSION = "static-analysis-v1"
+STATIC_ANALYSIS_VERSION = "static-analysis-v2"
 
 
 def _settings(workspace: Path) -> AnalyzerSettings:
@@ -460,7 +461,7 @@ def analyze_tool(
 
 @app.command()
 def report(workspace: Path = typer.Option(...)) -> None:
-    """Create baseline provenance reports from staging records."""
+    """Create evidence, coverage, dependency, and modernization reports."""
     settings = _settings(workspace)
     state_path = settings.analysis_dir / "staging_state.json"
     if not state_path.exists():
@@ -485,6 +486,19 @@ def report(workspace: Path = typer.Option(...)) -> None:
     ]
     capabilities = discover_capabilities(evidence)
     recommendations = build_recommendations(capabilities, datasources)
+    extraction_path = _extraction_state_path(settings)
+    extraction_state = (
+        json.loads(extraction_path.read_text(encoding="utf-8"))
+        if extraction_path.exists()
+        else {}
+    )
+    coverage = build_analysis_coverage(
+        inventory,
+        artifacts,
+        extraction_state,
+        state,
+        capabilities,
+    )
     write_workbook(
         settings.reports_dir / "Portfolio_Analysis.xlsx",
         inventory,
@@ -493,6 +507,8 @@ def report(workspace: Path = typer.Option(...)) -> None:
         datasources,
         dependencies,
         capabilities,
+        recommendations=recommendations,
+        coverage=coverage,
     )
     write_executive_pdf(
         settings.reports_dir / "Portfolio_Analysis.pdf",
@@ -503,6 +519,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
         evidence=evidence,
         datasources=datasources,
         dependencies=dependencies,
+        coverage=coverage,
     )
     write_csv(
         settings.reports_dir / "applications.csv",
@@ -515,6 +532,13 @@ def report(workspace: Path = typer.Option(...)) -> None:
                 "original_source_path": str(item.filepath),
             }
             for item in inventory
+        ],
+        headers=[
+            "tool_inventory_id",
+            "tool_name",
+            "inventory_file_name",
+            "stated_description",
+            "original_source_path",
         ],
     )
     write_csv(
@@ -529,6 +553,172 @@ def report(workspace: Path = typer.Option(...)) -> None:
                 "error": item.error or "",
             }
             for item in artifacts
+        ],
+        headers=[
+            "tool_inventory_id",
+            "original_source_path",
+            "local_staged_path",
+            "sha256",
+            "status",
+            "error",
+        ],
+    )
+    write_csv(
+        settings.reports_dir / "analysis_coverage.csv",
+        [
+            {
+                "tool_inventory_id": item.tool_inventory_id,
+                "tool_name": item.tool_name,
+                "staging_status": item.staging_status,
+                "extraction_status": item.extraction_status,
+                "analysis_status": item.analysis_status,
+                "extracted_object_count": item.extracted_object_count,
+                "extraction_warning_count": item.extraction_warning_count,
+                "evidence_count": item.evidence_count,
+                "datasource_count": item.datasource_count,
+                "dependency_count": item.dependency_count,
+                "capability_count": item.capability_count,
+                "notes": " | ".join(item.notes),
+            }
+            for item in coverage
+        ],
+        headers=[
+            "tool_inventory_id",
+            "tool_name",
+            "staging_status",
+            "extraction_status",
+            "analysis_status",
+            "extracted_object_count",
+            "extraction_warning_count",
+            "evidence_count",
+            "datasource_count",
+            "dependency_count",
+            "capability_count",
+            "notes",
+        ],
+    )
+    write_csv(
+        settings.reports_dir / "evidence.csv",
+        [
+            {
+                "tool_inventory_id": item.tool_inventory_id,
+                "artifact_path": item.artifact_path,
+                "object_type": item.object_type,
+                "object_name": item.object_name,
+                "location": item.location or "",
+                "evidence": item.text,
+                "inference": item.inference or "",
+                "confidence": item.confidence.value,
+            }
+            for item in evidence
+        ],
+        headers=[
+            "tool_inventory_id",
+            "artifact_path",
+            "object_type",
+            "object_name",
+            "location",
+            "evidence",
+            "inference",
+            "confidence",
+        ],
+    )
+    write_csv(
+        settings.reports_dir / "datasources.csv",
+        [
+            {
+                "tool_inventory_id": item.tool_inventory_id,
+                "platform": item.platform,
+                "server": item.server or "",
+                "database": item.database or "",
+                "schema": item.schema_name or "",
+                "object": item.object_name or "",
+                "operation": item.operation,
+                "confidence": item.confidence.value,
+                "evidence_count": len(item.evidence),
+                "connection_summary": item.connection_summary or "",
+            }
+            for item in datasources
+        ],
+        headers=[
+            "tool_inventory_id",
+            "platform",
+            "server",
+            "database",
+            "schema",
+            "object",
+            "operation",
+            "confidence",
+            "evidence_count",
+            "connection_summary",
+        ],
+    )
+    write_csv(
+        settings.reports_dir / "dependencies.csv",
+        [
+            {
+                "tool_inventory_id": item.tool_inventory_id,
+                "source": item.source,
+                "target": item.target,
+                "dependency_type": item.dependency_type,
+                "operation": item.operation,
+                "confidence": item.confidence.value,
+                "evidence_count": len(item.evidence),
+            }
+            for item in dependencies
+        ],
+        headers=[
+            "tool_inventory_id",
+            "source",
+            "target",
+            "dependency_type",
+            "operation",
+            "confidence",
+            "evidence_count",
+        ],
+    )
+    write_csv(
+        settings.reports_dir / "capabilities.csv",
+        [
+            {
+                "tool_inventory_id": item.tool_inventory_id,
+                "capability": item.capability,
+                "layer": item.layer,
+                "confidence": item.confidence.value,
+                "evidence_count": len(item.evidence),
+            }
+            for item in capabilities
+        ],
+        headers=[
+            "tool_inventory_id",
+            "capability",
+            "layer",
+            "confidence",
+            "evidence_count",
+        ],
+    )
+    write_csv(
+        settings.reports_dir / "recommendations.csv",
+        [
+            {
+                "category": item.category,
+                "title": item.title,
+                "confidence": item.confidence.value,
+                "affected_tool_ids": " | ".join(item.affected_tool_ids),
+                "application_count": len(item.affected_tool_ids),
+                "evidence_count": len(item.evidence),
+                "rationale": item.rationale,
+            }
+            for item in recommendations
+        ],
+        headers=[
+            "category",
+            "title",
+            "confidence",
+            "affected_tool_ids",
+            "application_count",
+            "evidence_count",
+            "rationale",
         ],
     )
     typer.echo(f"Reports written to {settings.reports_dir}")
