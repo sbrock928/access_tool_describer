@@ -247,12 +247,9 @@ def stage(
     artifacts: list[StagedArtifact] = []
     with session_factory.begin() as session:
         for record in records:
-            artifact = stager.stage_primary(record)
-            artifacts.append(artifact)
-            save_inventory_and_artifact(session, record, artifact)
-            for supporting in stager.stage_supporting(record):
-                artifacts.append(supporting)
-                save_inventory_and_artifact(session, record, supporting)
+            for artifact in stager.stage_application_bundle(record):
+                artifacts.append(artifact)
+                save_inventory_and_artifact(session, record, artifact)
     state_path = settings.analysis_dir / "staging_state.json"
     state_path.write_text(
         json.dumps(
@@ -266,7 +263,9 @@ def stage(
     )
     primary = [artifact for artifact in artifacts if artifact.is_primary]
     success_count = sum(a.status.value == "staged" for a in primary)
-    typer.echo(f"Staged {success_count}/{len(primary)} primary artifacts. State: {state_path}")
+    typer.echo(f"Staged {success_count}/{len(primary)} primary artifacts.")
+    typer.echo(f"Copied {len(artifacts)} bundle files.")
+    typer.echo(f"State: {state_path}")
 
 
 @app.command()
