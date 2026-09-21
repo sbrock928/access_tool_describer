@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import platform
+import subprocess
+from multiprocessing.process import BaseProcess
 from pathlib import Path
+from queue import Empty
+from typing import Any
 
 import typer
 
@@ -17,6 +22,7 @@ from portfolio_analyzer.models import (
     Datasource,
     Dependency,
     Evidence,
+    ExtractedApplication,
     InventoryRecord,
     StagedArtifact,
 )
@@ -45,6 +51,71 @@ def _read_state(state_path: Path) -> tuple[list[InventoryRecord], list[StagedArt
 
 def _analysis_state_path(settings: AnalyzerSettings) -> Path:
     return settings.analysis_dir / "analysis_state.json"
+
+
+class AccessExtractionTimeoutError(TimeoutError):
+    """Raised when an isolated Access worker exceeds its allotted time."""
+
+
+def _access_extraction_worker(
+    artifact: StagedArtifact, destination: str, workspace: str, result_queue: Any
+) -> None:
+    """Run COM extraction in a disposable process so a hung database cannot block the portfolio."""
+    try:
+        settings = AnalyzerSettings(workspace=Path(workspace))
+        settings.ensure_workspace()
+        extracted = WindowsAccessExtractor(settings).extract(artifact, Path(destination))
+        result_queue.put({"status": "ok", "extracted": extracted.model_dump(mode="json")})
+    except Exception as exc:
+        result_queue.put({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+
+
+def _extract_with_timeout(
+    artifact: StagedArtifact, destination: Path, settings: AnalyzerSettings, timeout_seconds: int
+) -> ExtractedApplication:
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue()
+    process = context.Process(
+        target=_access_extraction_worker,
+        args=(artifact, str(destination), str(settings.workspace), result_queue),
+    )
+    process.start()
+    process.join(timeout_seconds)
+    try:
+        if process.is_alive():
+            _terminate_worker_tree(process)
+            raise AccessExtractionTimeoutError(
+                f"Extraction exceeded {timeout_seconds} seconds and was terminated"
+            )
+        try:
+            result = result_queue.get(timeout=3)
+        except Empty as exc:
+            raise RuntimeError(
+                f"Extraction worker exited without a result (exit code {process.exitcode})"
+            ) from exc
+        if result["status"] != "ok":
+            raise RuntimeError(str(result["error"]))
+        return ExtractedApplication.model_validate(result["extracted"])
+    finally:
+        result_queue.close()
+        result_queue.join_thread()
+
+
+def _terminate_worker_tree(process: BaseProcess) -> None:
+    """Terminate only the dedicated worker tree, never a user Access session by name."""
+    if platform.system() == "Windows" and process.pid is not None:
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            check=False,
+            capture_output=True,
+            timeout=15,
+        )
+    else:
+        process.terminate()
+    process.join(15)
+    if process.is_alive():
+        process.kill()
+        process.join(5)
 
 
 @app.command()
@@ -87,6 +158,9 @@ def analyze(
     workspace: Path = typer.Option(...),
     force: bool = typer.Option(False, help="Re-extract unchanged staged artifacts."),
     tool_id: str | None = typer.Option(None, help="Analyze one staged tool inventory ID."),
+    timeout_seconds: int = typer.Option(
+        120, min=10, max=3600, help="Maximum time per isolated Access extraction."
+    ),
 ) -> None:
     """Extract only verified local Access copies and perform static analysis."""
     settings = _settings(workspace)
@@ -119,40 +193,55 @@ def analyze(
     )
     extractor = WindowsAccessExtractor(settings)
     completed = {
-        result["sha256"]
+        (result["tool_inventory_id"], result["sha256"])
         for result in previous.get("applications", [])
-        if result.get("extractor_version") == extractor.version
+        if result.get("extractor_version") == extractor.version and "extracted" in result
     }
-    results = [] if force else list(previous.get("applications", []))
+    results_by_key = (
+        {}
+        if force
+        else {
+            (result["tool_inventory_id"], result["sha256"]): result
+            for result in previous.get("applications", [])
+        }
+    )
     for artifact in eligible:
-        if artifact.sha256 in completed:
+        key = (artifact.tool_inventory_id, artifact.sha256)
+        if key in completed:
+            typer.echo(f"[{artifact.tool_inventory_id}] unchanged; reusing prior extraction.")
             continue
         try:
-            extracted = extractor.extract(
-                artifact, settings.extracted_dir / artifact.tool_inventory_id
+            typer.echo(
+                f"[{artifact.tool_inventory_id}] extracting {artifact.filename} "
+                f"(timeout: {timeout_seconds}s)..."
+            )
+            extracted = _extract_with_timeout(
+                artifact,
+                settings.extracted_dir / artifact.tool_inventory_id,
+                settings,
+                timeout_seconds,
             )
             evidence, datasources, dependencies = analyze_application(extracted)
-            results.append(
-                {
-                    "tool_inventory_id": artifact.tool_inventory_id,
-                    "sha256": artifact.sha256,
-                    "extractor_version": extractor.version,
-                    "extracted": extracted.model_dump(mode="json"),
-                    "evidence": [item.model_dump(mode="json") for item in evidence],
-                    "datasources": [item.model_dump(mode="json") for item in datasources],
-                    "dependencies": [item.model_dump(mode="json") for item in dependencies],
-                }
-            )
+            results_by_key[key] = {
+                "tool_inventory_id": artifact.tool_inventory_id,
+                "sha256": artifact.sha256,
+                "extractor_version": extractor.version,
+                "extracted": extracted.model_dump(mode="json"),
+                "evidence": [item.model_dump(mode="json") for item in evidence],
+                "datasources": [item.model_dump(mode="json") for item in datasources],
+                "dependencies": [item.model_dump(mode="json") for item in dependencies],
+            }
+            typer.echo(f"[{artifact.tool_inventory_id}] completed.")
         except Exception as exc:
             # Continue the portfolio. This path never retries extraction against the source file.
-            results.append(
-                {
-                    "tool_inventory_id": artifact.tool_inventory_id,
-                    "sha256": artifact.sha256,
-                    "extractor_version": extractor.version,
-                    "error": str(exc),
-                }
-            )
+            results_by_key[key] = {
+                "tool_inventory_id": artifact.tool_inventory_id,
+                "sha256": artifact.sha256,
+                "extractor_version": extractor.version,
+                "error": str(exc),
+            }
+            typer.echo(f"[{artifact.tool_inventory_id}] failed safely: {exc}")
+    results = list(results_by_key.values())
     output_path.write_text(json.dumps({"applications": results}, indent=2), encoding="utf-8")
     typer.echo(f"Analysis state written to {output_path}")
 
@@ -162,9 +251,15 @@ def analyze_tool(
     tool_id: str = typer.Option(..., "--id", help="Tool Inventory ID to analyze."),
     workspace: Path = typer.Option(...),
     force: bool = typer.Option(False, help="Re-extract even if unchanged."),
+    timeout_seconds: int = typer.Option(120, min=10, max=3600),
 ) -> None:
     """Analyze one successfully staged Access application, never its inventory path."""
-    analyze(workspace=workspace, force=force, tool_id=tool_id)
+    analyze(
+        workspace=workspace,
+        force=force,
+        tool_id=tool_id,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 @app.command()
