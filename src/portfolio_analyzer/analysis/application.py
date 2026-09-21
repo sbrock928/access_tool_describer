@@ -49,6 +49,23 @@ def analyze_application(
                         evidence=[fact],
                     )
                 )
+        if item.object_type == "reference":
+            target = item.properties.get("full_path") or item.name
+            is_broken = item.properties.get("is_broken", "False").casefold() == "true"
+            inference = "Broken Access/VBA reference" if is_broken else "Access/VBA reference"
+            fact = _evidence(extracted, item.object_type, item.name, target, inference)
+            evidence.append(fact)
+            dependencies.append(
+                Dependency(
+                    tool_inventory_id=extracted.tool_inventory_id,
+                    source=item.name,
+                    target=target,
+                    dependency_type="access_vba_reference",
+                    operation="READ",
+                    confidence=Confidence.HIGH if is_broken else Confidence.MEDIUM,
+                    evidence=[fact],
+                )
+            )
         for path in extract_windows_paths(text):
             fact = _evidence(extracted, item.object_type, item.name, path, "Filesystem dependency")
             evidence.append(fact)

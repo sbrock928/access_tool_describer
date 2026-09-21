@@ -8,4 +8,4 @@ pytest -m windows_access
 
 The analyzer does not authenticate to external data sources. Use an account without production access and ensure the staging workspace is local and writable.
 
-References: [AutomationSecurity](https://learn.microsoft.com/en-us/office/vba/api/Access.Application.AutomationSecurity), [OpenCurrentDatabase](https://learn.microsoft.com/en-us/office/vba/api/access.application.opencurrentdatabase), and [SaveAsText](https://learn.microsoft.com/en-us/office/client-developer/access/desktop-database-reference/application-save-as-text).
+References: [AutomationSecurity](https://learn.microsoft.com/en-us/office/vba/api/Access.Application.AutomationSecurity), [Access startup/AutoExec behavior](https://support.microsoft.com/en-us/access/create-a-macro-that-runs-when-you-open-a-database), [OpenCurrentDatabase](https://learn.microsoft.com/en-us/office/vba/api/access.application.opencurrentdatabase), and [SaveAsText](https://learn.microsoft.com/en-us/office/client-developer/access/desktop-database-reference/application-save-as-text).

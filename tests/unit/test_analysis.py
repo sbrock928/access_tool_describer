@@ -21,6 +21,11 @@ def test_analysis_creates_evidence_dependencies_and_capabilities() -> None:
                 ),
             ),
             ExtractedObject(object_type="query", name="qDeal", definition="SELECT * FROM dbo.Deal"),
+            ExtractedObject(
+                object_type="reference",
+                name="euc_al",
+                properties={"full_path": r"\\server\shared\euc_al.accdb", "is_broken": "True"},
+            ),
         ],
     )
     evidence, datasources, dependencies = analyze_application(app)
@@ -29,6 +34,7 @@ def test_analysis_creates_evidence_dependencies_and_capabilities() -> None:
     assert datasources[0].object_name == "Deal"
     assert datasources[0].operation == "READ"
     assert dependencies[0].target.startswith("\\\\server")
+    assert any(item.dependency_type == "access_vba_reference" for item in dependencies)
     assert capability_taxonomy(capabilities)["Excel automation"] == 1
 
 

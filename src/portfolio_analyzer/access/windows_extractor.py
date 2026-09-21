@@ -6,6 +6,7 @@ isolated analysis environment; see docs/ACCESS_EXTRACTION.md.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -33,7 +34,9 @@ class WindowsAccessExtractor:
         database_path = validate_access_extraction_request(artifact, destination, self.settings)
         destination.mkdir(parents=True, exist_ok=True)
         try:
+            import win32api  # type: ignore[import-untyped]
             import win32com.client  # type: ignore[import-untyped]
+            import win32con  # type: ignore[import-untyped]
         except ImportError as exc:  # pragma: no cover - Windows environment concern
             raise RuntimeError("pywin32 is required for Windows Access extraction") from exc
 
@@ -45,11 +48,13 @@ class WindowsAccessExtractor:
             # msoAutomationSecurityForceDisable. This is requested before opening the staged copy.
             access.AutomationSecurity = 3
             access.Visible = False
+            access.DisplayAlerts = False
             _progress(progress, "Opening verified local staged copy")
-            access.OpenCurrentDatabase(str(database_path), False)
+            self._open_with_startup_bypass(access, database_path, win32api, win32con, progress)
             database = access.CurrentDb()
             _progress(progress, "Enumerating table and query metadata")
             objects.extend(self._schema_objects(database, errors, progress))
+            objects.extend(self._reference_objects(access, errors, progress))
             objects.extend(
                 self._export_definitions(access, database, destination, errors, progress)
             )
@@ -71,6 +76,52 @@ class WindowsAccessExtractor:
             objects=objects,
             extraction_errors=errors,
         )
+
+    def _open_with_startup_bypass(
+        self,
+        access: Any,
+        database_path: Path,
+        win32api: Any,
+        win32con: Any,
+        progress: Callable[[str], None] | None,
+    ) -> None:
+        """Open with the documented Shift bypass so AutoExec/startup code cannot run.
+
+        The bypass depends on the database allowing it. If it has been deliberately disabled, this
+        extractor fails safely rather than opening the database and risking code execution.
+        """
+        _progress(progress, "Checking whether Access startup bypass is permitted")
+        if not self._allows_shift_bypass(access, database_path):
+            raise RuntimeError(
+                "Startup bypass is disabled (AllowBypassKey=False); static export was not attempted"
+            )
+        _progress(progress, "Opening with Shift startup bypass")
+        win32api.keybd_event(win32con.VK_SHIFT, 0, 0, 0)
+        try:
+            # Keep Shift held through the open call so startup options are bypassed.
+            time.sleep(0.25)
+            access.OpenCurrentDatabase(str(database_path), False)
+        finally:
+            win32api.keybd_event(win32con.VK_SHIFT, 0, win32con.KEYEVENTF_KEYUP, 0)
+
+    def _allows_shift_bypass(self, access: Any, database_path: Path) -> bool:
+        """Read the local database property with DAO, which does not run Access startup code."""
+        database: Any | None = None
+        try:
+            database = access.DBEngine.OpenDatabase(str(database_path), False, True)
+            try:
+                return bool(database.Properties("AllowBypassKey").Value)
+            except Exception:
+                # A missing property uses Access's default, which permits Shift startup bypass.
+                return True
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not determine whether startup bypass is available; refusing unsafe UI open"
+            ) from exc
+        finally:
+            if database is not None:
+                with suppress(Exception):
+                    database.Close()
 
     def _schema_objects(
         self, database: Any, errors: list[str], progress: Callable[[str], None] | None
@@ -133,7 +184,38 @@ class WindowsAccessExtractor:
                 errors.append(f"Could not export {container_name}: {exc}")
         return results
 
+    def _reference_objects(
+        self, access: Any, errors: list[str], progress: Callable[[str], None] | None
+    ) -> list[ExtractedObject]:
+        """Capture reference metadata without evaluating or compiling VBA code."""
+        results: list[ExtractedObject] = []
+        try:
+            for reference in access.References:
+                name = _reference_value(reference, "Name") or "<unnamed reference>"
+                _progress(progress, f"Reading Access/VBA reference: {name}")
+                results.append(
+                    ExtractedObject(
+                        object_type="reference",
+                        name=name,
+                        properties={
+                            "full_path": _reference_value(reference, "FullPath") or "",
+                            "guid": _reference_value(reference, "Guid") or "",
+                            "is_broken": _reference_value(reference, "IsBroken") or "False",
+                        },
+                    )
+                )
+        except Exception as exc:
+            errors.append(f"Access/VBA reference enumeration failed: {exc}")
+        return results
+
 
 def _progress(callback: Callable[[str], None] | None, message: str) -> None:
     if callback is not None:
         callback(message)
+
+
+def _reference_value(reference: Any, property_name: str) -> str | None:
+    try:
+        return str(getattr(reference, property_name))
+    except Exception:
+        return None
