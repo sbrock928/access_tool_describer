@@ -20,7 +20,7 @@ from portfolio_analyzer.staging.hashing import sha256_file
 
 
 class WindowsAccessExtractor:
-    version = "windows-com-metadata-v4"
+    version = "windows-com-metadata-v5"
 
     def __init__(self, settings: AnalyzerSettings) -> None:
         self.settings = settings
@@ -80,7 +80,7 @@ class WindowsAccessExtractor:
                 _progress(progress, "Closing Access automation instance")
                 with suppress(Exception):
                     access.Quit()
-            if working_bundle is not None:
+            if cleanup and working_bundle is not None:
                 _progress(progress, "Removing temporary Access working bundle")
                 with suppress(OSError):
                     shutil.rmtree(working_bundle)
@@ -96,49 +96,33 @@ class WindowsAccessExtractor:
     def _prepare_working_bundle(
         self, staged_database_path: Path, destination: Path
     ) -> tuple[Path, Path, list[str], list[str]]:
-        """Create a disposable bundle and add unambiguous Access libraries from staging.
+        """Create a minimal disposable bundle with the primary database and curated libraries.
 
         The canonical staged bundle is hash-verified before this method is reached and is never
-        changed. Access opens only the disposable copy. This lets a project resolve a shared
-        library such as ``EUC_AL.accdb`` that was staged with another inventory application.
+        changed. Access opens only the disposable copy. It deliberately does not mirror a source
+        folder or search every staged tool: that would multiply disk use for every extraction.
         """
-        source_bundle = _bundle_root(staged_database_path)
-        relative_database_path = staged_database_path.relative_to(source_bundle)
         working_bundle = destination / "_working_bundle"
         if working_bundle.exists():
             shutil.rmtree(working_bundle)
-        shutil.copytree(source_bundle, working_bundle, copy_function=shutil.copy2)
-        working_database_path = working_bundle / relative_database_path
+        working_bundle.mkdir(parents=True)
+        working_database_path = working_bundle / staged_database_path.name
+        shutil.copy2(staged_database_path, working_database_path)
         additions: list[str] = []
         warnings: list[str] = []
 
         shared_candidates = _access_files_by_name(self.settings.shared_libraries_dir)
-        workspace_candidates = _access_files_by_name(
-            self.settings.staged_tools_dir, exclude=staged_database_path
-        )
 
-        target_directory = working_database_path.parent
-        candidate_names = sorted(set(shared_candidates) | set(workspace_candidates))
-        for filename in candidate_names:
-            target = target_directory / filename
-            if target.exists():
-                continue
-            # A curated shared library is deliberate user input, so it takes precedence over
-            # another bundle that happens to contain a same-named database.
-            versions = shared_candidates.get(filename) or workspace_candidates[filename]
+        for filename, versions in sorted(shared_candidates.items()):
+            target = working_bundle / filename
             if len(versions) != 1:
                 warnings.append(
-                    f"Shared library '{filename}' was not added: "
-                    f"{len(versions)} different versions were found in the selected location."
+                    f"Curated shared library '{filename}' was not added: "
+                    f"{len(versions)} different versions were found."
                 )
                 continue
             shutil.copy2(next(iter(versions.values())), target)
-            source_label = (
-                "curated shared library"
-                if filename in shared_candidates
-                else "shared workspace library"
-            )
-            additions.append(f"Added {source_label} '{filename}' to temporary bundle.")
+            additions.append(f"Added curated shared library '{filename}' to temporary bundle.")
         return working_database_path, working_bundle, additions, warnings
 
     def _open_with_startup_bypass(
@@ -262,28 +246,17 @@ def _reference_value(reference: Any, property_name: str) -> str | None:
         return None
 
 
-def _bundle_root(staged_database_path: Path) -> Path:
-    """Locate the owned bundle root for a staged file, including nested source folders."""
-    for parent in staged_database_path.parents:
-        if parent.name == "bundle":
-            return parent
-    # Legacy staging layouts had no bundle folder. Its containing folder is still owned staging.
-    return staged_database_path.parent
-
-
 def _access_files_by_name(
-    directory: Path, *, exclude: Path | None = None
+    directory: Path,
 ) -> dict[str, dict[str, Path]]:
     """Return unique byte versions of local Access databases keyed by case-insensitive name."""
     files_by_name: dict[str, list[Path]] = {}
     if not directory.exists():
         return {}
-    excluded = exclude.resolve() if exclude is not None else None
     for candidate in directory.rglob("*"):
         if (
             not candidate.is_file()
             or candidate.suffix.casefold() not in {".accdb", ".mdb"}
-            or candidate.resolve() == excluded
         ):
             continue
         files_by_name.setdefault(candidate.name.casefold(), []).append(candidate)

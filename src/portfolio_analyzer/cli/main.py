@@ -211,6 +211,14 @@ def _extract_with_timeout(
     finally:
         if not process.is_alive():
             process.close()
+            # The child intentionally avoids COM shutdown because that can hang. Once this parent
+            # has joined or terminated that dedicated child, Windows releases the database handle
+            # and this exact disposable directory can be safely removed.
+            working_bundle = destination / "_working_bundle"
+            if working_bundle.exists():
+                import shutil
+
+                shutil.rmtree(working_bundle, ignore_errors=True)
 
 
 def _terminate_worker_tree(process: BaseProcess) -> None:
