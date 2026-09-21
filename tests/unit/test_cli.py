@@ -1,0 +1,33 @@
+from pathlib import Path
+
+from openpyxl import Workbook
+from typer.testing import CliRunner
+
+from portfolio_analyzer.cli.main import app
+
+
+def test_stage_and_report_keep_source_and_staged_paths_separate(tmp_path: Path) -> None:
+    source = tmp_path / "source" / "tool.accdb"
+    source.parent.mkdir()
+    source.write_bytes(b"synthetic database")
+    inventory = tmp_path / "inventory.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Tool Inventory ID", "Tool Name", "Description", "Filepath"])
+    sheet.append(["42", "Tool", "Claim", str(source)])
+    workbook.save(inventory)
+    workspace = tmp_path / "workspace"
+    runner = CliRunner()
+
+    staged = runner.invoke(
+        app, ["stage", "--inventory", str(inventory), "--workspace", str(workspace)]
+    )
+    reported = runner.invoke(app, ["report", "--workspace", str(workspace)])
+
+    assert staged.exit_code == 0, staged.output
+    assert reported.exit_code == 0, reported.output
+    state = (workspace / "analysis" / "staging_state.json").read_text()
+    assert str(source) in state
+    assert str(workspace / "staged_tools") in state
+    assert (workspace / "reports" / "Portfolio_Analysis.xlsx").exists()
+    assert (workspace / "reports" / "applications.csv").exists()

@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "access-portfolio-analyzer"
+version = "0.1.0"
+description = "Evidence-driven static analysis for Microsoft Access application portfolios"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "Proprietary" }
+authors = [{ name = "Portfolio Modernization Team" }]
+dependencies = [
+  "openpyxl>=3.1.5",
+  "pydantic>=2.10",
+  "reportlab>=4.2",
+  "SQLAlchemy>=2.0",
+  "structlog>=24.4",
+  "typer>=0.15",
+]
+
+[project.optional-dependencies]
+windows = ["pywin32>=308; platform_system == 'Windows'"]
+dev = ["mypy>=1.14", "pytest>=8.3", "ruff>=0.8"]
+
+[project.scripts]
+portfolio-analyzer = "portfolio_analyzer.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/portfolio_analyzer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = ["windows_access: requires Windows, Microsoft Access, and pywin32"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["B008"] # Typer's documented command parameter declaration pattern.
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unused_ignores = true
+exclude = ["tests/fixtures"]
+
+[[tool.mypy.overrides]]
+module = ["openpyxl", "openpyxl.*", "reportlab", "reportlab.*"]
+ignore_missing_imports = true
