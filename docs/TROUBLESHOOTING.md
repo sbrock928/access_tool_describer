@@ -7,3 +7,6 @@
 - Every Access extraction runs in an isolated worker process. If it exceeds the configured 300-second limit,
   only that worker process tree is terminated, the error is recorded, and the remaining portfolio continues.
   Override the limit with `analyze --timeout-seconds 300` when a verified local artifact is legitimately large.
+- The `analyze` command prints the current Access operation (including the object currently being exported).
+  A staged tool's `extracted/<INVENTORY_ID>/_extraction_progress.txt` also records the most recent
+  checkpoint, so a timeout identifies the operation that blocked.

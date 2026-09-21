@@ -6,6 +6,9 @@ import json
 import multiprocessing
 import platform
 import subprocess
+import time
+from collections.abc import Callable
+from functools import partial
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from queue import Empty
@@ -58,41 +61,92 @@ class AccessExtractionTimeoutError(TimeoutError):
 
 
 def _access_extraction_worker(
-    artifact: StagedArtifact, destination: str, workspace: str, result_queue: Any
+    artifact: StagedArtifact,
+    destination: str,
+    workspace: str,
+    progress_path: str,
+    result_queue: Any,
 ) -> None:
     """Run COM extraction in a disposable process so a hung database cannot block the portfolio."""
     try:
         settings = AnalyzerSettings(workspace=Path(workspace))
         settings.ensure_workspace()
-        extracted = WindowsAccessExtractor(settings).extract(artifact, Path(destination))
+        progress_file = Path(progress_path)
+
+        def write_progress(message: str) -> None:
+            progress_file.write_text(message, encoding="utf-8")
+
+        extracted = WindowsAccessExtractor(settings).extract(
+            artifact,
+            Path(destination),
+            progress=write_progress,
+            # COM shutdown can block despite successful exports. The disposable worker releases
+            # its COM references on exit, while the parent enforces a timeout for the whole process.
+            cleanup=False,
+        )
         result_queue.put({"status": "ok", "extracted": extracted.model_dump(mode="json")})
     except Exception as exc:
         result_queue.put({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
 
 
 def _extract_with_timeout(
-    artifact: StagedArtifact, destination: Path, settings: AnalyzerSettings, timeout_seconds: int
+    artifact: StagedArtifact,
+    destination: Path,
+    settings: AnalyzerSettings,
+    timeout_seconds: int,
+    on_progress: Callable[[str], None],
 ) -> ExtractedApplication:
     context = multiprocessing.get_context("spawn")
     result_queue = context.Queue()
+    destination.mkdir(parents=True, exist_ok=True)
+    progress_path = destination / "_extraction_progress.txt"
+    progress_path.unlink(missing_ok=True)
     process = context.Process(
         target=_access_extraction_worker,
-        args=(artifact, str(destination), str(settings.workspace), result_queue),
+        args=(
+            artifact,
+            str(destination),
+            str(settings.workspace),
+            str(progress_path),
+            result_queue,
+        ),
     )
     process.start()
-    process.join(timeout_seconds)
+    last_progress: str | None = None
+    worker_result: dict[str, Any] | None = None
+    deadline = time.monotonic() + timeout_seconds
     try:
+        while process.is_alive() and time.monotonic() < deadline:
+            process.join(0.25)
+            try:
+                worker_result = result_queue.get_nowait()
+            except Empty:
+                pass
+            else:
+                # Do not let a COM-release hang consume the full tool timeout.
+                process.join(5)
+                if process.is_alive():
+                    _terminate_worker_tree(process)
+                break
+            if progress_path.exists():
+                progress = progress_path.read_text(encoding="utf-8")
+                if progress and progress != last_progress:
+                    last_progress = progress
+                    on_progress(progress)
         if process.is_alive():
             _terminate_worker_tree(process)
+            operation = last_progress or "before the first Access checkpoint"
             raise AccessExtractionTimeoutError(
-                f"Extraction exceeded {timeout_seconds} seconds and was terminated"
+                f"Extraction exceeded {timeout_seconds} seconds during: {operation}"
             )
-        try:
-            result = result_queue.get(timeout=3)
-        except Empty as exc:
-            raise RuntimeError(
-                f"Extraction worker exited without a result (exit code {process.exitcode})"
-            ) from exc
+        if worker_result is None:
+            try:
+                worker_result = result_queue.get(timeout=3)
+            except Empty as exc:
+                raise RuntimeError(
+                    f"Extraction worker exited without a result (exit code {process.exitcode})"
+                ) from exc
+        result = worker_result
         if result["status"] != "ok":
             raise RuntimeError(str(result["error"]))
         return ExtractedApplication.model_validate(result["extracted"])
@@ -116,6 +170,10 @@ def _terminate_worker_tree(process: BaseProcess) -> None:
     if process.is_alive():
         process.kill()
         process.join(5)
+
+
+def _echo_progress(tool_inventory_id: str, message: str) -> None:
+    typer.echo(f"[{tool_inventory_id}] {message}")
 
 
 @app.command()
@@ -220,6 +278,7 @@ def analyze(
                 settings.extracted_dir / artifact.tool_inventory_id,
                 settings,
                 timeout_seconds,
+                partial(_echo_progress, artifact.tool_inventory_id),
             )
             evidence, datasources, dependencies = analyze_application(extracted)
             results_by_key[key] = {

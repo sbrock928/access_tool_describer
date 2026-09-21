@@ -6,6 +6,7 @@ isolated analysis environment; see docs/ACCESS_EXTRACTION.md.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -16,12 +17,19 @@ from portfolio_analyzer.models import ExtractedApplication, ExtractedObject, Sta
 
 
 class WindowsAccessExtractor:
-    version = "windows-com-metadata-v1"
+    version = "windows-com-metadata-v2"
 
     def __init__(self, settings: AnalyzerSettings) -> None:
         self.settings = settings
 
-    def extract(self, artifact: StagedArtifact, destination: Path) -> ExtractedApplication:
+    def extract(
+        self,
+        artifact: StagedArtifact,
+        destination: Path,
+        *,
+        progress: Callable[[str], None] | None = None,
+        cleanup: bool = True,
+    ) -> ExtractedApplication:
         database_path = validate_access_extraction_request(artifact, destination, self.settings)
         destination.mkdir(parents=True, exist_ok=True)
         try:
@@ -33,20 +41,29 @@ class WindowsAccessExtractor:
         objects: list[ExtractedObject] = []
         errors: list[str] = []
         try:
+            _progress(progress, "Starting hidden Access automation instance")
             # msoAutomationSecurityForceDisable. This is requested before opening the staged copy.
             access.AutomationSecurity = 3
             access.Visible = False
+            _progress(progress, "Opening verified local staged copy")
             access.OpenCurrentDatabase(str(database_path), False)
             database = access.CurrentDb()
-            objects.extend(self._schema_objects(database, errors))
-            objects.extend(self._export_definitions(access, database, destination, errors))
+            _progress(progress, "Enumerating table and query metadata")
+            objects.extend(self._schema_objects(database, errors, progress))
+            objects.extend(
+                self._export_definitions(access, database, destination, errors, progress)
+            )
         except Exception as exc:  # COM errors are recorded without a retry against source.
             errors.append(f"Access metadata extraction failed: {exc}")
         finally:
-            with suppress(Exception):
-                access.CloseCurrentDatabase()
-            with suppress(Exception):
-                access.Quit()
+            if cleanup:
+                _progress(progress, "Closing local staged database")
+                with suppress(Exception):
+                    access.CloseCurrentDatabase()
+                _progress(progress, "Closing Access automation instance")
+                with suppress(Exception):
+                    access.Quit()
+        _progress(progress, "Extraction complete")
         return ExtractedApplication(
             tool_inventory_id=artifact.tool_inventory_id,
             staged_path=database_path,
@@ -55,11 +72,14 @@ class WindowsAccessExtractor:
             extraction_errors=errors,
         )
 
-    def _schema_objects(self, database: Any, errors: list[str]) -> list[ExtractedObject]:
+    def _schema_objects(
+        self, database: Any, errors: list[str], progress: Callable[[str], None] | None
+    ) -> list[ExtractedObject]:
         objects: list[ExtractedObject] = []
         try:
             for table in database.TableDefs:
                 if not str(table.Name).startswith("MSys"):
+                    _progress(progress, f"Reading table metadata: {table.Name}")
                     objects.append(
                         ExtractedObject(
                             object_type="linked_table" if table.Connect else "table",
@@ -69,6 +89,7 @@ class WindowsAccessExtractor:
                     )
             for query in database.QueryDefs:
                 if not str(query.Name).startswith("~sq"):
+                    _progress(progress, f"Reading query definition: {query.Name}")
                     objects.append(
                         ExtractedObject(
                             object_type="query", name=str(query.Name), definition=str(query.SQL)
@@ -79,7 +100,12 @@ class WindowsAccessExtractor:
         return objects
 
     def _export_definitions(
-        self, access: Any, database: Any, destination: Path, errors: list[str]
+        self,
+        access: Any,
+        database: Any,
+        destination: Path,
+        errors: list[str],
+        progress: Callable[[str], None] | None,
     ) -> list[ExtractedObject]:
         # SaveAsText emits definitions to the extraction workspace; it does not open objects.
         object_types = {
@@ -94,6 +120,7 @@ class WindowsAccessExtractor:
                 for document in database.Containers(container_name).Documents:
                     name = str(document.Name)
                     target = destination / f"{kind}_{name}.txt"
+                    _progress(progress, f"Exporting {kind}: {name}")
                     access.SaveAsText(constant, name, str(target))
                     results.append(
                         ExtractedObject(
@@ -105,3 +132,8 @@ class WindowsAccessExtractor:
             except Exception as exc:
                 errors.append(f"Could not export {container_name}: {exc}")
         return results
+
+
+def _progress(callback: Callable[[str], None] | None, message: str) -> None:
+    if callback is not None:
+        callback(message)
