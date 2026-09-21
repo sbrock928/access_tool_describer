@@ -11,7 +11,6 @@ from collections.abc import Callable
 from functools import partial
 from multiprocessing.process import BaseProcess
 from pathlib import Path
-from queue import Empty
 from typing import Any
 
 import typer
@@ -65,7 +64,7 @@ def _access_extraction_worker(
     destination: str,
     workspace: str,
     progress_path: str,
-    result_queue: Any,
+    result_path: str,
 ) -> None:
     """Run COM extraction in a disposable process so a hung database cannot block the portfolio."""
     try:
@@ -84,9 +83,20 @@ def _access_extraction_worker(
             # its COM references on exit, while the parent enforces a timeout for the whole process.
             cleanup=False,
         )
-        result_queue.put({"status": "ok", "extracted": extracted.model_dump(mode="json")})
+        _write_worker_result(
+            Path(result_path), {"status": "ok", "extracted": extracted.model_dump(mode="json")}
+        )
     except Exception as exc:
-        result_queue.put({"status": "error", "error": f"{type(exc).__name__}: {exc}"})
+        _write_worker_result(
+            Path(result_path), {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        )
+
+
+def _write_worker_result(path: Path, result: dict[str, Any]) -> None:
+    """Atomically publish a worker result without multiprocessing queue shutdown semantics."""
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(result), encoding="utf-8")
+    temporary.replace(path)
 
 
 def _extract_with_timeout(
@@ -97,10 +107,11 @@ def _extract_with_timeout(
     on_progress: Callable[[str], None],
 ) -> ExtractedApplication:
     context = multiprocessing.get_context("spawn")
-    result_queue = context.Queue()
     destination.mkdir(parents=True, exist_ok=True)
     progress_path = destination / "_extraction_progress.txt"
+    result_path = destination / "_extraction_result.json"
     progress_path.unlink(missing_ok=True)
+    result_path.unlink(missing_ok=True)
     process = context.Process(
         target=_access_extraction_worker,
         args=(
@@ -108,7 +119,7 @@ def _extract_with_timeout(
             str(destination),
             str(settings.workspace),
             str(progress_path),
-            result_queue,
+            str(result_path),
         ),
     )
     process.start()
@@ -118,13 +129,10 @@ def _extract_with_timeout(
     try:
         while process.is_alive() and time.monotonic() < deadline:
             process.join(0.25)
-            try:
-                worker_result = result_queue.get_nowait()
-            except Empty:
-                pass
-            else:
+            if result_path.exists():
+                worker_result = json.loads(result_path.read_text(encoding="utf-8"))
                 # Do not let a COM-release hang consume the full tool timeout.
-                process.join(5)
+                process.join(2)
                 if process.is_alive():
                     _terminate_worker_tree(process)
                 break
@@ -140,19 +148,19 @@ def _extract_with_timeout(
                 f"Extraction exceeded {timeout_seconds} seconds during: {operation}"
             )
         if worker_result is None:
-            try:
-                worker_result = result_queue.get(timeout=3)
-            except Empty as exc:
+            if result_path.exists():
+                worker_result = json.loads(result_path.read_text(encoding="utf-8"))
+            else:
                 raise RuntimeError(
                     f"Extraction worker exited without a result (exit code {process.exitcode})"
-                ) from exc
+                )
         result = worker_result
         if result["status"] != "ok":
             raise RuntimeError(str(result["error"]))
         return ExtractedApplication.model_validate(result["extracted"])
     finally:
-        result_queue.close()
-        result_queue.join_thread()
+        if not process.is_alive():
+            process.close()
 
 
 def _terminate_worker_tree(process: BaseProcess) -> None:
