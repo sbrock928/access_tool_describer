@@ -159,7 +159,7 @@ def analyze(
     force: bool = typer.Option(False, help="Re-extract unchanged staged artifacts."),
     tool_id: str | None = typer.Option(None, help="Analyze one staged tool inventory ID."),
     timeout_seconds: int = typer.Option(
-        120, min=10, max=3600, help="Maximum time per isolated Access extraction."
+        300, min=10, max=3600, help="Maximum time per isolated Access extraction."
     ),
 ) -> None:
     """Extract only verified local Access copies and perform static analysis."""
@@ -251,7 +251,7 @@ def analyze_tool(
     tool_id: str = typer.Option(..., "--id", help="Tool Inventory ID to analyze."),
     workspace: Path = typer.Option(...),
     force: bool = typer.Option(False, help="Re-extract even if unchanged."),
-    timeout_seconds: int = typer.Option(120, min=10, max=3600),
+    timeout_seconds: int = typer.Option(300, min=10, max=3600),
 ) -> None:
     """Analyze one successfully staged Access application, never its inventory path."""
     analyze(
