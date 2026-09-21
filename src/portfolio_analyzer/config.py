@@ -37,6 +37,11 @@ class AnalyzerSettings(BaseModel):
         return self.workspace / "staged_tools"
 
     @property
+    def shared_libraries_dir(self) -> Path:
+        """Curated local Access libraries available to disposable extraction bundles."""
+        return self.staged_tools_dir / "shared_libraries"
+
+    @property
     def extracted_dir(self) -> Path:
         return self.workspace / "extracted"
 
@@ -56,6 +61,7 @@ class AnalyzerSettings(BaseModel):
         for directory in (
             self.source_inventory_dir,
             self.staged_tools_dir,
+            self.shared_libraries_dir,
             self.extracted_dir,
             self.analysis_dir,
             self.reports_dir,
