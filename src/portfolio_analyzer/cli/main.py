@@ -35,6 +35,7 @@ from portfolio_analyzer.reporting.writers import write_csv, write_executive_pdf,
 from portfolio_analyzer.staging.copying import ArtifactStager
 
 app = typer.Typer(no_args_is_help=True, help="Static, evidence-driven Access portfolio analysis.")
+STATIC_ANALYSIS_VERSION = "static-analysis-v1"
 
 
 def _settings(workspace: Path) -> AnalyzerSettings:
@@ -53,6 +54,55 @@ def _read_state(state_path: Path) -> tuple[list[InventoryRecord], list[StagedArt
 
 def _analysis_state_path(settings: AnalyzerSettings) -> Path:
     return settings.analysis_dir / "analysis_state.json"
+
+
+def _extraction_state_path(settings: AnalyzerSettings) -> Path:
+    return settings.extracted_dir / "extraction_state.json"
+
+
+def _load_extraction_state(settings: AnalyzerSettings) -> tuple[dict[str, Any], bool]:
+    """Load extraction snapshots, migrating the pre-split state format when available."""
+    extraction_path = _extraction_state_path(settings)
+    if extraction_path.exists():
+        return json.loads(extraction_path.read_text(encoding="utf-8")), False
+    legacy_path = _analysis_state_path(settings)
+    if not legacy_path.exists():
+        raise typer.BadParameter("No extraction state found. Run 'extract' on Windows first.")
+    legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+    applications = [
+        {
+            "tool_inventory_id": item["tool_inventory_id"],
+            "sha256": item["sha256"],
+            "extractor_version": item["extractor_version"],
+            "extracted": item["extracted"],
+        }
+        for item in legacy.get("applications", [])
+        if "extracted" in item
+    ]
+    if not applications:
+        raise typer.BadParameter("No extraction state found. Run 'extract' on Windows first.")
+    state = {"applications": applications}
+    extraction_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    return state, True
+
+
+def _eligible_staged_artifacts(
+    settings: AnalyzerSettings, tool_id: str | None
+) -> list[StagedArtifact]:
+    state_path = settings.analysis_dir / "staging_state.json"
+    if not state_path.exists():
+        raise typer.BadParameter(
+            "No staging state found. Run 'stage' first; source paths are not accepted."
+        )
+    _, artifacts = _read_state(state_path)
+    return [
+        artifact
+        for artifact in artifacts
+        if artifact.status.value == "staged"
+        and artifact.is_primary
+        and artifact.extension in {".accdb", ".mdb"}
+        and (tool_id is None or artifact.tool_inventory_id == tool_id)
+    ]
 
 
 class AccessExtractionTimeoutError(TimeoutError):
@@ -220,30 +270,17 @@ def stage(
 
 
 @app.command()
-def analyze(
+def extract(
     workspace: Path = typer.Option(...),
     force: bool = typer.Option(False, help="Re-extract unchanged staged artifacts."),
-    tool_id: str | None = typer.Option(None, help="Analyze one staged tool inventory ID."),
+    tool_id: str | None = typer.Option(None, help="Extract one staged tool inventory ID."),
     timeout_seconds: int = typer.Option(
         300, min=10, max=3600, help="Maximum time per isolated Access extraction."
     ),
 ) -> None:
-    """Extract only verified local Access copies and perform static analysis."""
+    """Extract Access metadata once from verified local copies; no interpretation occurs here."""
     settings = _settings(workspace)
-    state_path = settings.analysis_dir / "staging_state.json"
-    if not state_path.exists():
-        raise typer.BadParameter(
-            "No staging state found. Run 'stage' first; source paths are not accepted."
-        )
-    _, artifacts = _read_state(state_path)
-    eligible = [
-        artifact
-        for artifact in artifacts
-        if artifact.status.value == "staged"
-        and artifact.is_primary
-        and artifact.extension in {".accdb", ".mdb"}
-        and (tool_id is None or artifact.tool_inventory_id == tool_id)
-    ]
+    eligible = _eligible_staged_artifacts(settings, tool_id)
     typer.echo(f"{len(eligible)} locally staged artifacts are eligible for Windows extraction.")
     typer.echo("No source paths were opened.")
     if platform.system() != "Windows":
@@ -251,7 +288,7 @@ def analyze(
             "Access extraction is unavailable here; run this command on Windows with Access."
         )
         return
-    output_path = _analysis_state_path(settings)
+    output_path = _extraction_state_path(settings)
     previous = (
         json.loads(output_path.read_text(encoding="utf-8"))
         if output_path.exists() and not force
@@ -288,15 +325,11 @@ def analyze(
                 timeout_seconds,
                 partial(_echo_progress, artifact.tool_inventory_id),
             )
-            evidence, datasources, dependencies = analyze_application(extracted)
             results_by_key[key] = {
                 "tool_inventory_id": artifact.tool_inventory_id,
                 "sha256": artifact.sha256,
                 "extractor_version": extractor.version,
                 "extracted": extracted.model_dump(mode="json"),
-                "evidence": [item.model_dump(mode="json") for item in evidence],
-                "datasources": [item.model_dump(mode="json") for item in datasources],
-                "dependencies": [item.model_dump(mode="json") for item in dependencies],
             }
             typer.echo(f"[{artifact.tool_inventory_id}] completed.")
         except Exception as exc:
@@ -310,6 +343,96 @@ def analyze(
             typer.echo(f"[{artifact.tool_inventory_id}] failed safely: {exc}")
     results = list(results_by_key.values())
     output_path.write_text(json.dumps({"applications": results}, indent=2), encoding="utf-8")
+    typer.echo(f"Extraction state written to {output_path}")
+
+
+@app.command("extract-tool")
+def extract_tool(
+    tool_id: str = typer.Option(..., "--id", help="Tool Inventory ID to analyze."),
+    workspace: Path = typer.Option(...),
+    force: bool = typer.Option(False, help="Re-extract even if unchanged."),
+    timeout_seconds: int = typer.Option(300, min=10, max=3600),
+) -> None:
+    """Extract one successfully staged Access application, never its inventory path."""
+    extract(
+        workspace=workspace,
+        force=force,
+        tool_id=tool_id,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+@app.command()
+def analyze(
+    workspace: Path = typer.Option(...),
+    force: bool = typer.Option(
+        False, help="Re-run static analysis from saved extraction snapshots."
+    ),
+    tool_id: str | None = typer.Option(None, help="Analyze one extracted tool inventory ID."),
+) -> None:
+    """Derive evidence from saved extraction snapshots without opening Access or source files."""
+    settings = _settings(workspace)
+    extraction_state, migrated = _load_extraction_state(settings)
+    if migrated:
+        typer.echo(
+            "Migrated existing extraction snapshots to workspace/extracted/extraction_state.json."
+        )
+    output_path = _analysis_state_path(settings)
+    previous = (
+        json.loads(output_path.read_text(encoding="utf-8"))
+        if output_path.exists() and not force
+        else {}
+    )
+    completed = {
+        (result["tool_inventory_id"], result["sha256"])
+        for result in previous.get("applications", [])
+        if result.get("analysis_version") == STATIC_ANALYSIS_VERSION and "evidence" in result
+    }
+    results_by_key = (
+        {}
+        if force
+        else {
+            (result["tool_inventory_id"], result["sha256"]): result
+            for result in previous.get("applications", [])
+        }
+    )
+    eligible = [
+        result
+        for result in extraction_state.get("applications", [])
+        if "extracted" in result and (tool_id is None or result["tool_inventory_id"] == tool_id)
+    ]
+    typer.echo(f"{len(eligible)} saved extraction snapshots are eligible for static analysis.")
+    for result in eligible:
+        key = (result["tool_inventory_id"], result["sha256"])
+        if key in completed:
+            typer.echo(f"[{result['tool_inventory_id']}] unchanged; reusing prior analysis.")
+            continue
+        try:
+            typer.echo(f"[{result['tool_inventory_id']}] analyzing saved extraction snapshot...")
+            extracted = ExtractedApplication.model_validate(result["extracted"])
+            evidence, datasources, dependencies = analyze_application(extracted)
+            results_by_key[key] = {
+                "tool_inventory_id": result["tool_inventory_id"],
+                "sha256": result["sha256"],
+                "extractor_version": result["extractor_version"],
+                "analysis_version": STATIC_ANALYSIS_VERSION,
+                "evidence": [item.model_dump(mode="json") for item in evidence],
+                "datasources": [item.model_dump(mode="json") for item in datasources],
+                "dependencies": [item.model_dump(mode="json") for item in dependencies],
+            }
+            typer.echo(f"[{result['tool_inventory_id']}] analysis complete.")
+        except Exception as exc:
+            results_by_key[key] = {
+                "tool_inventory_id": result["tool_inventory_id"],
+                "sha256": result["sha256"],
+                "extractor_version": result["extractor_version"],
+                "analysis_version": STATIC_ANALYSIS_VERSION,
+                "error": str(exc),
+            }
+            typer.echo(f"[{result['tool_inventory_id']}] analysis failed safely: {exc}")
+    output_path.write_text(
+        json.dumps({"applications": list(results_by_key.values())}, indent=2), encoding="utf-8"
+    )
     typer.echo(f"Analysis state written to {output_path}")
 
 
@@ -317,16 +440,10 @@ def analyze(
 def analyze_tool(
     tool_id: str = typer.Option(..., "--id", help="Tool Inventory ID to analyze."),
     workspace: Path = typer.Option(...),
-    force: bool = typer.Option(False, help="Re-extract even if unchanged."),
-    timeout_seconds: int = typer.Option(300, min=10, max=3600),
+    force: bool = typer.Option(False, help="Re-run static analysis from its saved snapshot."),
 ) -> None:
-    """Analyze one successfully staged Access application, never its inventory path."""
-    analyze(
-        workspace=workspace,
-        force=force,
-        tool_id=tool_id,
-        timeout_seconds=timeout_seconds,
-    )
+    """Re-analyze one saved extraction snapshot without reopening Access."""
+    analyze(workspace=workspace, force=force, tool_id=tool_id)
 
 
 @app.command()
@@ -410,7 +527,8 @@ def run(
     inventory: Path = typer.Option(..., exists=True, readable=True),
     workspace: Path = typer.Option(...),
 ) -> None:
-    """Stage, then analyze staged Access copies on Windows, then produce reports."""
+    """Stage, extract locally on Windows, analyze saved snapshots, then produce reports."""
     stage(inventory=inventory, workspace=workspace)
-    analyze(workspace=workspace, force=False)
+    extract(workspace=workspace, force=False, tool_id=None, timeout_seconds=300)
+    analyze(workspace=workspace, force=False, tool_id=None)
     report(workspace=workspace)

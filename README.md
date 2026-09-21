@@ -19,8 +19,11 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev,windows]"
 portfolio-analyzer stage --inventory .\tool_inventory.xlsx --workspace .\workspace
+portfolio-analyzer extract --workspace .\workspace
 portfolio-analyzer analyze --workspace .\workspace
 portfolio-analyzer report --workspace .\workspace
 ```
 
-`analyze` only considers successful staged artifacts. A staging failure is recorded and skipped; the original file is never used as a fallback.
+`extract` only considers successful staged artifacts and is the only command that opens Access. It persists
+snapshots under `workspace/extracted/`. `analyze --force` can be run repeatedly against those snapshots as
+rules evolve, without opening Access or the original source file again.
