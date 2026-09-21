@@ -330,7 +330,12 @@ def extract(
                 "extractor_version": extractor.version,
                 "extracted": extracted.model_dump(mode="json"),
             }
-            typer.echo(f"[{artifact.tool_inventory_id}] completed.")
+            if extracted.extraction_errors:
+                typer.echo(f"[{artifact.tool_inventory_id}] completed with extraction warnings:")
+                for error in extracted.extraction_errors:
+                    typer.echo(f"[{artifact.tool_inventory_id}]   {error}")
+            else:
+                typer.echo(f"[{artifact.tool_inventory_id}] completed.")
         except Exception as exc:
             # Continue the portfolio. This path never retries extraction against the source file.
             results_by_key[key] = {

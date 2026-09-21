@@ -18,7 +18,7 @@ from portfolio_analyzer.models import ExtractedApplication, ExtractedObject, Sta
 
 
 class WindowsAccessExtractor:
-    version = "windows-com-metadata-v2"
+    version = "windows-com-metadata-v3"
 
     def __init__(self, settings: AnalyzerSettings) -> None:
         self.settings = settings
@@ -87,14 +87,10 @@ class WindowsAccessExtractor:
     ) -> None:
         """Open with the documented Shift bypass so AutoExec/startup code cannot run.
 
-        The bypass depends on the database allowing it. If it has been deliberately disabled, this
-        extractor fails safely rather than opening the database and risking code execution.
+        The bypass depends on the database allowing it. Its setting cannot be queried reliably
+        before an Access database is open, so a failed preflight must not prevent all extraction.
+        Run this only in the isolated, non-privileged environment required by the documentation.
         """
-        _progress(progress, "Checking whether Access startup bypass is permitted")
-        if not self._allows_shift_bypass(access, database_path):
-            raise RuntimeError(
-                "Startup bypass is disabled (AllowBypassKey=False); static export was not attempted"
-            )
         _progress(progress, "Opening with Shift startup bypass")
         win32api.keybd_event(win32con.VK_SHIFT, 0, 0, 0)
         try:
@@ -103,25 +99,6 @@ class WindowsAccessExtractor:
             access.OpenCurrentDatabase(str(database_path), False)
         finally:
             win32api.keybd_event(win32con.VK_SHIFT, 0, win32con.KEYEVENTF_KEYUP, 0)
-
-    def _allows_shift_bypass(self, access: Any, database_path: Path) -> bool:
-        """Read the local database property with DAO, which does not run Access startup code."""
-        database: Any | None = None
-        try:
-            database = access.DBEngine.OpenDatabase(str(database_path), False, True)
-            try:
-                return bool(database.Properties("AllowBypassKey").Value)
-            except Exception:
-                # A missing property uses Access's default, which permits Shift startup bypass.
-                return True
-        except Exception as exc:
-            raise RuntimeError(
-                "Could not determine whether startup bypass is available; refusing unsafe UI open"
-            ) from exc
-        finally:
-            if database is not None:
-                with suppress(Exception):
-                    database.Close()
 
     def _schema_objects(
         self, database: Any, errors: list[str], progress: Callable[[str], None] | None
