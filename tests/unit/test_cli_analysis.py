@@ -44,3 +44,22 @@ def test_analyze_reuses_saved_extraction_without_windows_or_access(tmp_path: Pat
     assert result.exit_code == 0, result.output
     state = json.loads((workspace / "analysis" / "analysis_state.json").read_text())
     assert state["applications"][0]["evidence"][0]["inference"] == "Excel automation"
+
+
+def test_semantic_init_is_non_destructive_and_loopback_only(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    runner = CliRunner()
+    first = runner.invoke(app, ["semantic-init", "--workspace", str(workspace)])
+    assert first.exit_code == 0, first.output
+    config = workspace / "semantic" / "semantic.toml"
+    context = workspace / "semantic" / "business_context.csv"
+    gold = workspace / "semantic" / "gold_set.csv"
+    assert config.exists() and context.exists() and gold.exists()
+    contents = config.read_text(encoding="utf-8")
+    assert "127.0.0.1" in contents
+    assert "allow_remote" not in contents
+
+    config.write_text(contents + "\n# operator note\n", encoding="utf-8")
+    second = runner.invoke(app, ["semantic-init", "--workspace", str(workspace)])
+    assert second.exit_code == 0, second.output
+    assert config.read_text(encoding="utf-8").endswith("# operator note\n")

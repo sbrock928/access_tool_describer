@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+def _stable_identifier(prefix: str, *values: object) -> str:
+    payload = "\x1f".join("" if value is None else str(value) for value in values)
+    return f"{prefix}_{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:20]}"
 
 
 class Confidence(StrEnum):
@@ -51,6 +57,8 @@ class StagedArtifact(BaseModel):
 
 
 class Evidence(BaseModel):
+    evidence_id: str = ""
+    rule_id: str | None = None
     tool_inventory_id: str
     artifact_path: str
     object_type: str
@@ -59,6 +67,23 @@ class Evidence(BaseModel):
     text: str
     inference: str | None = None
     confidence: Confidence = Confidence.HIGH
+
+    @model_validator(mode="after")
+    def assign_stable_identifiers(self) -> Evidence:
+        if not self.evidence_id:
+            self.evidence_id = _stable_identifier(
+                "ev",
+                self.tool_inventory_id,
+                self.artifact_path,
+                self.object_type,
+                self.object_name,
+                self.location,
+                self.text,
+                self.inference,
+            )
+        if self.rule_id is None and self.inference:
+            self.rule_id = _stable_identifier("rule", self.inference.casefold())
+        return self
 
 
 class Datasource(BaseModel):
@@ -142,3 +167,213 @@ class AnalysisCoverage(BaseModel):
     dependency_count: int = 0
     capability_count: int = 0
     notes: list[str] = Field(default_factory=list)
+
+
+class Claim(BaseModel):
+    """Owner-supplied context kept distinct from observed technical evidence."""
+
+    claim_id: str = ""
+    tool_inventory_id: str
+    field: str
+    value: str
+    source: str
+
+    @model_validator(mode="after")
+    def assign_stable_identifier(self) -> Claim:
+        if not self.claim_id:
+            self.claim_id = _stable_identifier(
+                "claim", self.tool_inventory_id, self.field, self.value, self.source
+            )
+        return self
+
+
+class SemanticSource(BaseModel):
+    """A bounded, redacted source excerpt available to the semantic model."""
+
+    source_id: str
+    tool_inventory_id: str
+    artifact_hash: str
+    object_type: str
+    object_name: str
+    location: str | None = None
+    excerpt: str
+    content_sha256: str
+
+
+class SemanticFinding(BaseModel):
+    finding_id: str = ""
+    tool_inventory_id: str
+    category: str
+    label: str
+    description: str = ""
+    confidence: Confidence = Confidence.LOW
+    evidence_ids: list[str] = Field(default_factory=list)
+    claim_ids: list[str] = Field(default_factory=list)
+    review_status: Literal["pending", "accepted", "edited", "rejected"] = "pending"
+
+    @model_validator(mode="after")
+    def assign_stable_identifier(self) -> SemanticFinding:
+        if not self.finding_id:
+            self.finding_id = _stable_identifier(
+                "sf", self.tool_inventory_id, self.category, self.label.casefold()
+            )
+        return self
+
+
+class ObjectSemanticSummary(BaseModel):
+    source_id: str
+    summary: str
+    business_terms: list[str] = Field(default_factory=list)
+    workflows: list[str] = Field(default_factory=list)
+    data_entities: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    claim_ids: list[str] = Field(default_factory=list)
+
+
+class SemanticApplicationProfile(BaseModel):
+    tool_inventory_id: str
+    tool_name: str
+    summary: str
+    business_purpose: str
+    primary_archetype: str
+    proposed_disposition: str
+    confidence: Confidence
+    findings: list[SemanticFinding] = Field(default_factory=list)
+    object_summaries: list[ObjectSemanticSummary] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    claim_ids: list[str] = Field(default_factory=list)
+    artifact_hashes: list[str] = Field(default_factory=list)
+    input_fingerprint: str
+    semantic_version: str
+    model_name: str
+    model_sha256: str
+    status: Literal["complete", "partial", "failed"] = "complete"
+    error: str | None = None
+
+
+class SimilarityEdge(BaseModel):
+    source_tool_id: str
+    target_tool_id: str
+    semantic_similarity: float = Field(ge=-1.0, le=1.0)
+    shared_capabilities: list[str] = Field(default_factory=list)
+    shared_datasources: list[str] = Field(default_factory=list)
+
+
+class PortfolioCluster(BaseModel):
+    cluster_id: str
+    label: str
+    application_ids: list[str]
+    shared_capabilities: list[str] = Field(default_factory=list)
+    shared_data_domains: list[str] = Field(default_factory=list)
+    rationale: str = ""
+    confidence: Confidence = Confidence.LOW
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class ArchitectureComponent(BaseModel):
+    component_id: str
+    track: Literal["vendor_neutral", "microsoft"]
+    name: str
+    component_type: str
+    description: str
+    platform_service: str | None = None
+    application_ids: list[str] = Field(default_factory=list)
+    cluster_ids: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    claim_ids: list[str] = Field(default_factory=list)
+    confidence: Confidence = Confidence.LOW
+    review_status: Literal["pending", "accepted", "edited", "rejected"] = "pending"
+
+
+class ArchitectureRelation(BaseModel):
+    relation_id: str
+    track: Literal["vendor_neutral", "microsoft"]
+    source_component_id: str
+    target_component_id: str
+    relationship: str
+    description: str = ""
+    evidence_ids: list[str] = Field(default_factory=list)
+    confidence: Confidence = Confidence.LOW
+
+
+class ApplicationTargetMapping(BaseModel):
+    mapping_id: str
+    tool_inventory_id: str
+    disposition: Literal[
+        "retain/remediate",
+        "wrap/integrate",
+        "replatform",
+        "rebuild",
+        "consolidate",
+        "retire candidate",
+        "investigate",
+    ]
+    target_component_ids: list[str] = Field(default_factory=list)
+    wave: int = Field(ge=0, le=4)
+    rationale: str
+    prerequisites: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    claim_ids: list[str] = Field(default_factory=list)
+    confidence: Confidence = Confidence.LOW
+    review_status: Literal["pending", "accepted", "edited", "rejected"] = "pending"
+
+
+class MigrationWave(BaseModel):
+    wave: int = Field(ge=0, le=4)
+    name: str
+    purpose: str
+    application_ids: list[str] = Field(default_factory=list)
+    prerequisites: list[str] = Field(default_factory=list)
+
+
+class ReviewDecision(BaseModel):
+    proposal_id: str
+    decision: Literal["Accept", "Edit", "Reject"]
+    edited_value: str | None = None
+    reviewer: str | None = None
+    notes: str | None = None
+    reviewed_at: datetime | None = None
+
+
+class TargetArchitecture(BaseModel):
+    title: str = "Proposed modular target architecture"
+    summary: str = ""
+    components: list[ArchitectureComponent] = Field(default_factory=list)
+    relations: list[ArchitectureRelation] = Field(default_factory=list)
+    mappings: list[ApplicationTargetMapping] = Field(default_factory=list)
+    migration_waves: list[MigrationWave] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+
+
+class SemanticRunMetadata(BaseModel):
+    semantic_version: str
+    semantic_schema_version: str
+    prompt_version: str
+    static_analysis_version: str
+    chat_model: str
+    chat_model_sha256: str
+    embedding_model: str
+    embedding_model_sha256: str
+    chat_base_url: str = ""
+    embedding_base_url: str = ""
+    generation_parameters: dict[str, object] = Field(default_factory=dict)
+    clustering_parameters: dict[str, object] = Field(default_factory=dict)
+    approved_services: list[str] = Field(default_factory=list)
+    context_hash: str = ""
+    server_version: str | None = None
+    generated_at: datetime
+    input_fingerprint: str
+
+
+class SemanticPortfolioState(BaseModel):
+    metadata: SemanticRunMetadata
+    sources: list[SemanticSource] = Field(default_factory=list)
+    observed_evidence_ids: list[str] = Field(default_factory=list)
+    claims: list[Claim] = Field(default_factory=list)
+    applications: list[SemanticApplicationProfile] = Field(default_factory=list)
+    embeddings: dict[str, list[float]] = Field(default_factory=dict)
+    similarity_edges: list[SimilarityEdge] = Field(default_factory=list)
+    clusters: list[PortfolioCluster] = Field(default_factory=list)
+    architecture: TargetArchitecture = Field(default_factory=TargetArchitecture)
+    errors: dict[str, str] = Field(default_factory=dict)

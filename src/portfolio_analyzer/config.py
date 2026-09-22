@@ -54,6 +54,10 @@ class AnalyzerSettings(BaseModel):
         return self.workspace / "reports"
 
     @property
+    def semantic_dir(self) -> Path:
+        return self.workspace / "semantic"
+
+    @property
     def logs_dir(self) -> Path:
         return self.workspace / "logs"
 
@@ -64,6 +68,7 @@ class AnalyzerSettings(BaseModel):
             self.shared_libraries_dir,
             self.extracted_dir,
             self.analysis_dir,
+            self.semantic_dir,
             self.reports_dir,
             self.logs_dir,
         ):

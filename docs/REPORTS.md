@@ -1,5 +1,24 @@
 # Reports
 
+The primary deliverable is `Portfolio_Intelligence.html`, a self-contained offline report with no
+CDN or network dependency. It includes coverage, search, application drill-down, semantic clusters,
+both architecture tracks, and migration waves. The embedded content-security policy disables all
+network sources.
+
+`Portfolio_Analysis.xlsx` retains the original detailed sheets and adds a dashboard, Application
+Portfolio, Target Architecture, App-Target Crosswalk, Migration Roadmap, Semantic Findings, Review
+Queue, and Method & Provenance. Review Queue decisions are constrained to `Accept`, `Edit`, or
+`Reject`.
+
+`Portfolio_Analysis.pdf` is a concise executive and architecture brief. Raw evidence remains in the
+workbook and normalized CSV files so oversized evidence does not make the PDF unreadable.
+
+Semantic runs add `semantic_applications.csv`, `semantic_findings.csv`,
+`portfolio_clusters.csv`, `architecture_components.csv`, `architecture_relations.csv`,
+`application_target_map.csv`, `migration_waves.csv`, `architecture_model.json`, and portable
+`Target_Architecture.md` Mermaid diagrams. `report_manifest.json` includes output checksums and
+semantic provenance.
+
 Excel is the primary detailed report. It includes portfolio and per-application coverage,
 applications, artifacts, datasources, dependencies, capabilities, recommendations, evidence, and
 staging errors. Coverage distinguishes a completed analysis with zero findings from an application
