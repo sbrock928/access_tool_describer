@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from portfolio_analyzer.semantic.model_store import APPROVED_MODEL
 
+QUICK_MODE_MAX_OBJECTS = 5
+
 
 class LocalModelSettings(BaseModel):
     """The single approved model; normal configuration cannot select another repository."""
@@ -110,6 +112,19 @@ class SemanticSettings(BaseModel):
     policy: SemanticPolicySettings = Field(default_factory=SemanticPolicySettings)
     clustering: ClusteringSettings = Field(default_factory=ClusteringSettings)
     microsoft: MicrosoftArchitectureSettings = Field(default_factory=MicrosoftArchitectureSettings)
+
+
+def quick_mode_settings(settings: SemanticSettings) -> SemanticSettings:
+    """Return bounded test-only generation settings without changing the TOML file."""
+    execution = settings.execution.model_copy(
+        update={
+            "context_tokens": min(settings.execution.context_tokens, 4096),
+            "max_output_tokens": min(settings.execution.max_output_tokens, 768),
+            "max_object_characters": min(settings.execution.max_object_characters, 1000),
+            "max_profile_characters": min(settings.execution.max_profile_characters, 6000),
+        }
+    )
+    return settings.model_copy(update={"execution": execution})
 
 
 def load_semantic_settings(path: Path) -> SemanticSettings:

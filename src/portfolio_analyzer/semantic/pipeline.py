@@ -26,10 +26,16 @@ from portfolio_analyzer.models import (
     SemanticPortfolioState,
     SemanticRunMetadata,
     SemanticSource,
+    SimilarityEdge,
     StagedArtifact,
+    TargetArchitecture,
 )
 from portfolio_analyzer.semantic.architecture import synthesize_architecture
-from portfolio_analyzer.semantic.config import SemanticSettings
+from portfolio_analyzer.semantic.config import (
+    QUICK_MODE_MAX_OBJECTS,
+    SemanticSettings,
+    quick_mode_settings,
+)
 from portfolio_analyzer.semantic.graph import build_similarity_graph
 from portfolio_analyzer.semantic.model_store import verify_model_directory
 from portfolio_analyzer.semantic.provider import SemanticProvider, SemanticProviderError
@@ -109,6 +115,7 @@ class _ClusterResponse(BaseModel):
 
 
 ProgressCallback = Callable[[str], None]
+CheckpointCallback = Callable[[SemanticPortfolioState], None]
 
 
 def run_semantic_pipeline(
@@ -126,13 +133,20 @@ def run_semantic_pipeline(
     tool_id: str | None = None,
     force: bool = False,
     progress: ProgressCallback | None = None,
+    checkpoint: CheckpointCallback | None = None,
+    run_mode: Literal["production", "quick"] = "production",
+    max_objects_per_application: int | None = None,
 ) -> SemanticPortfolioState:
     notify = progress or (lambda _message: None)
     _validate_model_configuration(settings)
     health = provider.health()
     provenance = _validated_provenance(health)
     if prior_state is not None and not _profile_cache_is_compatible(
-        prior_state, settings, provenance
+        prior_state,
+        settings,
+        provenance,
+        run_mode=run_mode,
+        max_objects_per_application=max_objects_per_application,
     ):
         notify("Prior semantic runtime provenance changed; refreshing every application profile")
         prior_state = None
@@ -161,7 +175,12 @@ def run_semantic_pipeline(
         else {}
     )
     unique_inventory = _unique_inventory(inventory)
-    profiles: list[SemanticApplicationProfile] = []
+    current_tool_ids = {record.tool_inventory_id for record in unique_inventory}
+    profile_map = {
+        tool_id: profile
+        for tool_id, profile in prior_profiles.items()
+        if tool_id in current_tool_ids
+    }
     errors: dict[str, str] = {}
     for record in unique_inventory:
         prior = prior_profiles.get(record.tool_inventory_id)
@@ -173,21 +192,32 @@ def run_semantic_pipeline(
             artifact_hashes[record.tool_inventory_id],
             settings,
             provenance,
+            run_mode=run_mode,
+            max_objects_per_application=max_objects_per_application,
         )
         selected = tool_id is None or record.tool_inventory_id == tool_id
         if prior and prior.input_fingerprint == fingerprint and (not force or not selected):
-            profiles.append(prior)
+            profile_map[record.tool_inventory_id] = prior
             continue
         if not selected:
-            if prior:
-                profiles.append(prior)
             continue
-        notify(f"Semantic profile: {record.tool_name}")
+        application_sources = sources_by_tool[record.tool_inventory_id]
+        selected_sources = _representative_sources(
+            application_sources,
+            max_objects_per_application,
+        )
+        if run_mode == "quick":
+            notify(
+                f"Semantic profile: {record.tool_name} "
+                f"(quick test: {len(selected_sources)}/{len(application_sources)} objects)"
+            )
+        else:
+            notify(f"Semantic profile: {record.tool_name}")
         try:
             profile = _profile_application(
                 provider,
                 record,
-                sources_by_tool[record.tool_inventory_id],
+                selected_sources,
                 evidence_by_tool[record.tool_inventory_id],
                 claims_by_tool[record.tool_inventory_id],
                 coverage_by_tool[record.tool_inventory_id],
@@ -195,12 +225,12 @@ def run_semantic_pipeline(
                 fingerprint,
                 settings,
                 provenance,
+                progress=notify,
             )
-            profiles.append(profile)
+            profile_map[record.tool_inventory_id] = profile
         except (SemanticProviderError, ValueError) as exc:
             errors[record.tool_inventory_id] = str(exc)
-            profiles.append(
-                SemanticApplicationProfile(
+            profile_map[record.tool_inventory_id] = SemanticApplicationProfile(
                     tool_inventory_id=record.tool_inventory_id,
                     tool_name=record.tool_name,
                     summary="Semantic interpretation failed and requires review.",
@@ -218,9 +248,27 @@ def run_semantic_pipeline(
                     status="failed",
                     error=str(exc),
                 )
+        if checkpoint is not None:
+            checkpoint_profiles = sorted(
+                profile_map.values(), key=lambda item: item.tool_name.casefold()
             )
+            checkpoint(
+                _semantic_state(
+                    settings,
+                    provenance,
+                    checkpoint_profiles,
+                    sources,
+                    evidence,
+                    claims,
+                    errors,
+                    run_mode=run_mode,
+                    run_status="in_progress",
+                    max_objects_per_application=max_objects_per_application,
+                )
+            )
+            notify(f"Checkpoint saved after {record.tool_name}")
 
-    profiles.sort(key=lambda item: item.tool_name.casefold())
+    profiles = sorted(profile_map.values(), key=lambda item: item.tool_name.casefold())
     edges, clusters = build_similarity_graph(
         [profile for profile in profiles if profile.status != "failed"],
         datasources,
@@ -242,9 +290,52 @@ def run_semantic_pipeline(
     )
     if architecture_error:
         errors["architecture"] = architecture_error
-    portfolio_fingerprint = _portfolio_fingerprint(profiles, claims, settings, provenance)
+    return _semantic_state(
+        settings,
+        provenance,
+        profiles,
+        sources,
+        evidence,
+        claims,
+        errors,
+        run_mode=run_mode,
+        run_status="complete",
+        max_objects_per_application=max_objects_per_application,
+        similarity_edges=edges,
+        clusters=clusters,
+        architecture=architecture,
+    )
+
+
+def _semantic_state(
+    settings: SemanticSettings,
+    provenance: dict[str, str],
+    profiles: list[SemanticApplicationProfile],
+    sources: list[SemanticSource],
+    evidence: list[Evidence],
+    claims: list[Claim],
+    errors: dict[str, str],
+    *,
+    run_mode: Literal["production", "quick"],
+    run_status: Literal["in_progress", "complete"],
+    max_objects_per_application: int | None,
+    similarity_edges: list[SimilarityEdge] | None = None,
+    clusters: list[PortfolioCluster] | None = None,
+    architecture: TargetArchitecture | None = None,
+) -> SemanticPortfolioState:
+    portfolio_fingerprint = _portfolio_fingerprint(
+        profiles,
+        claims,
+        settings,
+        provenance,
+        run_mode=run_mode,
+        max_objects_per_application=max_objects_per_application,
+    )
     return SemanticPortfolioState(
         metadata=SemanticRunMetadata(
+            run_mode=run_mode,
+            run_status=run_status,
+            max_objects_per_application=max_objects_per_application,
             semantic_version=SEMANTIC_ANALYSIS_VERSION,
             semantic_schema_version=SEMANTIC_SCHEMA_VERSION,
             prompt_version=SEMANTIC_PROMPT_VERSION,
@@ -269,11 +360,38 @@ def run_semantic_pipeline(
         observed_evidence_ids=sorted({item.evidence_id for item in evidence}),
         claims=claims,
         applications=profiles,
-        similarity_edges=edges,
-        clusters=clusters,
-        architecture=architecture,
+        similarity_edges=similarity_edges or [],
+        clusters=clusters or [],
+        architecture=architecture or TargetArchitecture(),
         errors=errors,
     )
+
+
+def _representative_sources(
+    sources: list[SemanticSource], limit: int | None
+) -> list[SemanticSource]:
+    """Select a repeatable, object-type-diverse subset for quick test runs."""
+    if limit is None or len(sources) <= limit:
+        return sources
+    grouped: dict[str, list[SemanticSource]] = defaultdict(list)
+    for source in sources:
+        grouped[source.object_type.casefold()].append(source)
+    for values in grouped.values():
+        values.sort(key=lambda item: (item.object_name.casefold(), item.source_id))
+    selected: list[SemanticSource] = []
+    type_names = sorted(grouped)
+    while len(selected) < limit:
+        added = False
+        for type_name in type_names:
+            values = grouped[type_name]
+            if values:
+                selected.append(values.pop(0))
+                added = True
+                if len(selected) == limit:
+                    break
+        if not added:
+            break
+    return selected
 
 
 def build_semantic_sources(
@@ -361,6 +479,18 @@ def evaluate_gold_set(
 ) -> dict[str, Any]:
     if state is None:
         return {"ready": False, "reason": "No semantic state is available."}
+    if state.metadata.run_status != "complete":
+        return {
+            "ready": False,
+            "passed": False,
+            "reason": "Semantic analysis is an in-progress checkpoint, not an acceptance run.",
+        }
+    if state.metadata.run_mode != "production":
+        return {
+            "ready": False,
+            "passed": False,
+            "reason": "Quick semantic results are test-only and cannot pass production acceptance.",
+        }
     ids_by_name = {record.tool_name.casefold(): record.tool_inventory_id for record in inventory}
     profiles = {profile.tool_inventory_id: profile for profile in state.applications}
     expected_size = min(20, len({record.tool_inventory_id for record in inventory}))
@@ -453,6 +583,11 @@ def semantic_state_is_current(
     artifacts: list[StagedArtifact],
     claims: list[Claim] | None = None,
 ) -> bool:
+    if state.metadata.run_status != "complete":
+        return False
+    effective_settings = (
+        quick_mode_settings(settings) if state.metadata.run_mode == "quick" else settings
+    )
     verified = verify_model_directory(settings.model.local_path)
     if (
         state.metadata.semantic_version != SEMANTIC_ANALYSIS_VERSION
@@ -464,9 +599,19 @@ def semantic_state_is_current(
         or state.metadata.model_revision != verified.manifest.revision
         or state.metadata.model_manifest_sha256 != verified.manifest.manifest_sha256
         or state.metadata.model_architecture != verified.manifest.architecture
-        or state.metadata.generation_parameters != settings.execution.model_dump(mode="json")
-        or state.metadata.clustering_parameters != settings.clustering.model_dump(mode="json")
-        or state.metadata.approved_services != settings.microsoft.approved_services
+        or state.metadata.generation_parameters
+        != effective_settings.execution.model_dump(mode="json")
+        or state.metadata.clustering_parameters
+        != effective_settings.clustering.model_dump(mode="json")
+        or state.metadata.approved_services != effective_settings.microsoft.approved_services
+        or (
+            state.metadata.run_mode == "quick"
+            and state.metadata.max_objects_per_application != QUICK_MODE_MAX_OBJECTS
+        )
+        or (
+            state.metadata.run_mode == "production"
+            and state.metadata.max_objects_per_application is not None
+        )
     ):
         return False
     if claims is not None and state.metadata.context_hash != _claims_hash(claims):
@@ -493,9 +638,15 @@ def _profile_application(
     fingerprint: str,
     settings: SemanticSettings,
     provenance: dict[str, str],
+    *,
+    progress: ProgressCallback | None = None,
 ) -> SemanticApplicationProfile:
     summaries: list[ObjectSemanticSummary] = []
-    for source in sources:
+    notify = progress or (lambda _message: None)
+    for index, source in enumerate(sources, start=1):
+        notify(
+            f"  Object {index}/{len(sources)}: {source.object_type} {source.object_name}"
+        )
         related = [
             item
             for item in evidence
@@ -778,6 +929,9 @@ def _application_fingerprint(
     artifact_hashes: list[str],
     settings: SemanticSettings,
     provenance: dict[str, str],
+    *,
+    run_mode: Literal["production", "quick"],
+    max_objects_per_application: int | None,
 ) -> str:
     value = {
         "tool_id": tool_id,
@@ -792,6 +946,8 @@ def _application_fingerprint(
         "model_manifest_sha256": provenance["model_manifest_sha256"],
         "inference_library_version": provenance["inference_library_version"],
         "generation": settings.execution.model_dump(mode="json"),
+        "run_mode": run_mode,
+        "max_objects_per_application": max_objects_per_application,
     }
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -801,6 +957,9 @@ def _portfolio_fingerprint(
     claims: list[Claim],
     settings: SemanticSettings,
     provenance: dict[str, str],
+    *,
+    run_mode: Literal["production", "quick"],
+    max_objects_per_application: int | None,
 ) -> str:
     value = {
         "profiles": [profile.input_fingerprint for profile in profiles],
@@ -810,6 +969,8 @@ def _portfolio_fingerprint(
         "similarity_version": DETERMINISTIC_SIMILARITY_VERSION,
         "clustering": settings.clustering.model_dump(mode="json"),
         "services": settings.microsoft.approved_services,
+        "run_mode": run_mode,
+        "max_objects_per_application": max_objects_per_application,
     }
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -1020,10 +1181,15 @@ def _profile_cache_is_compatible(
     state: SemanticPortfolioState,
     settings: SemanticSettings,
     provenance: dict[str, str],
+    *,
+    run_mode: Literal["production", "quick"],
+    max_objects_per_application: int | None,
 ) -> bool:
     metadata = state.metadata
     return bool(
         metadata.semantic_version == SEMANTIC_ANALYSIS_VERSION
+        and metadata.run_mode == run_mode
+        and metadata.max_objects_per_application == max_objects_per_application
         and metadata.semantic_schema_version == SEMANTIC_SCHEMA_VERSION
         and metadata.prompt_version == SEMANTIC_PROMPT_VERSION
         and metadata.static_analysis_version == STATIC_ANALYSIS_VERSION

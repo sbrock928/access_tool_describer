@@ -350,6 +350,9 @@ class TargetArchitecture(BaseModel):
 
 
 class SemanticRunMetadata(BaseModel):
+    run_mode: Literal["production", "quick"] = "production"
+    run_status: Literal["in_progress", "complete"] = "complete"
+    max_objects_per_application: int | None = None
     semantic_version: str
     semantic_schema_version: str
     prompt_version: str

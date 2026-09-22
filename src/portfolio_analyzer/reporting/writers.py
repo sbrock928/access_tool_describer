@@ -363,6 +363,12 @@ def _portfolio_summary_sheet(
     sheet = workbook.create_sheet("Portfolio Summary")
     sheet.sheet_view.showGridLines = False
     sheet.sheet_view.zoomScale = 75
+    if semantic is not None and semantic.metadata.run_mode == "quick":
+        sheet.merge_cells("A1:F1")
+        sheet["A1"] = "TEST ONLY — QUICK SEMANTIC MODE — NOT FOR PRODUCTION ACCEPTANCE"
+        sheet["A1"].fill = PatternFill("solid", fgColor="A33B35")
+        sheet["A1"].font = Font(name="Arial", bold=True, color="FFFFFF")
+        sheet["A1"].alignment = Alignment(horizontal="center")
     sheet.merge_cells("A2:F2")
     sheet["A2"] = "Access Portfolio Intelligence"
     sheet["A2"].font = Font(name="Arial", size=16, bold=True, color="123047")
@@ -885,6 +891,12 @@ def _method_sheet(
         rows.extend(
             [
                 ["Semantic version", metadata.semantic_version],
+                ["Run mode", metadata.run_mode],
+                ["Run status", metadata.run_status],
+                [
+                    "Maximum semantic objects per application",
+                    metadata.max_objects_per_application or "All",
+                ],
                 ["Schema version", metadata.semantic_schema_version],
                 ["Prompt version", metadata.prompt_version],
                 ["Static analysis version", metadata.static_analysis_version],
@@ -994,6 +1006,20 @@ def write_executive_pdf(
     styles.add(
         ParagraphStyle(name="ReportBody", parent=styles["BodyText"], fontSize=9.5, leading=14)
     )
+    styles.add(
+        ParagraphStyle(
+            name="TestOnly",
+            parent=styles["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=11,
+            leading=15,
+            textColor=colors.HexColor("#A33B35"),
+            borderColor=colors.HexColor("#A33B35"),
+            borderWidth=1,
+            borderPadding=8,
+            spaceAfter=14,
+        )
+    )
     document = SimpleDocTemplate(
         str(path),
         pagesize=letter,
@@ -1005,6 +1031,13 @@ def write_executive_pdf(
         author="Access Portfolio Analyzer",
     )
     story: list[object] = []
+    if semantic is not None and semantic.metadata.run_mode == "quick":
+        story.append(
+            Paragraph(
+                "TEST ONLY — QUICK SEMANTIC MODE — NOT FOR PRODUCTION ACCEPTANCE",
+                styles["TestOnly"],
+            )
+        )
     story.extend(
         [
             Paragraph("Access Portfolio Analysis", styles["ReportTitle"]),

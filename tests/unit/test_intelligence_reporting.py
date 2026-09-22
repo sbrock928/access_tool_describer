@@ -265,6 +265,33 @@ def test_semantic_reports_are_offline_traceable_and_reviewable(tmp_path: Path) -
     assert '"sha256"' in manifest_path.read_text(encoding="utf-8")
 
 
+def test_quick_semantic_workbook_is_visibly_test_only(tmp_path: Path) -> None:
+    state = _state()
+    state.metadata.run_mode = "quick"
+    state.metadata.max_objects_per_application = 5
+    workbook_path = tmp_path / "Quick_Analysis.xlsx"
+    write_workbook(
+        workbook_path,
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        semantic=state,
+        semantic_status="TEST ONLY — QUICK MODE",
+    )
+
+    workbook = load_workbook(workbook_path)
+    assert "TEST ONLY" in workbook["Portfolio Summary"]["A1"].value
+    provenance = {
+        row[0].value: row[1].value
+        for row in workbook["Method & Provenance"].iter_rows(min_row=2, max_col=2)
+    }
+    assert provenance["Run mode"] == "quick"
+    assert provenance["Maximum semantic objects per application"] == 5
+
+
 def test_synthetic_500_application_graph_and_reports_stay_bounded(tmp_path: Path) -> None:
     base = _state()
     profiles = []

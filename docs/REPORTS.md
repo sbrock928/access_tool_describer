@@ -22,6 +22,11 @@ Semantic runs add `semantic_applications.csv`, `semantic_findings.csv`,
 `Target_Architecture.md` Mermaid diagrams. `report_manifest.json` includes output checksums and
 semantic provenance.
 
+Quick semantic runs are never presented as production results. The Excel summary and executive PDF
+carry a prominent `TEST ONLY` warning, the HTML semantic status identifies quick mode, and the
+report manifest records the run mode, object limit, effective generation bounds, and completion
+status. Production-required reporting rejects quick state.
+
 Excel is the primary detailed report. It includes portfolio and per-application coverage,
 applications, artifacts, datasources, dependencies, capabilities, recommendations, evidence, and
 staging errors. Coverage distinguishes a completed analysis with zero findings from an application

@@ -12,7 +12,7 @@ from collections.abc import Callable
 from functools import partial
 from multiprocessing.process import BaseProcess
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import typer
 
@@ -42,7 +42,9 @@ from portfolio_analyzer.reporting.intelligence import (
 )
 from portfolio_analyzer.reporting.writers import write_csv, write_executive_pdf, write_workbook
 from portfolio_analyzer.semantic.config import (
+    QUICK_MODE_MAX_OBJECTS,
     load_semantic_settings,
+    quick_mode_settings,
     write_semantic_settings_template,
 )
 from portfolio_analyzer.semantic.context import (
@@ -818,16 +820,33 @@ def semantic_check(workspace: Path = typer.Option(...)) -> None:
         raise typer.BadParameter("No semantic configuration found. Run 'semantic-init' first.")
     semantic_settings = load_semantic_settings(config_path)
     try:
+        state = read_semantic_state(_semantic_state_path(settings))
+    except ValueError as exc:
+        raise typer.BadParameter(f"Semantic state is incompatible; rerun semantic: {exc}") from exc
+    if state is not None and state.metadata.run_mode == "quick":
+        typer.echo(
+            json.dumps(
+                {
+                    "gold_set": {
+                        "ready": False,
+                        "passed": False,
+                        "reason": (
+                            "Quick semantic results are test-only and cannot pass production "
+                            "acceptance. Rerun semantic without --quick."
+                        ),
+                    }
+                },
+                indent=2,
+            )
+        )
+        raise typer.Exit(code=1)
+    try:
         provider = LocalTransformersProvider(semantic_settings)
         result = preflight_semantic_provider(semantic_settings, provider)
     except (OSError, SemanticProviderError, ValueError) as exc:
         raise typer.BadParameter(f"Offline semantic preflight failed: {exc}") from exc
     state_path = settings.analysis_dir / "staging_state.json"
     inventory, _ = _read_state(state_path) if state_path.exists() else ([], [])
-    try:
-        state = read_semantic_state(_semantic_state_path(settings))
-    except ValueError as exc:
-        raise typer.BadParameter(f"Semantic state is incompatible; rerun semantic: {exc}") from exc
     gold_result = evaluate_gold_set(read_gold_set(_semantic_gold_path(settings)), inventory, state)
     typer.echo(json.dumps({"provider": result, "gold_set": gold_result}, indent=2))
     if not gold_result.get("passed"):
@@ -839,13 +858,26 @@ def semantic_analysis(
     workspace: Path = typer.Option(...),
     tool_id: str | None = typer.Option(None, help="Refresh one tool inventory ID."),
     force: bool = typer.Option(False, help="Refresh compatible cached semantic results."),
+    quick: bool = typer.Option(
+        False,
+        "--quick",
+        help="TEST ONLY: sample five representative objects per application with smaller bounds.",
+    ),
 ) -> None:
     """Run resumable semantic analysis with the approved in-process model, fully offline."""
     settings = _settings(workspace)
     config_path = _semantic_config_path(settings)
     if not config_path.exists():
         raise typer.BadParameter("No semantic configuration found. Run 'semantic-init' first.")
-    semantic_settings = load_semantic_settings(config_path)
+    configured_settings = load_semantic_settings(config_path)
+    semantic_settings = quick_mode_settings(configured_settings) if quick else configured_settings
+    run_mode: Literal["production", "quick"] = "quick" if quick else "production"
+    object_limit = QUICK_MODE_MAX_OBJECTS if quick else None
+    if quick:
+        typer.echo(
+            "TEST ONLY quick semantic mode: at most five representative objects per application; "
+            "results cannot pass semantic-check or --semantic-mode require."
+        )
     try:
         provider = LocalTransformersProvider(semantic_settings)
     except (OSError, ValueError) as exc:
@@ -895,15 +927,21 @@ def semantic_analysis(
             tool_id=tool_id,
             force=force,
             progress=typer.echo,
+            checkpoint=partial(write_semantic_state, _semantic_state_path(settings)),
+            run_mode=run_mode,
+            max_objects_per_application=object_limit,
         )
     except (SemanticProviderError, ValueError) as exc:
         raise typer.BadParameter(f"Semantic analysis stopped safely: {exc}") from exc
     decisions = read_review_decisions(_review_decisions_path(settings))
-    if decisions:
+    if decisions and not quick:
         state = apply_review_decisions(state, decisions)
+    elif decisions and quick:
+        typer.echo("TEST ONLY quick mode does not apply retained production review decisions.")
     write_semantic_state(_semantic_state_path(settings), state)
+    mode_label = "TEST-ONLY quick" if quick else "production"
     typer.echo(
-        f"Semantic state written to {_semantic_state_path(settings)} "
+        f"{mode_label} semantic state written to {_semantic_state_path(settings)} "
         f"({len(state.applications)} profiles, {len(state.errors)} isolated errors)."
     )
 
@@ -918,6 +956,11 @@ def import_review(
     state = read_semantic_state(_semantic_state_path(settings))
     if state is None:
         raise typer.BadParameter("No semantic state found. Run 'semantic' first.")
+    if state.metadata.run_mode != "production":
+        raise typer.BadParameter(
+            "Review decisions cannot be imported into TEST-ONLY quick semantic results. "
+            "Rerun semantic without --quick first."
+        )
     imported = import_review_workbook(workbook)
     decisions = read_review_decisions(_review_decisions_path(settings))
     decisions.update(imported)
@@ -994,7 +1037,11 @@ def report(
                     artifacts,
                     claims,
                 ):
-                    semantic_state = apply_review_decisions(state, decisions)
+                    semantic_state = (
+                        state
+                        if state.metadata.run_mode == "quick"
+                        else apply_review_decisions(state, decisions)
+                    )
                     failed_profiles = sum(
                         item.status == "failed" for item in semantic_state.applications
                     )
@@ -1020,6 +1067,8 @@ def report(
                         f"{partial_profiles} partial; {failed_profiles} failed; "
                         f"{len(semantic_state.errors)} recorded errors"
                     )
+                    if semantic_state.metadata.run_mode == "quick":
+                        semantic_status = f"TEST ONLY — QUICK MODE; {semantic_status}"
                 else:
                     semantic_status = (
                         "stale or incompatible with current artifacts, context, versions, "
@@ -1027,7 +1076,12 @@ def report(
                     )
             except (OSError, ValueError) as exc:
                 semantic_status = f"unavailable: {exc}"
-        if semantic_mode == "require" and (semantic_state is None or semantic_partial):
+        test_only = bool(
+            semantic_state is not None and semantic_state.metadata.run_mode != "production"
+        )
+        if semantic_mode == "require" and (
+            semantic_state is None or semantic_partial or test_only
+        ):
             raise typer.BadParameter(
                 f"Complete current semantic results are required but unavailable: {semantic_status}"
             )

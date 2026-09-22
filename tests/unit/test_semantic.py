@@ -27,6 +27,7 @@ from portfolio_analyzer.semantic.architecture import synthesize_architecture
 from portfolio_analyzer.semantic.config import (
     ClusteringSettings,
     SemanticSettings,
+    quick_mode_settings,
 )
 from portfolio_analyzer.semantic.graph import build_similarity_graph
 from portfolio_analyzer.semantic.model_store import (
@@ -587,6 +588,93 @@ def test_compatible_state_resumes_profiles_deterministically() -> None:
     assert [item.input_fingerprint for item in second.applications] == [
         item.input_fingerprint for item in first.applications
     ]
+
+
+def test_quick_mode_samples_objects_checkpoints_and_is_not_acceptable() -> None:
+    inventory, artifacts, extracted, evidence, coverage = _portfolio()
+    application = extracted[0][1]
+    application.objects.extend(
+        [
+            ExtractedObject(
+                object_type=object_type,
+                name=f"Object{index}",
+                definition=f"Definition {index}",
+            )
+            for index, object_type in enumerate(
+                ("module", "macro", "report", "table", "query", "form"), start=1
+            )
+        ]
+    )
+    provider = FakeProvider()
+    checkpoints: list[Any] = []
+    progress: list[str] = []
+    state = run_semantic_pipeline(
+        quick_mode_settings(_settings()),
+        provider,
+        inventory,
+        artifacts,
+        extracted,
+        evidence,
+        [],
+        coverage,
+        [],
+        run_mode="quick",
+        max_objects_per_application=5,
+        checkpoint=checkpoints.append,
+        progress=progress.append,
+    )
+
+    assert provider.calls.count("object_semantic_summary") == 7
+    assert state.metadata.run_mode == "quick"
+    assert state.metadata.max_objects_per_application == 5
+    assert state.metadata.run_status == "complete"
+    assert len(checkpoints) == 2
+    assert all(item.metadata.run_status == "in_progress" for item in checkpoints)
+    assert [len(item.applications) for item in checkpoints] == [1, 2]
+    assert any("quick test: 5/8 objects" in message for message in progress)
+    assert any("Object 5/5" in message for message in progress)
+    result = evaluate_gold_set([], inventory, state)
+    assert result["passed"] is False
+    assert "test-only" in result["reason"]
+
+
+def test_quick_checkpoint_resumes_completed_application() -> None:
+    inventory, artifacts, extracted, evidence, coverage = _portfolio()
+    quick_settings = quick_mode_settings(_settings())
+    checkpoints: list[Any] = []
+    run_semantic_pipeline(
+        quick_settings,
+        FakeProvider(),
+        inventory[:1],
+        artifacts[:1],
+        extracted[:1],
+        [item for item in evidence if item.tool_inventory_id == "1"],
+        [],
+        coverage[:1],
+        [],
+        run_mode="quick",
+        max_objects_per_application=5,
+        checkpoint=checkpoints.append,
+    )
+    resumed_provider = FakeProvider()
+    resumed = run_semantic_pipeline(
+        quick_settings,
+        resumed_provider,
+        inventory[:1],
+        artifacts[:1],
+        extracted[:1],
+        [item for item in evidence if item.tool_inventory_id == "1"],
+        [],
+        coverage[:1],
+        [],
+        prior_state=checkpoints[-1],
+        run_mode="quick",
+        max_objects_per_application=5,
+    )
+
+    assert "object_semantic_summary" not in resumed_provider.calls
+    assert "semantic_application_profile" not in resumed_provider.calls
+    assert resumed.metadata.run_status == "complete"
 
 
 def test_model_manifest_change_invalidates_profile_cache() -> None:

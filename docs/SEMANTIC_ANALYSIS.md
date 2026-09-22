@@ -127,8 +127,8 @@ After acquisition, disconnect the workstation when policy requires it. These com
 network operation:
 
 ```powershell
-portfolio-analyzer semantic-check --workspace .\workspace
 portfolio-analyzer semantic --workspace .\workspace
+portfolio-analyzer semantic-check --workspace .\workspace
 portfolio-analyzer report --workspace .\workspace --semantic-mode auto
 ```
 
@@ -202,13 +202,48 @@ portfolio-analyzer semantic --workspace .\workspace --tool-id 12345
 portfolio-analyzer semantic --workspace .\workspace --force
 ```
 
+The CLI writes an atomic `in_progress` semantic checkpoint after every newly processed
+application. Restarting the same command reuses compatible checkpointed profiles and continues the
+portfolio. It also prints progress for every selected Access object, so a long local generation is
+visible. `--force` deliberately regenerates selected compatible profiles.
+
+### Quick test mode
+
+Use quick mode for an end-to-end smoke test of local inference, schemas, evidence gating,
+clustering, architecture fallback, and reporting:
+
+```powershell
+portfolio-analyzer semantic --workspace .\workspace --quick
+portfolio-analyzer report --workspace .\workspace --semantic-mode auto
+```
+
+Quick mode retains the approved Granite model and all integrity/offline controls. For each
+application it deterministically selects at most five objects, round-robin across available object
+types, and caps execution at a 4,096-token context, 768 output tokens, 1,000 source characters per
+object, and 6,000 profile characters. It records `run_mode = quick`, the object limit, effective
+generation settings, and checkpoint status in semantic provenance.
+
+Quick outputs are deliberately test-only. The workbook and PDF carry a prominent warning, the HTML
+semantic status and report manifest identify quick mode, `semantic-check` cannot pass it,
+`report --semantic-mode require` rejects it, retained production review decisions are not applied,
+and review decisions cannot be imported from it. Run
+the production analysis without `--quick` before gold-set acceptance or decision-making:
+
+```powershell
+portfolio-analyzer semantic --workspace .\workspace
+portfolio-analyzer semantic-check --workspace .\workspace
+portfolio-analyzer report --workspace .\workspace --semantic-mode require
+```
+
 Atomic semantic state is fingerprinted by staged artifact hashes, evidence, claims, static,
 semantic, prompt and schema versions, model manifest hash, inference-library version, generation
-settings, deterministic similarity version/weights/thresholds, and approved service catalog.
+settings, run mode and object-selection limit, deterministic similarity
+version/weights/thresholds, and approved service catalog.
 Compatible application profiles are reused. The model is loaded once per run.
 
-Schema v2 deliberately does not reinterpret v1 endpoint metadata or persisted embeddings. Legacy
-state is detected with a clear rerun message; deterministic extraction and analysis remain intact.
+Schema v3 records production versus quick mode, checkpoint completion, and the object-selection
+limit. Compatible v2 state can be read but is cache-incompatible and is refreshed; v1 endpoint and
+embedding state remains invalid. Deterministic extraction and analysis remain intact.
 
 ## Confidence, review, and reporting
 

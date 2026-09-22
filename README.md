@@ -53,8 +53,8 @@ python -m pip install -c requirements\semantic-py313.lock -e ".[dev,windows,sema
 portfolio-analyzer semantic-init --workspace .\workspace
 portfolio-analyzer semantic-model-download --workspace .\workspace
 # Disconnect from external networks here when policy requires it.
-portfolio-analyzer semantic-check --workspace .\workspace
 portfolio-analyzer semantic --workspace .\workspace
+portfolio-analyzer semantic-check --workspace .\workspace
 portfolio-analyzer report --workspace .\workspace --semantic-mode auto
 ```
 
@@ -73,6 +73,12 @@ portfolio-analyzer import-review --workspace .\workspace `
   --workbook .\workspace\reports\Portfolio_Analysis.xlsx
 portfolio-analyzer report --workspace .\workspace
 ```
+
+For a faster end-to-end smoke test, use `portfolio-analyzer semantic --workspace .\workspace
+--quick`. Quick mode uses the same approved model but samples at most five representative objects
+per application and applies smaller generation bounds. Its state and reports are marked `TEST
+ONLY`; `semantic-check`, `--semantic-mode require`, and review import reject quick results. Each
+completed application is checkpointed so an interrupted quick or production run can resume.
 
 See [docs/SEMANTIC_ANALYSIS.md](docs/SEMANTIC_ANALYSIS.md) for model setup, security boundaries,
 gold-set evaluation, review import, and reproducible reruns.
