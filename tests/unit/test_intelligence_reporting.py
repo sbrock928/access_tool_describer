@@ -14,6 +14,7 @@ from portfolio_analyzer.models import (
     InventoryRecord,
     MigrationWave,
     PortfolioCluster,
+    SemanticApplicationIR,
     SemanticApplicationProfile,
     SemanticCoverage,
     SemanticFinding,
@@ -52,14 +53,15 @@ def _state() -> SemanticPortfolioState:
         proposed_disposition="replatform",
         confidence=Confidence.HIGH,
         findings=[finding],
+        application_ir_id="ir-test",
         semantic_coverage=SemanticCoverage(
             inventory_objects=12,
-            model_eligible_objects=5,
-            modeled_objects=5,
-            model_eligible_segments=8,
-            modeled_segments=8,
+            code_objects_available=5,
+            code_objects_inspected=5,
+            code_segments_available=8,
+            code_segments_inspected=8,
             object_type_inventory={"module": 5, "table": 7},
-            object_type_modeled={"module": 5},
+            object_type_inspected={"module": 5},
             complete_code_coverage=True,
         ),
         evidence_ids=["ev-1", "ev-2"],
@@ -125,6 +127,19 @@ def _state() -> SemanticPortfolioState:
             input_fingerprint="portfolio",
         ),
         observed_evidence_ids=["ev-1", "ev-2"],
+        application_irs=[
+            SemanticApplicationIR(
+                ir_id="ir-test",
+                tool_inventory_id="1",
+                ir_version="application-ir-v1",
+                input_fingerprint="ir-fingerprint",
+                code_object_count=5,
+                code_segment_count=8,
+                object_type_counts={"module": 5},
+                model_input_sha256="c" * 64,
+                model_input_characters=1200,
+            )
+        ],
         applications=[profile],
         similarity_edges=[
             SimilarityEdge(
@@ -230,7 +245,7 @@ def test_semantic_reports_are_offline_traceable_and_reviewable(tmp_path: Path) -
     assert workbook["Review Queue"].data_validations.count == 1
     assert len(workbook["Portfolio Summary"]._charts) == 5
     portfolio_headers = [cell.value for cell in workbook["Application Portfolio"][1]]
-    assert "Semantic Code Coverage" in portfolio_headers
+    assert "Deterministic Code Coverage" in portfolio_headers
     provenance = {
         row[0].value: row[1].value
         for row in workbook["Method & Provenance"].iter_rows(min_row=2, max_col=2)
@@ -265,12 +280,13 @@ def test_semantic_reports_are_offline_traceable_and_reviewable(tmp_path: Path) -
     assert "Observed dependency map" in html
     assert "Request table" in html
     assert "Observed sources" in html
-    assert "Semantic code coverage" in html
+    assert "Deterministic code coverage" in html
     assert "Owner claims" in html
     assert "AI proposals" in html
     assert "unknown-evidence" not in html
 
     outputs = write_semantic_datasets(tmp_path, state, {"1": "Request Tracker"})
+    assert (tmp_path / "semantic_application_irs.csv") in outputs
     mermaid_path = tmp_path / "Target_Architecture.md"
     write_architecture_mermaid(mermaid_path, state)
     assert "flowchart LR" in mermaid_path.read_text(encoding="utf-8")

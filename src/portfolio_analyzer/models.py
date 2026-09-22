@@ -203,33 +203,45 @@ class SemanticSource(BaseModel):
     segment_count: int = Field(default=1, ge=1)
 
 
-class SemanticBatchSummary(BaseModel):
-    """A resumable semantic reduction over source segments or earlier summaries."""
+class SemanticApplicationIR(BaseModel):
+    """Deterministic, auditable application facts supplied to the local model once."""
 
-    batch_id: str
+    ir_id: str
     tool_inventory_id: str
-    level: int = Field(default=0, ge=0)
-    source_ids: list[str] = Field(default_factory=list)
-    child_summary_ids: list[str] = Field(default_factory=list)
-    summary: str
-    business_terms: list[str] = Field(default_factory=list)
-    workflows: list[str] = Field(default_factory=list)
-    data_entities: list[str] = Field(default_factory=list)
-    evidence_ids: list[str] = Field(default_factory=list)
-    claim_ids: list[str] = Field(default_factory=list)
+    ir_version: str
     input_fingerprint: str
+    source_ids: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    code_object_count: int = Field(ge=0)
+    code_segment_count: int = Field(ge=0)
+    object_type_counts: dict[str, int] = Field(default_factory=dict)
+    object_names_by_type: dict[str, list[str]] = Field(default_factory=dict)
+    procedure_names: list[str] = Field(default_factory=list)
+    sql_operations: dict[str, int] = Field(default_factory=dict)
+    referenced_objects: list[str] = Field(default_factory=list)
+    identifier_terms: dict[str, int] = Field(default_factory=dict)
+    string_literals: dict[str, int] = Field(default_factory=dict)
+    technical_signals: dict[str, int] = Field(default_factory=dict)
+    signal_objects: dict[str, list[str]] = Field(default_factory=dict)
+    datasource_signatures: list[str] = Field(default_factory=list)
+    observed_inference_counts: dict[str, int] = Field(default_factory=dict)
+    model_input_sha256: str = ""
+    model_input_characters: int = Field(default=0, ge=0)
+    model_input_item_counts: dict[str, int] = Field(default_factory=dict)
+    model_input_omitted_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class SemanticCoverage(BaseModel):
-    """Auditable inventory and model coverage for one application."""
+    """Auditable deterministic inspection coverage for one application."""
 
     inventory_objects: int = Field(ge=0)
-    model_eligible_objects: int = Field(ge=0)
-    modeled_objects: int = Field(ge=0)
-    model_eligible_segments: int = Field(ge=0)
-    modeled_segments: int = Field(ge=0)
+    code_objects_available: int = Field(ge=0)
+    code_objects_inspected: int = Field(ge=0)
+    code_segments_available: int = Field(ge=0)
+    code_segments_inspected: int = Field(ge=0)
     object_type_inventory: dict[str, int] = Field(default_factory=dict)
-    object_type_modeled: dict[str, int] = Field(default_factory=dict)
+    object_type_inspected: dict[str, int] = Field(default_factory=dict)
+    model_input_kind: Literal["deterministic_application_ir"] = "deterministic_application_ir"
     complete_code_coverage: bool = False
 
 
@@ -273,7 +285,7 @@ class SemanticApplicationProfile(BaseModel):
     confidence: Confidence
     findings: list[SemanticFinding] = Field(default_factory=list)
     object_summaries: list[ObjectSemanticSummary] = Field(default_factory=list)
-    batch_summary_ids: list[str] = Field(default_factory=list)
+    application_ir_id: str | None = None
     semantic_coverage: SemanticCoverage | None = None
     open_questions: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
@@ -414,7 +426,7 @@ class SemanticPortfolioState(BaseModel):
     sources: list[SemanticSource] = Field(default_factory=list)
     observed_evidence_ids: list[str] = Field(default_factory=list)
     claims: list[Claim] = Field(default_factory=list)
-    batch_summaries: list[SemanticBatchSummary] = Field(default_factory=list)
+    application_irs: list[SemanticApplicationIR] = Field(default_factory=list)
     applications: list[SemanticApplicationProfile] = Field(default_factory=list)
     similarity_edges: list[SimilarityEdge] = Field(default_factory=list)
     clusters: list[PortfolioCluster] = Field(default_factory=list)

@@ -125,7 +125,7 @@ class LocalTransformersProvider:
         if require_full_input and len(user) > self.settings.execution.max_profile_characters:
             raise SemanticProviderError(
                 "Complete semantic input exceeds max_profile_characters; reduce the configured "
-                "batch/profile payload instead of truncating source data"
+                "application IR/profile payload instead of truncating source data"
             )
         upper = min(len(user), self.settings.execution.max_profile_characters)
 
@@ -140,7 +140,7 @@ class LocalTransformersProvider:
         if require_full_input:
             raise SemanticProviderError(
                 "Complete semantic input exceeds the model token budget; reduce the configured "
-                "batch/profile payload instead of truncating source data"
+                "application IR/profile payload instead of truncating source data"
             )
         upper -= 1
         lower = 0

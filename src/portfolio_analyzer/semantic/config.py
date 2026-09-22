@@ -33,14 +33,11 @@ class SemanticExecutionSettings(BaseModel):
     context_tokens: int = Field(default=8192, ge=2048, le=32768)
     max_output_tokens: int = Field(default=3072, ge=512, le=8192)
     max_object_characters: int = Field(default=6000, ge=500, le=20000)
-    max_batch_characters: int = Field(default=12000, ge=2000, le=50000)
     max_profile_characters: int = Field(default=24000, ge=2000, le=100000)
-    batch_output_tokens: int = Field(default=384, ge=128, le=1024)
-    profile_output_tokens: int = Field(default=1024, ge=256, le=4096)
-    cluster_output_tokens: int = Field(default=384, ge=128, le=1024)
-    architecture_output_tokens: int = Field(default=1536, ge=512, le=4096)
+    profile_output_tokens: int = Field(default=512, ge=256, le=4096)
+    architecture_output_tokens: int = Field(default=768, ge=512, le=4096)
     temperature: float = Field(default=0.0, ge=0.0, le=1.0)
-    device: str = "auto"
+    device: str = "cpu"
 
     @field_validator("device")
     @classmethod
@@ -54,8 +51,6 @@ class SemanticExecutionSettings(BaseModel):
     def validate_token_budget(self) -> SemanticExecutionSettings:
         if self.max_output_tokens >= self.context_tokens:
             raise ValueError("max_output_tokens must be smaller than context_tokens")
-        if self.max_batch_characters > self.max_profile_characters:
-            raise ValueError("max_batch_characters cannot exceed max_profile_characters")
         return self
 
 
@@ -128,13 +123,10 @@ def quick_mode_settings(settings: SemanticSettings) -> SemanticSettings:
             "context_tokens": min(settings.execution.context_tokens, 4096),
             "max_output_tokens": min(settings.execution.max_output_tokens, 768),
             "max_object_characters": min(settings.execution.max_object_characters, 1000),
-            "max_batch_characters": min(settings.execution.max_batch_characters, 4000),
             "max_profile_characters": min(settings.execution.max_profile_characters, 6000),
-            "batch_output_tokens": min(settings.execution.batch_output_tokens, 256),
-            "profile_output_tokens": min(settings.execution.profile_output_tokens, 768),
-            "cluster_output_tokens": min(settings.execution.cluster_output_tokens, 256),
+            "profile_output_tokens": min(settings.execution.profile_output_tokens, 512),
             "architecture_output_tokens": min(
-                settings.execution.architecture_output_tokens, 768
+                settings.execution.architecture_output_tokens, 512
             ),
         }
     )
@@ -166,14 +158,11 @@ local_path = "models/{APPROVED_MODEL.local_identifier}"
 context_tokens = 8192
 max_output_tokens = 3072
 max_object_characters = 6000
-max_batch_characters = 12000
 max_profile_characters = 24000
-batch_output_tokens = 384
-profile_output_tokens = 1024
-cluster_output_tokens = 384
-architecture_output_tokens = 1536
+profile_output_tokens = 512
+architecture_output_tokens = 768
 temperature = 0.0
-device = "auto"
+device = "cpu"
 
 [policy]
 retain_raw_prompts = false

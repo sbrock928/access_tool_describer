@@ -94,23 +94,9 @@ class FakeProvider:
         payload = json.loads(user.split("\n", 1)[1].rsplit("\n", 1)[0])
         evidence_ids = payload.get("allowed_evidence_ids", [])
         claim_ids = payload.get("allowed_claim_ids", [])
-        if schema_name in {"semantic_batch_summary", "semantic_batch_rollup"}:
-            return {
-                "summary": "Processes customer requests.",
-                "business_terms": ["request"],
-                "workflows": ["intake"],
-                "data_entities": ["customer"],
-                "evidence_ids": payload.get("allowed_evidence_ids", [])[:2],
-                "claim_ids": [],
-            }
         if schema_name == "semantic_application_profile":
             if self.malformed_profile:
                 return {"summary": "missing required fields"}
-            evidence_ids = evidence_ids or [
-                evidence_id
-                for item in payload.get("semantic_batch_summaries", [])
-                for evidence_id in item.get("evidence_ids", [])
-            ]
             return {
                 "summary": "Tracks requests and produces operational reporting.",
                 "business_purpose": "Request operations",
@@ -576,22 +562,25 @@ def test_pipeline_drops_unknown_citations_and_enforces_disposition_gates() -> No
         item.platform_service == "Azure Functions" for item in state.architecture.components
     )
     assert any("Hosting decision required" in item for item in state.architecture.open_questions)
-    assert provider.calls.count("semantic_batch_summary") == 2
+    assert provider.calls.count("semantic_application_profile") == 2
+    assert provider.calls.count("target_architecture") == 1
+    assert "semantic_batch_summary" not in provider.calls
+    assert "semantic_batch_rollup" not in provider.calls
+    assert "portfolio_cluster" not in provider.calls
     assert all(
         profile.semantic_coverage is not None
         and profile.semantic_coverage.complete_code_coverage
         for profile in state.applications
     )
-    assert all(summary.source_ids for summary in state.batch_summaries)
+    assert len(state.application_irs) == 2
+    assert all(item.source_ids for item in state.application_irs)
     limits = {schema_name: limit for schema_name, limit, _required in provider.output_limits}
-    assert limits["semantic_batch_summary"] == 384
-    assert limits["semantic_application_profile"] == 1024
-    assert limits["portfolio_cluster"] == 384
-    assert limits["target_architecture"] == 1536
+    assert limits["semantic_application_profile"] == 512
+    assert limits["target_architecture"] == 768
     assert all(
         required
         for schema_name, _limit, required in provider.output_limits
-        if schema_name in {"semantic_batch_summary", "semantic_application_profile"}
+        if schema_name == "semantic_application_profile"
     )
 
 
@@ -651,92 +640,108 @@ def test_semantic_sources_cover_complete_modules_and_only_code_behind_ui_objects
     assert table_sources[0].model_eligible is False
 
 
-def test_failed_application_resumes_from_completed_semantic_batches() -> None:
+def test_six_hundred_code_objects_still_use_one_profile_generation() -> None:
     inventory, artifacts, extracted, _evidence, coverage = _portfolio()
-    application = extracted[0][1]
-    application.objects = [
+    extracted[0][1].objects = [
         ExtractedObject(
             object_type="module",
-            name="LargeBusinessModule",
-            definition="\n".join(
-                f"Private Sub Procedure{index}()\n"
-                + (f"' procedure {index} body\n" * 70)
-                + "End Sub"
-                for index in range(6)
+            name=f"Module{index:03d}",
+            definition=(
+                f"Private Sub Work{index:03d}()\n"
+                f'DoCmd.OpenForm "Form{index:03d}"\nEnd Sub'
             ),
         )
+        for index in range(600)
     ]
-    base_settings = _settings()
-    settings = base_settings.model_copy(
-        update={
-            "execution": base_settings.execution.model_copy(
-                update={
-                    "max_object_characters": 500,
-                    "max_batch_characters": 2000,
-                }
-            )
-        }
+    provider = FakeProvider()
+
+    state = run_semantic_pipeline(
+        _settings(),
+        provider,
+        inventory[:1],
+        artifacts[:1],
+        extracted[:1],
+        [],
+        [],
+        coverage[:1],
+        [],
     )
 
-    class FailSecondBatchProvider(FakeProvider):
+    assert provider.calls.count("semantic_application_profile") == 1
+    assert "semantic_batch_summary" not in provider.calls
+    assert "portfolio_cluster" not in provider.calls
+    assert state.application_irs[0].code_object_count == 600
+    assert state.application_irs[0].code_segment_count == 600
+    assert "work000" in state.application_irs[0].identifier_terms
+    assert "Form000" in state.application_irs[0].string_literals
+    assert state.application_irs[0].model_input_characters <= 24000
+    assert state.application_irs[0].model_input_omitted_counts["code_objects"] > 0
+    assert state.applications[0].semantic_coverage is not None
+    assert state.applications[0].semantic_coverage.complete_code_coverage is True
+
+
+def test_failed_application_resume_reuses_completed_application() -> None:
+    inventory, artifacts, extracted, evidence, coverage = _portfolio()
+
+    class FailSecondProfileProvider(FakeProvider):
         def __init__(self) -> None:
             super().__init__()
-            self.batch_attempts = 0
+            self.profile_attempts = 0
 
         def complete_json(self, **kwargs: Any) -> dict[str, Any]:
-            if kwargs["schema_name"] == "semantic_batch_summary":
-                self.batch_attempts += 1
-                if self.batch_attempts == 2:
+            if kwargs["schema_name"] == "semantic_application_profile":
+                self.profile_attempts += 1
+                if self.profile_attempts == 2:
                     raise SemanticProviderError("simulated interruption")
             return super().complete_json(**kwargs)
 
     failed = run_semantic_pipeline(
-        settings,
-        FailSecondBatchProvider(),
-        inventory[:1],
-        artifacts[:1],
-        extracted[:1],
+        _settings(),
+        FailSecondProfileProvider(),
+        inventory,
+        artifacts,
+        extracted,
+        evidence,
         [],
-        [],
-        coverage[:1],
+        coverage,
         [],
     )
-    assert failed.applications[0].status == "failed"
-    assert len(failed.batch_summaries) == 1
+    assert failed.applications[0].status != "failed"
+    assert failed.applications[1].status == "failed"
+    assert len(failed.application_irs) == 2
 
     clean_provider = FakeProvider()
     run_semantic_pipeline(
-        settings,
+        _settings(),
         clean_provider,
-        inventory[:1],
-        artifacts[:1],
-        extracted[:1],
+        inventory,
+        artifacts,
+        extracted,
+        evidence,
         [],
-        [],
-        coverage[:1],
+        coverage,
         [],
     )
     resumed_provider = FakeProvider()
     progress: list[str] = []
     resumed = run_semantic_pipeline(
-        settings,
+        _settings(),
         resumed_provider,
-        inventory[:1],
-        artifacts[:1],
-        extracted[:1],
+        inventory,
+        artifacts,
+        extracted,
+        evidence,
         [],
-        [],
-        coverage[:1],
+        coverage,
         [],
         prior_state=failed,
         progress=progress.append,
     )
 
-    assert resumed.applications[0].status != "failed"
-    assert any("Reused semantic batch" in message for message in progress)
-    assert resumed_provider.calls.count("semantic_batch_summary") == (
-        clean_provider.calls.count("semantic_batch_summary") - 1
-    )
+    assert all(item.status != "failed" for item in resumed.applications)
+    assert any("Reused compatible checkpoint" in message for message in progress)
+    assert resumed_provider.calls.count("semantic_application_profile") == 1
+    assert clean_provider.calls.count("semantic_application_profile") == 2
 
 
 def test_schema_failure_is_isolated_per_application() -> None:
@@ -831,21 +836,21 @@ def test_quick_mode_samples_objects_checkpoints_and_is_not_acceptable() -> None:
         progress=progress.append,
     )
 
-    assert provider.calls.count("semantic_batch_summary") == 2
+    assert provider.calls.count("semantic_application_profile") == 2
+    assert "semantic_batch_summary" not in provider.calls
     assert state.metadata.run_mode == "quick"
     assert state.metadata.max_objects_per_application == 5
     assert state.metadata.run_status == "complete"
-    assert len(checkpoints) == 4
+    assert len(checkpoints) == 2
     assert all(item.metadata.run_status == "in_progress" for item in checkpoints)
-    assert [len(item.applications) for item in checkpoints] == [0, 1, 1, 2]
+    assert [len(item.applications) for item in checkpoints] == [1, 2]
     assert any("quick test: 5/6 code-bearing objects" in message for message in progress)
-    assert any("Starting semantic batch" in message for message in progress)
-    assert any("Completed semantic batch" in message for message in progress)
-    assert any("Batch checkpoint saved" in message for message in progress)
+    assert any("Building deterministic application IR" in message for message in progress)
+    assert any("Built deterministic application IR" in message for message in progress)
     assert any("Completed semantic profile" in message for message in progress)
     assert any("Checkpoint saved" in message for message in progress)
     assert state.applications[0].semantic_coverage is not None
-    assert state.applications[0].semantic_coverage.modeled_objects == 5
+    assert state.applications[0].semantic_coverage.code_objects_inspected == 5
     assert state.applications[0].semantic_coverage.complete_code_coverage is False
     assert progress[-1] == "Completed semantic pipeline"
     result = evaluate_gold_set([], inventory, state)

@@ -46,7 +46,8 @@ acquisition is the only network-enabled phase. Analysis uses an integrity-verifi
 sets Hugging Face and Transformers offline mode, passes `local_files_only=True` and
 `trust_remote_code=False`, and has no HTTP provider, API key, telemetry, or hosted fallback.
 Portfolio similarity is deterministic and explainable; it does not use embeddings or a vector
-database.
+database. The default generation profile is tuned for a four-core CPU; GPU installations must
+explicitly select `auto` or `cuda` in `semantic.toml`.
 
 ```powershell
 python -m pip install -c requirements\semantic-py313.lock -e ".[dev,windows,semantic]"
@@ -77,12 +78,13 @@ portfolio-analyzer report --workspace .\workspace
 For a faster end-to-end smoke test, use `portfolio-analyzer semantic --workspace .\workspace
 --quick`. Quick mode uses the same approved model but samples at most five representative objects
 per application and includes every code segment of each selected object. Normal mode covers all
-modules, queries, macros, and form/report code-behind using bounded multi-object batches rather than
-one model call per object. Quick-mode state and reports are marked `TEST
-ONLY`; `semantic-check`, `--semantic-mode require`, and review import reject quick results. Each
-completed batch and application is checkpointed so an interrupted quick or production run can
-resume. Both modes print wall-clock timestamps plus per-step and total elapsed time for model calls
-and pipeline stages.
+modules, queries, macros, and form/report code-behind deterministically, reduces those facts to one
+bounded application IR, and makes exactly one profile-generation call per application. Cluster
+labels are deterministic; target architecture is the only optional portfolio-level generation.
+Quick-mode state and reports are marked `TEST ONLY`; `semantic-check`, `--semantic-mode require`,
+and review import reject quick results. Each application is checkpointed so an interrupted run can
+resume without regenerating completed profiles. Both modes print wall-clock timestamps plus
+per-step and total elapsed time for model calls and pipeline stages.
 
 See [docs/SEMANTIC_ANALYSIS.md](docs/SEMANTIC_ANALYSIS.md) for model setup, security boundaries,
 gold-set evaluation, review import, and reproducible reruns.

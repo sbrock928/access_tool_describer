@@ -562,8 +562,8 @@ def _semantic_workbook_sheets(
             [
                 "EUC Name",
                 "Analysis Coverage",
-                "Semantic Code Coverage",
-                "Modeled Code Segments",
+                "Deterministic Code Coverage",
+                "Inspected Code Segments",
                 "Business Purpose",
                 "Application Archetype",
                 "Proposed Disposition",
@@ -751,7 +751,8 @@ def _application_portfolio_row(
             else "Sampled or unavailable"
         ),
         (
-            f"{semantic_coverage.modeled_segments}/{semantic_coverage.model_eligible_segments}"
+            f"{semantic_coverage.code_segments_inspected}/"
+            f"{semantic_coverage.code_segments_available}"
             if semantic_coverage is not None
             else "0/0"
         ),
@@ -925,7 +926,7 @@ def _method_sheet(
                 ["Similarity version", metadata.deterministic_similarity_version],
                 ["Generated at", metadata.generated_at.isoformat()],
                 ["Semantic errors", len(semantic.errors)],
-                ["Checkpointed semantic batches", len(semantic.batch_summaries)],
+                ["Deterministic application IRs", len(semantic.application_irs)],
                 [
                     "Applications with complete code coverage",
                     sum(

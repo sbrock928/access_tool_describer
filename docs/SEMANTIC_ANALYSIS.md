@@ -11,11 +11,11 @@ verified staged Access copies
   -> metadata/static extraction
   -> deterministic SQL/VBA/dependency/capability analysis
   -> procedure-aware, redacted code segments
-  -> bounded semantic batches and hierarchical rollups
+  -> one deterministic, bounded application IR
   -> one approved local instruct model
-  -> schema-validated application profiles
+  -> one schema-validated profile generation per application
   -> deterministic weighted similarity and clustering
-  -> evidence-gated architecture proposals
+  -> at most one evidence-gated portfolio architecture generation
   -> review and reporting
 ```
 
@@ -101,9 +101,11 @@ contains the approved repository and immutable revision plus the local path, gen
 deterministic similarity weights/thresholds, redaction policy, and approved Microsoft service list.
 The repository and revision are validated against the compiled allowlist.
 
-Existing `semantic.toml` files do not need to be regenerated for batching. Missing batch and
-task-specific output settings receive the reviewed defaults shown by a newly initialized workspace;
-operators only need to add them when intentionally tuning those bounds.
+Existing `semantic.toml` files do not need to be regenerated. Legacy batch and cluster-generation
+keys are ignored because schema v5 no longer makes those calls. The generated execution profile is
+optimized for a four-core CPU: `device = "cpu"`, a 24,000-character application IR prompt bound,
+and small task-specific generation ceilings. GPU-equipped installations can explicitly change
+`device` to `auto` or `cuda` after validating the environment.
 
 During an explicitly approved connected acquisition window, run:
 
@@ -152,22 +154,26 @@ chat template.
 
 Original source paths never cross the staging boundary. Semantic analysis uses already extracted
 local snapshots and deterministic evidence only. Secrets, URI credentials, local paths, and network
-paths are redacted; code batches and profiles are bounded; source material is wrapped in
+paths are redacted; deterministic IRs and profiles are bounded; source material is wrapped in
 `UNTRUSTED_SOURCE_DATA` delimiters. Source VBA, SQL, descriptions, and model output are data, never
 instructions or executable content. Raw prompts are not persisted.
 
-Production inference covers all extracted standard modules, query SQL, macros, and form/report
+Production analysis covers all extracted standard modules, query SQL, macros, and form/report
 code-behind. VBA is partitioned at procedure boundaries and an oversized procedure is split without
-discarding its tail. Tables, linked-table metadata, references, and form/report layout remain in the
-deterministic inventory rather than consuming generation calls. Multiple complete code segments are
-packed into each model request. If a complete batch does not fit the token budget, analysis fails
-that application explicitly; it never silently truncates a code batch.
+discarding its tail. Every selected segment is inspected locally with deterministic SQL/VBA rules.
+The analyzer aggregates object names, procedures, identifier vocabulary, redacted string literals,
+SQL operations and references, Access actions, technical signals, datasource signatures, and
+observed static inferences into one application IR.
+The IR stores every inspected source ID and complete aggregate counts. Its prompt indexes are
+bounded fairly across categories and explicitly record included and omitted item counts; omitted
+index entries still contribute to aggregate totals and the IR fingerprint.
 
-Batch summaries use a 384-token output ceiling. Application profiles use 1,024 tokens, cluster
-labels 384, and architecture synthesis 1,536, all additionally capped by the global output limit.
-When batch summaries cannot all fit in an application prompt, bounded hierarchical rollups reduce
-them until every batch is represented. Reports and semantic state record modeled object/segment
-counts and whether code-bearing coverage is complete.
+The local model receives the derived IR, not hundreds of raw per-object prompts, and is called once
+per application with a 512-token profile ceiling. Cluster names and rationales are derived
+deterministically from grounded profile features and require no model call. Architecture synthesis
+uses at most one 768-token portfolio-level call and has a conservative deterministic fallback.
+Reports and semantic state distinguish deterministic inspection coverage from the bounded IR sent
+to the model.
 
 The provider requests one JSON object matching a supplied Pydantic JSON Schema. Returned text is
 parsed only with `json.loads` and then validated by the task-specific Pydantic model. There is no
@@ -221,13 +227,13 @@ portfolio-analyzer semantic --workspace .\workspace --tool-id 12345
 portfolio-analyzer semantic --workspace .\workspace --force
 ```
 
-The CLI writes an atomic `in_progress` semantic checkpoint after every completed semantic batch and
-every newly processed application. Restarting the same command reuses compatible batches and
-profiles, including batches completed before a later batch or application synthesis failed. Normal
-and quick runs print timestamped start/completion events for model loading, each batch and rollup,
-application synthesis, checkpoints, clustering, architecture synthesis, and final state writing.
-Every line includes elapsed time for the preceding step and total run. `--force` deliberately
-regenerates the selected application's batches and profile.
+The CLI writes an atomic `in_progress` semantic checkpoint after every newly processed application.
+Restarting the same command reuses compatible completed profiles and retries only failed or stale
+applications. Normal and quick runs print timestamped start/completion events for model loading,
+deterministic IR construction, the single application synthesis call, checkpoints, deterministic
+clustering, architecture synthesis, and final state writing. Every line includes elapsed time for
+the preceding step and total run. `--force` deliberately regenerates the selected application's IR
+and profile.
 
 ### Quick test mode
 
@@ -241,9 +247,9 @@ portfolio-analyzer report --workspace .\workspace --semantic-mode auto
 
 Quick mode retains the approved Granite model and all integrity/offline controls. For each
 application it deterministically selects at most five code-bearing objects, round-robin across
-available object types, and includes every segment of each selected object. It caps execution at a
-4,096-token context, 768 global/profile/architecture output tokens, 256 batch/cluster output tokens,
-1,000 characters per segment, 4,000 characters per batch, and 6,000 profile characters. It records
+available object types, and inspects every segment of each selected object. It caps execution at a
+4,096-token context, 768 global output tokens, 512 profile and architecture output tokens, 1,000
+characters per segment, and 6,000 application-IR prompt characters. It records
 `run_mode = quick`, the object limit, effective generation settings, checkpoint status, and sampled
 coverage in semantic provenance.
 
@@ -259,15 +265,16 @@ portfolio-analyzer semantic-check --workspace .\workspace
 portfolio-analyzer report --workspace .\workspace --semantic-mode require
 ```
 
-Atomic semantic state and each resumable batch are fingerprinted by staged artifact hashes,
-source-segment hashes, evidence, claims, static,
+Atomic semantic state and each application IR/profile are fingerprinted by staged artifact hashes,
+source-segment hashes, evidence, datasources, claims, static,
 semantic, prompt and schema versions, model manifest hash, inference-library version, generation
 settings, run mode and object-selection limit, deterministic similarity
 version/weights/thresholds, and approved service catalog.
-Compatible batch summaries and application profiles are reused. The model is loaded once per run.
+Compatible application profiles are reused. The model is loaded once per run.
 
-Schema v4 records source segments, resumable batch summaries, per-application semantic coverage,
-production versus quick mode, checkpoint completion, and the object-selection limit. Older
+Schema v5 records source segments, deterministic application IRs, deterministic inspection
+coverage, bounded model-input counts and hashes, production versus quick mode, checkpoint
+completion, and the object-selection limit. Older
 non-endpoint state may be readable but is cache-incompatible and is refreshed; v1 endpoint and
 embedding state remains invalid. Deterministic extraction and analysis remain intact.
 
