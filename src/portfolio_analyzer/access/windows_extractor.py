@@ -20,7 +20,7 @@ from portfolio_analyzer.staging.hashing import sha256_file
 
 
 class WindowsAccessExtractor:
-    version = "windows-com-metadata-v6"
+    version = "windows-com-metadata-v7"
 
     def __init__(self, settings: AnalyzerSettings) -> None:
         self.settings = settings

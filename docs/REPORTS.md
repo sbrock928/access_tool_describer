@@ -15,3 +15,6 @@ there are no records. Spreadsheet-bound text is escaped when it could otherwise 
 a formula.
 
 Stated inventory descriptions remain claims and are never blended into observed findings.
+All application labels and normalized CSV keys use `EUCTNAME`; numeric inventory IDs remain internal
+and are omitted from report outputs.
+Reports ignore stale analysis checkpoints from older rule versions or different staged hashes.

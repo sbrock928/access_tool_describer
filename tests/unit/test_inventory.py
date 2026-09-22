@@ -39,3 +39,16 @@ def test_inventory_requires_expected_columns(tmp_path: Path) -> None:
 
     with pytest.raises(InventoryValidationError, match="missing required columns"):
         load_inventory(path)
+
+
+def test_inventory_rejects_euc_names_that_collide_as_folders(tmp_path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["INVENTORY_ID", "EUCTNAME", "FILE_NAME", "FULLPATH", "DESCRIPTION"])
+    sheet.append(["1", "Month/End", "one.accdb", "/source/one.accdb", "One"])
+    sheet.append(["2", "Month:End", "two.accdb", "/source/two.accdb", "Two"])
+    path = tmp_path / "colliding.xlsx"
+    workbook.save(path)
+
+    with pytest.raises(InventoryValidationError, match="unique workspace folders"):
+        load_inventory(path)

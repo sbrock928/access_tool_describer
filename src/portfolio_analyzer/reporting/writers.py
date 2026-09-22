@@ -61,6 +61,7 @@ def write_workbook(
 ) -> None:
     recommendations = recommendations or []
     coverage = coverage or []
+    application_names = {item.tool_inventory_id: item.tool_name for item in inventory}
     workbook = Workbook()
     workbook.remove(workbook.active)
     analyzed = (
@@ -99,8 +100,7 @@ def write_workbook(
             "Analysis Coverage",
             [
                 [
-                    "Application",
-                    "Tool Name",
+                    "EUC Name",
                     "Staging",
                     "Extraction",
                     "Analysis",
@@ -114,7 +114,6 @@ def write_workbook(
                 ],
                 *[
                     [
-                        item.tool_inventory_id,
                         item.tool_name,
                         item.staging_status,
                         item.extraction_status,
@@ -136,15 +135,13 @@ def write_workbook(
         "Applications",
         [
             [
-                "Tool Inventory ID",
-                "Tool Name",
+                "EUC Name",
                 "Inventory File Name",
                 "Stated Description",
                 "Original Source Path",
             ],
             *[
                 [
-                    item.tool_inventory_id,
                     item.tool_name,
                     item.inventory_filename,
                     item.stated_description or "",
@@ -159,7 +156,7 @@ def write_workbook(
         "Supporting Files",
         [
             [
-                "Tool Inventory ID",
+                "EUC Name",
                 "Original Path",
                 "Local Staged Path",
                 "SHA-256",
@@ -168,7 +165,7 @@ def write_workbook(
             ],
             *[
                 [
-                    a.tool_inventory_id,
+                    _application_name(a.tool_inventory_id, application_names),
                     str(a.original_source_path),
                     str(a.local_staged_path or ""),
                     a.sha256 or "",
@@ -184,7 +181,7 @@ def write_workbook(
         "Data Sources",
         [
             [
-                "Application",
+                "EUC Name",
                 "Platform",
                 "Server",
                 "Database",
@@ -197,7 +194,7 @@ def write_workbook(
             ],
             *[
                 [
-                    d.tool_inventory_id,
+                    _application_name(d.tool_inventory_id, application_names),
                     d.platform,
                     d.server or "",
                     d.database or "",
@@ -216,10 +213,10 @@ def write_workbook(
         workbook,
         "Dependencies",
         [
-            ["Application", "Source", "Target", "Type", "Operation", "Confidence"],
+            ["EUC Name", "Source", "Target", "Type", "Operation", "Confidence"],
             *[
                 [
-                    d.tool_inventory_id,
+                    _application_name(d.tool_inventory_id, application_names),
                     d.source,
                     d.target,
                     d.dependency_type,
@@ -234,9 +231,15 @@ def write_workbook(
         workbook,
         "Application Capabilities",
         [
-            ["Application", "Capability", "Layer", "Confidence", "Evidence Items"],
+            ["EUC Name", "Capability", "Layer", "Confidence", "Evidence Items"],
             *[
-                [c.tool_inventory_id, c.capability, c.layer, c.confidence, len(c.evidence)]
+                [
+                    _application_name(c.tool_inventory_id, application_names),
+                    c.capability,
+                    c.layer,
+                    c.confidence,
+                    len(c.evidence),
+                ]
                 for c in capabilities
             ],
         ],
@@ -249,7 +252,7 @@ def write_workbook(
                 "Category",
                 "Title",
                 "Confidence",
-                "Affected Applications",
+                "Affected EUC Names",
                 "Application Count",
                 "Evidence Items",
                 "Rationale",
@@ -259,7 +262,10 @@ def write_workbook(
                     item.category,
                     item.title,
                     item.confidence,
-                    ", ".join(item.affected_tool_ids),
+                    ", ".join(
+                        _application_name(tool_id, application_names)
+                        for tool_id in item.affected_tool_ids
+                    ),
                     len(item.affected_tool_ids),
                     len(item.evidence),
                     item.rationale,
@@ -273,7 +279,7 @@ def write_workbook(
         "Evidence",
         [
             [
-                "Application",
+                "EUC Name",
                 "Artifact",
                 "Object Type",
                 "Object",
@@ -284,7 +290,7 @@ def write_workbook(
             ],
             *[
                 [
-                    e.tool_inventory_id,
+                    _application_name(e.tool_inventory_id, application_names),
                     e.artifact_path,
                     e.object_type,
                     e.object_name,
@@ -301,9 +307,13 @@ def write_workbook(
         workbook,
         "Extraction Errors",
         [
-            ["Application", "Original Source Path", "Error"],
+            ["EUC Name", "Original Source Path", "Error"],
             *[
-                [a.tool_inventory_id, str(a.original_source_path), a.error or ""]
+                [
+                    _application_name(a.tool_inventory_id, application_names),
+                    str(a.original_source_path),
+                    a.error or "",
+                ]
                 for a in artifacts
                 if a.error
             ],
@@ -353,6 +363,7 @@ def write_executive_pdf(
     datasources = datasources or []
     dependencies = dependencies or []
     coverage = coverage or []
+    application_names = {item.tool_inventory_id: item.tool_name for item in inventory}
     successful = sum(a.status.value == "staged" and a.is_primary for a in artifacts)
     failed = sum(a.status.value == "failed" and a.is_primary for a in artifacts)
     styles = getSampleStyleSheet()
@@ -447,9 +458,17 @@ def write_executive_pdf(
     story.append(PageBreak())
     story.extend(_dependency_section(datasources, dependencies, styles))
     story.append(PageBreak())
-    story.extend(_recommendation_section(recommendations, styles))
+    story.extend(_recommendation_section(recommendations, application_names, styles))
     story.append(PageBreak())
-    story.extend(_risk_and_next_steps_section(evidence, artifacts, coverage, styles))
+    story.extend(
+        _risk_and_next_steps_section(
+            evidence,
+            artifacts,
+            coverage,
+            application_names,
+            styles,
+        )
+    )
     document.build(story, onFirstPage=_footer, onLaterPages=_footer)
 
 
@@ -496,10 +515,10 @@ def _coverage_section(
                 Spacer(1, 0.18 * inch),
                 Paragraph("Applications requiring attention", styles["Heading2"]),
                 _table(
-                    [["Application", "Extraction", "Analysis", "Warnings"]]
+                    [["EUC Name", "Extraction", "Analysis", "Warnings"]]
                     + [
                         [
-                            item.tool_inventory_id,
+                            item.tool_name,
                             item.extraction_status.replace("_", " "),
                             item.analysis_status.replace("_", " "),
                             str(item.extraction_warning_count),
@@ -647,7 +666,9 @@ def _dependency_section(
 
 
 def _recommendation_section(
-    recommendations: list[Recommendation], styles: dict[str, ParagraphStyle]
+    recommendations: list[Recommendation],
+    application_names: dict[str, str],
+    styles: dict[str, ParagraphStyle],
 ) -> list[object]:
     content: list[object] = [
         Paragraph("Shared Capability and Consolidation Opportunities", styles["ReportHeading"])
@@ -686,7 +707,10 @@ def _recommendation_section(
         )
     )
     for recommendation in recommendations:
-        affected = ", ".join(recommendation.affected_tool_ids)
+        affected = ", ".join(
+            _application_name(tool_id, application_names)
+            for tool_id in recommendation.affected_tool_ids
+        )
         content.extend(
             [
                 Spacer(1, 0.14 * inch),
@@ -694,7 +718,7 @@ def _recommendation_section(
                 Paragraph(
                     f"<b>Candidate boundary:</b> {escape(recommendation.category)}<br/>"
                     f"<b>Confidence:</b> {escape(recommendation.confidence.value.title())}<br/>"
-                    f"<b>Applications affected:</b> {escape(affected)}<br/>"
+                    f"<b>EUC names affected:</b> {escape(affected)}<br/>"
                     f"<b>Evidence items:</b> {len(recommendation.evidence)}<br/>"
                     f"{escape(recommendation.rationale)}",
                     styles["ReportBody"],
@@ -708,6 +732,7 @@ def _risk_and_next_steps_section(
     evidence: list[Evidence],
     artifacts: list[StagedArtifact],
     coverage: list[AnalysisCoverage],
+    application_names: dict[str, str],
     styles: dict[str, ParagraphStyle],
 ) -> list[object]:
     from portfolio_analyzer.portfolio.recommendations import modernization_risks
@@ -717,9 +742,18 @@ def _risk_and_next_steps_section(
     ]
     risks = modernization_risks(evidence)
     if risks:
-        rows = [["Observed pattern", "Applications", "Modernization implication"]]
+        rows = [["Observed pattern", "EUC Names", "Modernization implication"]]
         rows.extend(
-            [[pattern, ", ".join(tools), implication] for pattern, tools, implication in risks]
+            [
+                [
+                    pattern,
+                    ", ".join(
+                        _application_name(tool_id, application_names) for tool_id in tools
+                    ),
+                    implication,
+                ]
+                for pattern, tools, implication in risks
+            ]
         )
         content.extend(
             [
@@ -834,3 +868,7 @@ def _spreadsheet_safe(value: object) -> object:
     if isinstance(value, str) and value.startswith(("=", "+", "-", "@")):
         return f"'{value}"
     return value
+
+
+def _application_name(tool_inventory_id: str, names: dict[str, str]) -> str:
+    return names.get(tool_inventory_id, "Unknown EUC")

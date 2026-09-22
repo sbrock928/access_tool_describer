@@ -25,6 +25,8 @@
 - Added normalized CSVs for coverage, evidence, datasources, dependencies, capabilities, and
   recommendations, including headers for empty datasets.
 - Protected Excel and CSV output from formula interpretation of evidence or inventory text.
+- Replaced inventory-ID workspace folders and report labels with validated, human-readable EUC
+  names while retaining inventory IDs only as internal provenance keys.
 
 ## Next priorities
 

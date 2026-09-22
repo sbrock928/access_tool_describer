@@ -31,3 +31,7 @@ rules evolve, without opening Access or the original source file again.
 `report` writes an Excel workbook, an executive PDF, and normalized CSV datasets. The reports make
 pipeline coverage explicit so zero findings are not confused with missing or incomplete analysis.
 See [docs/REPORTS.md](docs/REPORTS.md) and [docs/REFACTOR_PLAN.md](docs/REFACTOR_PLAN.md).
+
+Per-application folders under `workspace/staged_tools` and `workspace/extracted`, along with every
+application reference in generated reports, use the human-readable `EUCTNAME`. `INVENTORY_ID`
+remains an internal provenance key and is not exposed as the report label.

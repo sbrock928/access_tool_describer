@@ -28,15 +28,19 @@ from portfolio_analyzer.models import (
     InventoryRecord,
     StagedArtifact,
 )
+from portfolio_analyzer.naming import euc_directory_name
 from portfolio_analyzer.persistence.database import create_session_factory
 from portfolio_analyzer.persistence.repository import save_inventory_and_artifact
 from portfolio_analyzer.portfolio.recommendations import build_recommendations
 from portfolio_analyzer.reporting.coverage import build_analysis_coverage
 from portfolio_analyzer.reporting.writers import write_csv, write_executive_pdf, write_workbook
-from portfolio_analyzer.staging.copying import ArtifactStager
+from portfolio_analyzer.staging.copying import (
+    ArtifactStager,
+    migrate_legacy_application_directories,
+)
 
 app = typer.Typer(no_args_is_help=True, help="Static, evidence-driven Access portfolio analysis.")
-STATIC_ANALYSIS_VERSION = "static-analysis-v2"
+STATIC_ANALYSIS_VERSION = "static-analysis-v3"
 
 
 def _settings(workspace: Path) -> AnalyzerSettings:
@@ -104,6 +108,18 @@ def _eligible_staged_artifacts(
         and artifact.extension in {".accdb", ".mdb"}
         and (tool_id is None or artifact.tool_inventory_id == tool_id)
     ]
+
+
+def _inventory_names(settings: AnalyzerSettings) -> dict[str, str]:
+    state_path = settings.analysis_dir / "staging_state.json"
+    if not state_path.exists():
+        return {}
+    inventory, _ = _read_state(state_path)
+    return {item.tool_inventory_id: item.tool_name for item in inventory}
+
+
+def _euc_name(tool_inventory_id: str, names: dict[str, str]) -> str:
+    return names.get(tool_inventory_id, "Unknown EUC")
 
 
 class AccessExtractionTimeoutError(TimeoutError):
@@ -251,6 +267,8 @@ def stage(
     """Copy-only staging. Failures are recorded and never analyzed in place."""
     settings = _settings(workspace)
     records = load_inventory(inventory)
+    for message in migrate_legacy_application_directories(settings, records):
+        typer.echo(message)
     stager = ArtifactStager(settings)
     session_factory = create_session_factory(settings.analysis_dir / "evidence.sqlite")
     artifacts: list[StagedArtifact] = []
@@ -303,6 +321,7 @@ def extract(
         else {}
     )
     extractor = WindowsAccessExtractor(settings)
+    names = _inventory_names(settings)
     completed = {
         (result["tool_inventory_id"], result["sha256"])
         for result in previous.get("applications", [])
@@ -318,20 +337,21 @@ def extract(
     )
     for artifact in eligible:
         key = (artifact.tool_inventory_id, artifact.sha256)
+        euc_name = names.get(artifact.tool_inventory_id, artifact.tool_inventory_id)
         if key in completed:
-            typer.echo(f"[{artifact.tool_inventory_id}] unchanged; reusing prior extraction.")
+            typer.echo(f"[{euc_name}] unchanged; reusing prior extraction.")
             continue
         try:
             typer.echo(
-                f"[{artifact.tool_inventory_id}] extracting {artifact.filename} "
+                f"[{euc_name}] extracting {artifact.filename} "
                 f"(timeout: {timeout_seconds}s)..."
             )
             extracted = _extract_with_timeout(
                 artifact,
-                settings.extracted_dir / artifact.tool_inventory_id,
+                settings.extracted_dir / euc_directory_name(euc_name),
                 settings,
                 timeout_seconds,
-                partial(_echo_progress, artifact.tool_inventory_id),
+                partial(_echo_progress, euc_name),
             )
             results_by_key[key] = {
                 "tool_inventory_id": artifact.tool_inventory_id,
@@ -340,11 +360,11 @@ def extract(
                 "extracted": extracted.model_dump(mode="json"),
             }
             if extracted.extraction_errors:
-                typer.echo(f"[{artifact.tool_inventory_id}] completed with extraction warnings:")
+                typer.echo(f"[{euc_name}] completed with extraction warnings:")
                 for error in extracted.extraction_errors:
-                    typer.echo(f"[{artifact.tool_inventory_id}]   {error}")
+                    typer.echo(f"[{euc_name}]   {error}")
             else:
-                typer.echo(f"[{artifact.tool_inventory_id}] completed.")
+                typer.echo(f"[{euc_name}] completed.")
         except Exception as exc:
             # Continue the portfolio. This path never retries extraction against the source file.
             results_by_key[key] = {
@@ -353,7 +373,7 @@ def extract(
                 "extractor_version": extractor.version,
                 "error": str(exc),
             }
-            typer.echo(f"[{artifact.tool_inventory_id}] failed safely: {exc}")
+            typer.echo(f"[{euc_name}] failed safely: {exc}")
     results = list(results_by_key.values())
     output_path.write_text(json.dumps({"applications": results}, indent=2), encoding="utf-8")
     typer.echo(f"Extraction state written to {output_path}")
@@ -397,7 +417,11 @@ def analyze(
         else {}
     )
     completed = {
-        (result["tool_inventory_id"], result["sha256"])
+        (
+            result["tool_inventory_id"],
+            result["sha256"],
+            result.get("extractor_version"),
+        )
         for result in previous.get("applications", [])
         if result.get("analysis_version") == STATIC_ANALYSIS_VERSION and "evidence" in result
     }
@@ -414,14 +438,17 @@ def analyze(
         for result in extraction_state.get("applications", [])
         if "extracted" in result and (tool_id is None or result["tool_inventory_id"] == tool_id)
     ]
+    names = _inventory_names(settings)
     typer.echo(f"{len(eligible)} saved extraction snapshots are eligible for static analysis.")
     for result in eligible:
         key = (result["tool_inventory_id"], result["sha256"])
-        if key in completed:
-            typer.echo(f"[{result['tool_inventory_id']}] unchanged; reusing prior analysis.")
+        analysis_key = (*key, result.get("extractor_version"))
+        euc_name = names.get(result["tool_inventory_id"], result["tool_inventory_id"])
+        if analysis_key in completed:
+            typer.echo(f"[{euc_name}] unchanged; reusing prior analysis.")
             continue
         try:
-            typer.echo(f"[{result['tool_inventory_id']}] analyzing saved extraction snapshot...")
+            typer.echo(f"[{euc_name}] analyzing saved extraction snapshot...")
             extracted = ExtractedApplication.model_validate(result["extracted"])
             evidence, datasources, dependencies = analyze_application(extracted)
             results_by_key[key] = {
@@ -433,7 +460,7 @@ def analyze(
                 "datasources": [item.model_dump(mode="json") for item in datasources],
                 "dependencies": [item.model_dump(mode="json") for item in dependencies],
             }
-            typer.echo(f"[{result['tool_inventory_id']}] analysis complete.")
+            typer.echo(f"[{euc_name}] analysis complete.")
         except Exception as exc:
             results_by_key[key] = {
                 "tool_inventory_id": result["tool_inventory_id"],
@@ -442,7 +469,7 @@ def analyze(
                 "analysis_version": STATIC_ANALYSIS_VERSION,
                 "error": str(exc),
             }
-            typer.echo(f"[{result['tool_inventory_id']}] analysis failed safely: {exc}")
+            typer.echo(f"[{euc_name}] analysis failed safely: {exc}")
     output_path.write_text(
         json.dumps({"applications": list(results_by_key.values())}, indent=2), encoding="utf-8"
     )
@@ -467,21 +494,31 @@ def report(workspace: Path = typer.Option(...)) -> None:
     if not state_path.exists():
         raise typer.BadParameter("No staging state found. Run 'stage' first.")
     inventory, artifacts = _read_state(state_path)
+    application_names = {item.tool_inventory_id: item.tool_name for item in inventory}
     analysis_path = _analysis_state_path(settings)
     state = json.loads(analysis_path.read_text(encoding="utf-8")) if analysis_path.exists() else {}
+    current_artifacts = {
+        (item.tool_inventory_id, item.sha256) for item in artifacts if item.is_primary
+    }
+    analysis_results = [
+        result
+        for result in state.get("applications", [])
+        if result.get("analysis_version") == STATIC_ANALYSIS_VERSION
+        and (result.get("tool_inventory_id"), result.get("sha256")) in current_artifacts
+    ]
     evidence = [
         Evidence.model_validate(value)
-        for result in state.get("applications", [])
+        for result in analysis_results
         for value in result.get("evidence", [])
     ]
     datasources = [
         Datasource.model_validate(value)
-        for result in state.get("applications", [])
+        for result in analysis_results
         for value in result.get("datasources", [])
     ]
     dependencies = [
         Dependency.model_validate(value)
-        for result in state.get("applications", [])
+        for result in analysis_results
         for value in result.get("dependencies", [])
     ]
     capabilities = discover_capabilities(evidence)
@@ -496,7 +533,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
         inventory,
         artifacts,
         extraction_state,
-        state,
+        {"applications": analysis_results},
         capabilities,
     )
     write_workbook(
@@ -525,8 +562,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
         settings.reports_dir / "applications.csv",
         [
             {
-                "tool_inventory_id": item.tool_inventory_id,
-                "tool_name": item.tool_name,
+                "euc_name": item.tool_name,
                 "inventory_file_name": item.inventory_filename,
                 "stated_description": item.stated_description or "",
                 "original_source_path": str(item.filepath),
@@ -534,8 +570,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
             for item in inventory
         ],
         headers=[
-            "tool_inventory_id",
-            "tool_name",
+            "euc_name",
             "inventory_file_name",
             "stated_description",
             "original_source_path",
@@ -545,7 +580,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
         settings.reports_dir / "artifacts.csv",
         [
             {
-                "tool_inventory_id": item.tool_inventory_id,
+                "euc_name": _euc_name(item.tool_inventory_id, application_names),
                 "original_source_path": str(item.original_source_path),
                 "local_staged_path": str(item.local_staged_path or ""),
                 "sha256": item.sha256 or "",
@@ -555,7 +590,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
             for item in artifacts
         ],
         headers=[
-            "tool_inventory_id",
+            "euc_name",
             "original_source_path",
             "local_staged_path",
             "sha256",
@@ -567,8 +602,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
         settings.reports_dir / "analysis_coverage.csv",
         [
             {
-                "tool_inventory_id": item.tool_inventory_id,
-                "tool_name": item.tool_name,
+                "euc_name": item.tool_name,
                 "staging_status": item.staging_status,
                 "extraction_status": item.extraction_status,
                 "analysis_status": item.analysis_status,
@@ -583,8 +617,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
             for item in coverage
         ],
         headers=[
-            "tool_inventory_id",
-            "tool_name",
+            "euc_name",
             "staging_status",
             "extraction_status",
             "analysis_status",
@@ -601,7 +634,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
         settings.reports_dir / "evidence.csv",
         [
             {
-                "tool_inventory_id": item.tool_inventory_id,
+                "euc_name": _euc_name(item.tool_inventory_id, application_names),
                 "artifact_path": item.artifact_path,
                 "object_type": item.object_type,
                 "object_name": item.object_name,
@@ -613,7 +646,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
             for item in evidence
         ],
         headers=[
-            "tool_inventory_id",
+            "euc_name",
             "artifact_path",
             "object_type",
             "object_name",
@@ -627,7 +660,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
         settings.reports_dir / "datasources.csv",
         [
             {
-                "tool_inventory_id": item.tool_inventory_id,
+                "euc_name": _euc_name(item.tool_inventory_id, application_names),
                 "platform": item.platform,
                 "server": item.server or "",
                 "database": item.database or "",
@@ -641,7 +674,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
             for item in datasources
         ],
         headers=[
-            "tool_inventory_id",
+            "euc_name",
             "platform",
             "server",
             "database",
@@ -657,7 +690,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
         settings.reports_dir / "dependencies.csv",
         [
             {
-                "tool_inventory_id": item.tool_inventory_id,
+                "euc_name": _euc_name(item.tool_inventory_id, application_names),
                 "source": item.source,
                 "target": item.target,
                 "dependency_type": item.dependency_type,
@@ -668,7 +701,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
             for item in dependencies
         ],
         headers=[
-            "tool_inventory_id",
+            "euc_name",
             "source",
             "target",
             "dependency_type",
@@ -681,7 +714,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
         settings.reports_dir / "capabilities.csv",
         [
             {
-                "tool_inventory_id": item.tool_inventory_id,
+                "euc_name": _euc_name(item.tool_inventory_id, application_names),
                 "capability": item.capability,
                 "layer": item.layer,
                 "confidence": item.confidence.value,
@@ -690,7 +723,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
             for item in capabilities
         ],
         headers=[
-            "tool_inventory_id",
+            "euc_name",
             "capability",
             "layer",
             "confidence",
@@ -704,7 +737,10 @@ def report(workspace: Path = typer.Option(...)) -> None:
                 "category": item.category,
                 "title": item.title,
                 "confidence": item.confidence.value,
-                "affected_tool_ids": " | ".join(item.affected_tool_ids),
+                "affected_euc_names": " | ".join(
+                    _euc_name(tool_id, application_names)
+                    for tool_id in item.affected_tool_ids
+                ),
                 "application_count": len(item.affected_tool_ids),
                 "evidence_count": len(item.evidence),
                 "rationale": item.rationale,
@@ -715,7 +751,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
             "category",
             "title",
             "confidence",
-            "affected_tool_ids",
+            "affected_euc_names",
             "application_count",
             "evidence_count",
             "rationale",
