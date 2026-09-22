@@ -28,6 +28,8 @@ def build_similarity_graph(
             finding.label.casefold()
             for finding in profile.findings
             if finding.category in {"business_capability", "technical_capability", "workflow"}
+            and finding.evidence_ids
+            and finding.review_status != "rejected"
         }
         for profile in profiles
     }
@@ -134,6 +136,8 @@ def _cluster(
         evidence_ids.update(profile.evidence_ids)
         archetypes[profile.primary_archetype] += 1
         for finding in profile.findings:
+            if not finding.evidence_ids or finding.review_status == "rejected":
+                continue
             if finding.category == "business_capability":
                 capability_counts[finding.label] += 1
             elif finding.category in {"data_domain", "data_entity"}:

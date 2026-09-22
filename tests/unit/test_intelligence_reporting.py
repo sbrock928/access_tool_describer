@@ -11,6 +11,7 @@ from portfolio_analyzer.models import (
     ArchitectureComponent,
     ArchitectureRelation,
     Confidence,
+    Dependency,
     InventoryRecord,
     MigrationWave,
     PortfolioCluster,
@@ -177,6 +178,16 @@ def test_semantic_reports_are_offline_traceable_and_reviewable(tmp_path: Path) -
             analysis_status="complete",
         )
     ]
+    dependencies = [
+        Dependency(
+            tool_inventory_id="1",
+            source="Request form",
+            target="Request table",
+            dependency_type="form_record_source",
+            operation="READ_WRITE",
+            confidence=Confidence.HIGH,
+        )
+    ]
     workbook_path = tmp_path / "Portfolio_Analysis.xlsx"
     write_workbook(
         workbook_path,
@@ -184,7 +195,7 @@ def test_semantic_reports_are_offline_traceable_and_reviewable(tmp_path: Path) -
         [],
         [],
         [],
-        [],
+        dependencies,
         [],
         coverage=coverage,
         semantic=state,
@@ -201,6 +212,7 @@ def test_semantic_reports_are_offline_traceable_and_reviewable(tmp_path: Path) -
         "Method & Provenance",
     }.issubset(workbook.sheetnames)
     assert workbook["Review Queue"].data_validations.count == 1
+    assert len(workbook["Portfolio Summary"]._charts) == 5
 
     pdf_path = tmp_path / "Portfolio_Analysis.pdf"
     write_executive_pdf(
@@ -221,11 +233,17 @@ def test_semantic_reports_are_offline_traceable_and_reviewable(tmp_path: Path) -
         coverage,
         state,
         semantic_status="current",
+        dependencies=dependencies,
     )
     html = html_path.read_text(encoding="utf-8")
     assert "default-src 'none'" in html
     assert "https://" not in html
     assert "Request Tracker" in html
+    assert "Observed dependency map" in html
+    assert "Request table" in html
+    assert "Observed sources" in html
+    assert "Owner claims" in html
+    assert "AI proposals" in html
     assert "unknown-evidence" not in html
 
     outputs = write_semantic_datasets(tmp_path, state, {"1": "Request Tracker"})

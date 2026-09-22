@@ -791,7 +791,7 @@ def semantic_check(workspace: Path = typer.Option(...)) -> None:
         read_semantic_state(_semantic_state_path(settings)),
     )
     typer.echo(json.dumps({"provider": result, "gold_set": gold_result}, indent=2))
-    if gold_result.get("ready") and not gold_result.get("passed"):
+    if not gold_result.get("passed"):
         raise typer.Exit(code=1)
 
 
@@ -910,6 +910,7 @@ def report(
         capabilities,
     )
     semantic_state = None
+    semantic_partial = False
     semantic_status = "disabled by --semantic-mode off"
     decisions = read_review_decisions(_review_decisions_path(settings))
     if semantic_mode != "off":
@@ -940,11 +941,26 @@ def report(
                     failed_profiles = sum(
                         item.status == "failed" for item in semantic_state.applications
                     )
+                    partial_profiles = sum(
+                        item.status == "partial" for item in semantic_state.applications
+                    )
                     profile_total = len(semantic_state.applications)
                     application_total = len(set(application_names))
+                    complete_ids = {
+                        item.tool_inventory_id
+                        for item in semantic_state.applications
+                        if item.status == "complete"
+                    }
+                    semantic_partial = (
+                        len(complete_ids) != application_total
+                        or profile_total != application_total
+                        or failed_profiles > 0
+                        or partial_profiles > 0
+                        or bool(semantic_state.errors)
+                    )
                     semantic_status = (
-                        f"current: {profile_total}/{application_total} "
-                        f"application profiles; {failed_profiles} failed; "
+                        f"current: {len(complete_ids)}/{application_total} complete profiles; "
+                        f"{partial_profiles} partial; {failed_profiles} failed; "
                         f"{len(semantic_state.errors)} recorded errors"
                     )
                 else:
@@ -954,9 +970,10 @@ def report(
                     )
             except (OSError, ValueError) as exc:
                 semantic_status = f"unavailable: {exc}"
-        if semantic_mode == "require" and semantic_state is None:
+        if semantic_mode == "require" and (semantic_state is None or semantic_partial):
             raise typer.BadParameter(
-                f"Current semantic results are required but unavailable: {semantic_status}"
+                f"Complete current semantic results are required but unavailable: "
+                f"{semantic_status}"
             )
     produced: list[Path] = []
     workbook_path = settings.reports_dir / "Portfolio_Analysis.xlsx"
@@ -997,6 +1014,7 @@ def report(
         coverage,
         semantic_state,
         semantic_status=semantic_status,
+        dependencies=dependencies,
     )
     produced.append(html_path)
     write_csv(

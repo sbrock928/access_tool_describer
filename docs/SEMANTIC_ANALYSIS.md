@@ -56,14 +56,17 @@ portfolio-analyzer semantic-check --workspace .\workspace
 ```
 
 Preflight checks both loopback endpoints, strict structured JSON, evidence-ID preservation, and
-embedding dimensions. When reviewed gold-set rows exist, the command also evaluates:
+embedding dimensions. The command requires completed archetype and capability labels for the
+20-application template (or the full portfolio when it contains fewer than 20 applications), then
+evaluates:
 
 - 100% resolvable evidence/claim references;
 - at least 80% primary-archetype agreement;
 - at least 75% macro-F1 for business-capability labels.
 
-The check exits unsuccessfully when a populated gold set misses a threshold. Unsupported generated
-statements are already discarded before evaluation, so they cannot become high-confidence results.
+The check exits unsuccessfully when the gold set is incomplete or misses a threshold. Unsupported
+generated statements are already discarded before evaluation, so they cannot become
+high-confidence results.
 
 ## Run and resume
 

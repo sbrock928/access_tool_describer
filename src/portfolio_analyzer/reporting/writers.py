@@ -15,6 +15,7 @@ from openpyxl import Workbook
 from openpyxl.chart import BarChart, Reference
 from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 from reportlab.graphics.shapes import Drawing, Line, Rect, String
 from reportlab.lib import colors
@@ -100,6 +101,7 @@ def write_workbook(
         dependency_count=len(dependencies),
         recommendation_count=len(recommendations),
         coverage=coverage,
+        dependencies=dependencies,
         semantic=semantic,
         semantic_status=semantic_status,
     )
@@ -354,11 +356,13 @@ def _portfolio_summary_sheet(
     dependency_count: int,
     recommendation_count: int,
     coverage: list[AnalysisCoverage],
+    dependencies: list[Dependency],
     semantic: SemanticPortfolioState | None,
     semantic_status: str,
 ) -> None:
     sheet = workbook.create_sheet("Portfolio Summary")
     sheet.sheet_view.showGridLines = False
+    sheet.sheet_view.zoomScale = 75
     sheet.merge_cells("A2:F2")
     sheet["A2"] = "Access Portfolio Intelligence"
     sheet["A2"].font = Font(name="Arial", size=16, bold=True, color="123047")
@@ -408,6 +412,7 @@ def _portfolio_summary_sheet(
     sheet.merge_cells("B19:C20")
     sheet["B19"].alignment = Alignment(wrap_text=True, vertical="top")
 
+    archetypes: Counter[str] = Counter()
     if semantic:
         sheet["D18"] = "Application archetype"
         sheet["E18"] = "Applications"
@@ -417,21 +422,52 @@ def _portfolio_summary_sheet(
         ):
             sheet.cell(row_index, 4, label.title())
             sheet.cell(row_index, 5, count)
-        if archetypes:
-            chart = BarChart()
-            chart.type = "bar"
-            chart.style = 10
-            chart.title = "Application archetypes"
-            chart.height = 6.3
-            chart.width = 10.5
-            chart.legend = None
-            chart.y_axis.title = "Archetype"
-            chart.x_axis.title = "Applications"
-            data = Reference(sheet, min_col=5, min_row=18, max_row=18 + len(archetypes))
-            categories = Reference(sheet, min_col=4, min_row=19, max_row=18 + len(archetypes))
-            chart.add_data(data, titles_from_data=True)
-            chart.set_categories(categories)
-            sheet.add_chart(chart, "G18")
+
+    application_names = {item.tool_inventory_id: item.tool_name for item in coverage}
+    dependency_hotspots = Counter(item.tool_inventory_id for item in dependencies)
+    _summary_bar_chart(
+        sheet,
+        "Analysis coverage",
+        {key.replace("_", " ").title(): value for key, value in coverage_counts.items()},
+        start_column=24,
+        anchor="G5",
+    )
+    _summary_bar_chart(
+        sheet,
+        "Application archetypes",
+        dict(archetypes) if semantic else {},
+        start_column=26,
+        anchor="M5",
+    )
+    _summary_bar_chart(
+        sheet,
+        "Capability clusters",
+        {item.label: len(item.application_ids) for item in semantic.clusters} if semantic else {},
+        start_column=28,
+        anchor="G23",
+    )
+    _summary_bar_chart(
+        sheet,
+        "Dependency hotspots",
+        {
+            application_names.get(tool_id, tool_id): count
+            for tool_id, count in dependency_hotspots.most_common(10)
+        },
+        start_column=30,
+        anchor="M23",
+    )
+    _summary_bar_chart(
+        sheet,
+        "Migration waves",
+        {
+            f"Wave {item.wave}": len(item.application_ids)
+            for item in semantic.architecture.migration_waves
+        }
+        if semantic
+        else {},
+        start_column=32,
+        anchor="G41",
+    )
 
     _style_table_region(sheet, 5, 1, 5 + len(measures), 2)
     _style_table_region(sheet, 5, 4, 5 + len(coverage_counts), 5)
@@ -444,6 +480,50 @@ def _portfolio_summary_sheet(
     sheet.column_dimensions["E"].width = 16
     sheet.column_dimensions["F"].width = 3
     sheet.freeze_panes = "A5"
+
+
+def _summary_bar_chart(
+    sheet: Any,
+    title: str,
+    values: dict[str, int],
+    *,
+    start_column: int,
+    anchor: str,
+) -> None:
+    if not values:
+        return
+    ordered = sorted(values.items(), key=lambda item: (-item[1], item[0]))
+    sheet.cell(1, start_column, title)
+    sheet.cell(1, start_column + 1, "Applications")
+    for row_index, (label, value) in enumerate(ordered, start=2):
+        sheet.cell(row_index, start_column, label)
+        sheet.cell(row_index, start_column + 1, value)
+    chart = BarChart()
+    chart.type = "bar"
+    chart.style = 10
+    chart.title = title
+    chart.height = 4.4
+    chart.width = 8.3
+    chart.legend = None
+    chart.y_axis.title = "Category"
+    chart.x_axis.title = "Applications"
+    data = Reference(
+        sheet,
+        min_col=start_column + 1,
+        min_row=1,
+        max_row=1 + len(ordered),
+    )
+    categories = Reference(
+        sheet,
+        min_col=start_column,
+        min_row=2,
+        max_row=1 + len(ordered),
+    )
+    chart.add_data(data, titles_from_data=True)
+    chart.set_categories(categories)
+    sheet.add_chart(chart, anchor)
+    sheet.column_dimensions[get_column_letter(start_column)].hidden = True
+    sheet.column_dimensions[get_column_letter(start_column + 1)].hidden = True
 
 
 def _semantic_workbook_sheets(

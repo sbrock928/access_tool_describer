@@ -361,6 +361,20 @@ def evaluate_gold_set(
         return {"ready": False, "reason": "No semantic state is available."}
     ids_by_name = {record.tool_name.casefold(): record.tool_inventory_id for record in inventory}
     profiles = {profile.tool_inventory_id: profile for profile in state.applications}
+    expected_size = min(20, len({record.tool_inventory_id for record in inventory}))
+    reviewed_names = {
+        row.get("euc_name", "").casefold()
+        for row in rows
+        if row.get("euc_name", "").strip()
+        and any(
+            row.get(field, "").strip()
+            for field in (
+                "expected_primary_archetype",
+                "expected_business_capabilities",
+                "expected_disposition",
+            )
+        )
+    }
     archetype_total = archetype_matches = 0
     disposition_total = disposition_matches = 0
     capability_scores: list[float] = []
@@ -385,16 +399,34 @@ def evaluate_gold_set(
                 if finding.category == "business_capability" and finding.review_status != "rejected"
             }
             capability_scores.append(_set_f1(expected_capabilities, actual))
-    ready = bool(archetype_total or disposition_total or capability_scores)
+    ready = bool(
+        expected_size
+        and len(reviewed_names) >= expected_size
+        and archetype_total >= expected_size
+        and len(capability_scores) >= expected_size
+    )
     archetype_accuracy = archetype_matches / archetype_total if archetype_total else None
     disposition_accuracy = disposition_matches / disposition_total if disposition_total else None
     capability_macro_f1 = (
         sum(capability_scores) / len(capability_scores) if capability_scores else None
     )
+    reviewed_tool_ids = {
+        ids_by_name[name] for name in reviewed_names if name in ids_by_name
+    }
+    schema_validity = (
+        sum(
+            profiles.get(tool_id) is not None and profiles[tool_id].status != "failed"
+            for tool_id in reviewed_tool_ids
+        )
+        / expected_size
+        if expected_size
+        else 0.0
+    )
     citation_validity = _citation_validity(state)
     unsupported_high_confidence = _unsupported_high_confidence_count(state)
     passed = bool(
         ready
+        and schema_validity == 1.0
         and citation_validity == 1.0
         and unsupported_high_confidence == 0
         and (archetype_accuracy is None or archetype_accuracy >= 0.80)
@@ -406,12 +438,11 @@ def evaluate_gold_set(
         "archetype_accuracy": archetype_accuracy,
         "disposition_accuracy": disposition_accuracy,
         "capability_macro_f1": capability_macro_f1,
-        "schema_validity": 1.0,
+        "schema_validity": schema_validity,
         "citation_validity": citation_validity,
         "unsupported_high_confidence_conclusions": unsupported_high_confidence,
-        "reviewed_applications": len(
-            {row.get("euc_name", "") for row in rows if any(row.values())}
-        ),
+        "reviewed_applications": len(reviewed_names),
+        "required_applications": expected_size,
     }
 
 

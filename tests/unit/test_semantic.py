@@ -29,7 +29,7 @@ from portfolio_analyzer.semantic.config import (
     SemanticSettings,
 )
 from portfolio_analyzer.semantic.graph import build_similarity_graph
-from portfolio_analyzer.semantic.pipeline import run_semantic_pipeline
+from portfolio_analyzer.semantic.pipeline import evaluate_gold_set, run_semantic_pipeline
 from portfolio_analyzer.semantic.provider import LocalOpenAIProvider
 from portfolio_analyzer.semantic.review import (
     REVIEW_HEADERS,
@@ -300,12 +300,14 @@ def test_untrusted_packets_are_delimited_and_redacted() -> None:
     assert packet.startswith("<UNTRUSTED_SOURCE_DATA>")
     assert packet.endswith("</UNTRUSTED_SOURCE_DATA>")
     redacted = redact_semantic_text(
-        r"password=secret; path=C:\Users\analyst\source.accdb",
+        'password="secret with spaces"; '
+        r"path=C:\Users\analyst\source.accdb; postgresql://analyst:token@localhost/db",
         redact_paths=True,
         limit=500,
     )
     assert "secret" not in redacted
     assert "analyst" not in redacted
+    assert "token" not in redacted
 
 
 def test_pipeline_drops_unknown_citations_and_enforces_disposition_gates() -> None:
@@ -391,6 +393,49 @@ def test_compatible_state_resumes_profiles_and_embeddings_deterministically() ->
     ]
 
 
+def test_gold_set_requires_reviewed_archetypes_and_capabilities_for_full_sample() -> None:
+    inventory, artifacts, extracted, evidence, coverage = _portfolio()
+    state = run_semantic_pipeline(
+        _settings(),
+        FakeProvider(),
+        inventory,
+        artifacts,
+        extracted,
+        evidence,
+        [],
+        coverage,
+        [],
+    )
+    incomplete = evaluate_gold_set(
+        [
+            {
+                "euc_name": "Request Tool 1",
+                "expected_primary_archetype": "transactional workflow",
+                "expected_business_capabilities": "Request management",
+                "expected_disposition": "",
+            }
+        ],
+        inventory,
+        state,
+    )
+    assert not incomplete["ready"]
+    complete = evaluate_gold_set(
+        [
+            {
+                "euc_name": item.tool_name,
+                "expected_primary_archetype": "transactional workflow",
+                "expected_business_capabilities": "Request management",
+                "expected_disposition": "",
+            }
+            for item in inventory
+        ],
+        inventory,
+        state,
+    )
+    assert complete["required_applications"] == 2
+    assert complete["passed"]
+
+
 def test_similarity_threshold_requires_observed_corroboration() -> None:
     profiles = [
         SemanticApplicationProfile(
@@ -428,6 +473,41 @@ def test_similarity_threshold_requires_observed_corroboration() -> None:
     assert ("a", "b") in pairs
     assert ("a", "c") not in pairs
     assert sum(len(cluster.application_ids) for cluster in clusters) == 3
+
+
+def test_claim_only_capability_does_not_corroborate_similarity() -> None:
+    profiles = [
+        SemanticApplicationProfile(
+            tool_inventory_id=tool_id,
+            tool_name=tool_id,
+            summary="summary",
+            business_purpose="purpose",
+            primary_archetype="transactional workflow",
+            proposed_disposition="investigate",
+            confidence=Confidence.LOW,
+            findings=[
+                SemanticFinding(
+                    tool_inventory_id=tool_id,
+                    category="business_capability",
+                    label="Owner asserted overlap",
+                    claim_ids=[f"claim-{tool_id}"],
+                )
+            ],
+            claim_ids=[f"claim-{tool_id}"],
+            input_fingerprint=tool_id,
+            semantic_version="v1",
+            model_name="fake",
+            model_sha256="a" * 64,
+        )
+        for tool_id in ("a", "b")
+    ]
+    edges, _ = build_similarity_graph(
+        profiles,
+        {"a": [1.0, 0.0], "b": [0.8, 0.6]},
+        [],
+        ClusteringSettings(strong_similarity=0.88, corroborated_similarity=0.78),
+    )
+    assert edges == []
 
 
 def test_incomplete_extraction_forces_wave_zero_even_with_model_proposal() -> None:

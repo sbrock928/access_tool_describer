@@ -1,13 +1,15 @@
 # Reports
 
 The primary deliverable is `Portfolio_Intelligence.html`, a self-contained offline report with no
-CDN or network dependency. It includes coverage, search, application drill-down, semantic clusters,
-both architecture tracks, and migration waves. The embedded content-security policy disables all
-network sources.
+CDN or network dependency. It includes coverage, search, application drill-down, an observed
+dependency map, a semantic consolidation map, both architecture tracks, and migration waves.
+Drill-down keeps observed sources, owner claims, and AI proposals in visibly separate sections.
+The embedded content-security policy disables all network sources.
 
 `Portfolio_Analysis.xlsx` retains the original detailed sheets and adds a dashboard, Application
 Portfolio, Target Architecture, App-Target Crosswalk, Migration Roadmap, Semantic Findings, Review
-Queue, and Method & Provenance. Review Queue decisions are constrained to `Accept`, `Edit`, or
+Queue, and Method & Provenance. The dashboard charts coverage, archetypes, clusters, dependency
+hotspots, and migration waves. Review Queue decisions are constrained to `Accept`, `Edit`, or
 `Reject`.
 
 `Portfolio_Analysis.pdf` is a concise executive and architecture brief. Raw evidence remains in the

@@ -15,6 +15,7 @@ from typing import Any
 
 from portfolio_analyzer.models import (
     AnalysisCoverage,
+    Dependency,
     InventoryRecord,
     SemanticPortfolioState,
 )
@@ -305,12 +306,33 @@ def write_intelligence_html(
     state: SemanticPortfolioState | None,
     *,
     semantic_status: str,
+    dependencies: list[Dependency] | None = None,
 ) -> None:
     names = {item.tool_inventory_id: item.tool_name for item in inventory}
     profiles = state.applications if state else []
     mappings = state.architecture.mappings if state else []
     mapping_by_id = {item.tool_inventory_id: item for item in mappings}
     profile_by_id = {item.tool_inventory_id: item for item in profiles}
+    sources_by_id: dict[str, list[dict[str, str]]] = {}
+    claims_by_id: dict[str, list[dict[str, str]]] = {}
+    if state:
+        for source in state.sources:
+            sources_by_id.setdefault(source.tool_inventory_id, []).append(
+                {
+                    "source_id": source.source_id,
+                    "object": f"{source.object_type}: {source.object_name}",
+                    "excerpt": source.excerpt,
+                }
+            )
+        for claim in state.claims:
+            claims_by_id.setdefault(claim.tool_inventory_id, []).append(
+                {
+                    "claim_id": claim.claim_id,
+                    "field": claim.field,
+                    "value": claim.value,
+                    "source": claim.source,
+                }
+            )
     unique_ids = list(dict.fromkeys(item.tool_inventory_id for item in inventory))
     complete = len(
         {
@@ -339,6 +361,8 @@ def write_intelligence_html(
                 "findings": [item.model_dump(mode="json") for item in profile.findings]
                 if profile
                 else [],
+                "observed_sources": sources_by_id.get(tool_id, []),
+                "owner_claims": claims_by_id.get(tool_id, []),
                 "open_questions": profile.open_questions if profile else [],
             }
         )
@@ -367,6 +391,7 @@ def write_intelligence_html(
         wave_bars=_bars({f"Wave {key}": value for key, value in sorted(waves.items())}),
         architecture_html=_architecture_cards(state),
         cluster_svg=_cluster_svg(state, names),
+        dependency_svg=_dependency_svg(dependencies or [], names),
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(html, encoding="utf-8", newline="\n")
@@ -501,6 +526,51 @@ def _cluster_svg(state: SemanticPortfolioState | None, names: dict[str, str]) ->
     )
 
 
+def _dependency_svg(dependencies: list[Dependency], names: dict[str, str]) -> str:
+    if not dependencies:
+        return '<p class="muted">No observed dependencies were extracted.</p>'
+    visible = sorted(
+        dependencies,
+        key=lambda item: (names.get(item.tool_inventory_id, ""), item.source, item.target),
+    )[:100]
+    width = 1000
+    row_height = 54
+    height = len(visible) * row_height + 78
+    elements = [
+        '<text x="18" y="28" class="dependency-heading">Application</text>',
+        '<text x="340" y="28" class="dependency-heading">Source object</text>',
+        '<text x="700" y="28" class="dependency-heading">Target</text>',
+    ]
+    for index, item in enumerate(visible):
+        y = 58 + index * row_height
+        name = names.get(item.tool_inventory_id, "Unknown EUC")
+        title = (
+            f"{name}: {item.source} to {item.target}; "
+            f"{item.dependency_type}; {item.operation}; {item.confidence.value} confidence"
+        )
+        elements.extend(
+            [
+                f'<line x1="205" y1="{y}" x2="326" y2="{y}" class="edge" />',
+                f'<line x1="555" y1="{y}" x2="686" y2="{y}" class="edge" />',
+                f'<g class="dependency-node app-node" data-app-id="{escape(item.tool_inventory_id, quote=True)}" tabindex="0">'
+                f'<rect x="18" y="{y - 17}" width="187" height="34" rx="6" />'
+                f'<title>{escape(title)}</title><text x="29" y="{y + 4}">{escape(_short(name, 25))}</text></g>',
+                f'<g class="dependency-node"><rect x="326" y="{y - 17}" width="229" height="34" rx="6" />'
+                f'<title>{escape(item.source)}</title><text x="337" y="{y + 4}">{escape(_short(item.source, 31))}</text></g>',
+                f'<g class="dependency-node target"><rect x="686" y="{y - 17}" width="296" height="34" rx="6" />'
+                f'<title>{escape(item.target)}</title><text x="697" y="{y + 4}">{escape(_short(item.target, 40))}</text></g>',
+            ]
+        )
+    note = ""
+    if len(dependencies) > len(visible):
+        note = f'<p class="muted">Showing the first {len(visible)} of {len(dependencies)} observed dependency edges. The complete normalized set remains in the workbook and CSV.</p>'
+    return (
+        note
+        + f'<svg class="dependency-map" viewBox="0 0 {width} {height}" role="img" '
+        f'aria-label="Observed application dependencies">{"".join(elements)}</svg>'
+    )
+
+
 def _html_document(
     *,
     safe_json: str,
@@ -513,6 +583,7 @@ def _html_document(
     wave_bars: str,
     architecture_html: str,
     cluster_svg: str,
+    dependency_svg: str,
 ) -> str:
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -530,24 +601,26 @@ main{{max-width:1180px;margin:auto;padding:24px}}section{{display:none}}section.
 input[type=search]{{width:100%;max-width:520px;padding:11px;border:1px solid #aebdc5;border-radius:5px;margin-bottom:12px}}table{{width:100%;border-collapse:collapse;background:white}}th{{text-align:left;background:var(--navy);color:white;position:sticky;top:49px}}th,td{{padding:9px;border-bottom:1px solid var(--line);vertical-align:top}}tbody tr:hover{{background:#eef5f7}}button.link{{border:0;background:none;color:var(--blue);font-weight:700;cursor:pointer;text-align:left}}
 .pill{{display:inline-block;border-radius:12px;padding:2px 8px;background:#e6eef2;font-size:12px}}.pill.low,.pill.pending{{background:#fff0cf;color:#765000}}.pill.high,.pill.accepted{{background:#dcefe4;color:#21543c}}.pill.rejected{{background:#f7dedb;color:#7d2925}}
 .drawer{{position:fixed;right:-560px;top:0;width:min(560px,94vw);height:100vh;background:white;z-index:4;box-shadow:-5px 0 22px #0003;padding:24px;overflow:auto;transition:right .2s}}.drawer.open{{right:0}}.drawer button{{float:right}}.finding{{border-left:3px solid var(--cyan);padding:8px 12px;margin:9px 0;background:#f6fafb}}
-.cluster-map{{width:100%;height:auto;background:white;border:1px solid var(--line);border-radius:7px}}.edge{{stroke:#adc1ca;stroke-width:1.2}}.app-node circle{{fill:var(--blue);cursor:pointer}}.app-node text{{font-size:10px;text-anchor:middle;fill:var(--ink)}}.cluster-label{{font-weight:700;fill:var(--navy)}}
+.cluster-map,.dependency-map{{width:100%;height:auto;background:white;border:1px solid var(--line);border-radius:7px}}.edge{{stroke:#adc1ca;stroke-width:1.2}}.app-node circle{{fill:var(--blue);cursor:pointer}}.app-node text{{font-size:10px;text-anchor:middle;fill:var(--ink)}}.cluster-label,.dependency-heading{{font-weight:700;fill:var(--navy)}}.dependency-node rect{{fill:#edf5f7;stroke:#9bb5c1}}.dependency-node.app-node rect{{fill:#dcecf2;cursor:pointer;stroke:var(--blue)}}.dependency-node.target rect{{fill:#f7f4e9;stroke:#c7b776}}.dependency-node text{{font-size:12px;text-anchor:start;fill:var(--ink)}}
 @media(max-width:700px){{th:nth-child(3),td:nth-child(3),th:nth-child(5),td:nth-child(5){{display:none}}}}
 </style></head><body><header><h1>Access Portfolio Intelligence</h1><p>Evidence-grounded semantic analysis and proposed target architecture</p></header>
-<nav>{"".join(f'<button data-tab="{tab}" class="{"active" if tab == "overview" else ""}">{label}</button>' for tab, label in (("overview", "Overview"), ("portfolio", "Application portfolio"), ("clusters", "Portfolio map"), ("architecture", "Target architecture"), ("roadmap", "Migration roadmap")))}</nav>
+<nav>{"".join(f'<button data-tab="{tab}" class="{"active" if tab == "overview" else ""}">{label}</button>' for tab, label in (("overview", "Overview"), ("portfolio", "Application portfolio"), ("clusters", "Consolidation map"), ("dependencies", "Dependency map"), ("architecture", "Target architecture"), ("roadmap", "Migration roadmap")))}</nav>
 <main><section id="overview" class="active"><h2>Portfolio overview</h2><div class="status"><strong>Semantic status:</strong> {escape(semantic_status)}</div>
 <div class="cards"><div class="card"><span>Applications</span><strong>{inventory_count}</strong></div><div class="card"><span>Analysis complete</span><strong>{complete_count}</strong></div><div class="card"><span>Semantic profiles</span><strong>{profile_count}</strong></div><div class="card"><span>Capability clusters</span><strong>{cluster_count}</strong></div></div>
 <div class="grid2"><div class="panel"><h3>Application archetypes</h3>{archetype_bars}</div><div class="panel"><h3>Proposed migration waves</h3>{wave_bars}</div></div></section>
 <section id="portfolio"><h2>Application portfolio</h2><input id="search" type="search" placeholder="Search name, purpose, archetype, disposition, or summary" aria-label="Search applications"><div class="panel" style="overflow:auto"><table><thead><tr><th>EUC name</th><th>Purpose</th><th>Archetype</th><th>Disposition</th><th>Wave</th><th>Confidence</th></tr></thead><tbody id="apps"></tbody></table></div></section>
-<section id="clusters"><h2>Portfolio map</h2><p class="muted">Lines show qualified semantic similarity. Select a node to open its evidence-grounded profile.</p>{cluster_svg}</section>
+<section id="clusters"><h2>Consolidation map</h2><p class="muted">Lines show qualified semantic similarity. Select an application node to open its evidence-grounded profile.</p>{cluster_svg}</section>
+<section id="dependencies"><h2>Observed dependency map</h2><p class="muted">Edges come from deterministic extraction. Select an application node to open its evidence-grounded profile.</p>{dependency_svg}</section>
 <section id="architecture"><h2>Proposed target architecture</h2><p class="status">All components remain proposals until reviewed. The Microsoft track is limited to the approved service catalog.</p>{architecture_html}</section>
 <section id="roadmap"><h2>Migration roadmap</h2><div id="waves" class="component-grid"></div></section></main>
-<aside id="drawer" class="drawer" aria-live="polite"><button id="close">Close</button><div id="detail"></div></aside>
+<aside id="drawer" class="drawer" aria-live="polite"><button id="close" type="button" aria-label="Close application details">Close</button><div id="detail"></div></aside>
 <script id="portfolio-data" type="application/json">{safe_json}</script><script>
 const D=JSON.parse(document.getElementById('portfolio-data').textContent);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
 const apps=document.getElementById('apps'),drawer=document.getElementById('drawer'),detail=document.getElementById('detail');
 function rows(q=''){{q=q.toLowerCase();apps.innerHTML=D.applications.filter(a=>Object.values(a).join(' ').toLowerCase().includes(q)).map(a=>`<tr><td><button class="link" data-id="${{esc(a.id)}}">${{esc(a.name)}}</button></td><td>${{esc(a.purpose)}}</td><td>${{esc(a.archetype)}}</td><td>${{esc(a.disposition)}}</td><td>${{a.wave}}</td><td><span class="pill ${{esc(a.confidence)}}">${{esc(a.confidence)}}</span></td></tr>`).join('')}}
-function openApp(id){{const a=D.applications.find(x=>x.id===id);if(!a)return;detail.innerHTML=`<h2>${{esc(a.name)}}</h2><p>${{esc(a.summary)}}</p><dl><dt>Business purpose</dt><dd>${{esc(a.purpose)}}</dd><dt>Archetype</dt><dd>${{esc(a.archetype)}}</dd><dt>Proposed disposition</dt><dd>${{esc(a.disposition)}} · Wave ${{a.wave}}</dd></dl><h3>Semantic findings</h3>${{a.findings.map(f=>`<div class="finding"><strong>${{esc(f.category.replaceAll('_',' '))}}: ${{esc(f.label)}}</strong><p>${{esc(f.description)}}</p><small>${{esc(f.confidence)}} confidence · ${{esc(f.review_status)}} · evidence ${{esc(f.evidence_ids.join(', '))}}${{f.claim_ids.length?' · claims '+esc(f.claim_ids.join(', ')):''}}</small></div>`).join('')||'<p class="muted">No grounded semantic findings.</p>'}}<h3>Open questions</h3><ul>${{a.open_questions.map(x=>`<li>${{esc(x)}}</li>`).join('')||'<li>None recorded</li>'}}</ul>`;drawer.classList.add('open')}}
+function openApp(id){{const a=D.applications.find(x=>x.id===id);if(!a)return;detail.innerHTML=`<h2>${{esc(a.name)}}</h2><p>${{esc(a.summary)}}</p><dl><dt>Business purpose</dt><dd>${{esc(a.purpose)}}</dd><dt>Archetype</dt><dd>${{esc(a.archetype)}}</dd><dt>Proposed disposition</dt><dd>${{esc(a.disposition)}} · Wave ${{a.wave}}</dd></dl><h3>Observed sources</h3>${{a.observed_sources.map(s=>`<div class="finding"><strong>${{esc(s.object)}}</strong><p>${{esc(s.excerpt)}}</p><small>Observed source · ${{esc(s.source_id)}}</small></div>`).join('')||'<p class="muted">No bounded observed source available.</p>'}}<h3>Owner claims</h3>${{a.owner_claims.map(c=>`<div class="finding"><strong>${{esc(c.field.replaceAll('_',' '))}}</strong><p>${{esc(c.value)}}</p><small>Owner claim · ${{esc(c.claim_id)}} · source ${{esc(c.source)}}</small></div>`).join('')||'<p class="muted">No owner context supplied.</p>'}}<h3>AI proposals</h3>${{a.findings.map(f=>`<div class="finding"><strong>${{esc(f.category.replaceAll('_',' '))}}: ${{esc(f.label)}}</strong><p>${{esc(f.description)}}</p><small>AI proposal · ${{esc(f.confidence)}} confidence · ${{esc(f.review_status)}} · evidence ${{esc(f.evidence_ids.join(', '))}}${{f.claim_ids.length?' · claims '+esc(f.claim_ids.join(', ')):''}}</small></div>`).join('')||'<p class="muted">No grounded semantic findings.</p>'}}<h3>Open questions</h3><ul>${{a.open_questions.map(x=>`<li>${{esc(x)}}</li>`).join('')||'<li>None recorded</li>'}}</ul>`;drawer.classList.add('open')}}
 rows();document.getElementById('search').addEventListener('input',e=>rows(e.target.value));document.addEventListener('click',e=>{{const id=e.target.closest('[data-id]')?.dataset.id||e.target.closest('[data-app-id]')?.dataset.appId;if(id)openApp(id)}});document.getElementById('close').onclick=()=>drawer.classList.remove('open');
+document.addEventListener('keydown',e=>{{if(e.key==='Escape')drawer.classList.remove('open')}});
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{{document.querySelectorAll('nav button,main section').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById(b.dataset.tab).classList.add('active')}});
 const waves=D.architecture.migration_waves||[];document.getElementById('waves').innerHTML=waves.map(w=>`<article class="component"><span class="tag">Wave ${{w.wave}}</span><h3>${{esc(w.name)}}</h3><p>${{esc(w.purpose)}}</p><strong>${{w.application_ids.length}} applications</strong><p><small>${{esc(w.prerequisites.join(' · ')||'No recorded prerequisites')}}</small></p></article>`).join('')||'<p class="muted">No semantic roadmap available.</p>';
 </script></body></html>"""
