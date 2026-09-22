@@ -82,3 +82,49 @@ def test_extract_uses_euc_name_for_output_directory(tmp_path: Path, monkeypatch)
     assert extracted.exit_code == 0, extracted.output
     assert (workspace / "extracted" / "Payments EUC").is_dir()
     assert "[Payments EUC] completed." in extracted.output
+
+
+def test_stage_keeps_multiple_primaries_for_one_inventory_euc_without_bundle_duplicates(
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    main = source_dir / "BelloQ.accdb"
+    library = source_dir / "IntexLib.accdb"
+    main.write_bytes(b"main")
+    library.write_bytes(b"library")
+    inventory = tmp_path / "inventory.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["INVENTORY_ID", "EUCTNAME", "FILE_NAME", "FULLPATH", "DESCRIPTION"])
+    sheet.append(["13", "BelloQ", main.name, str(main), "Main"])
+    sheet.append(["13", "BelloQ", library.name, str(library), "Library"])
+    workbook.save(inventory)
+    workspace = tmp_path / "workspace"
+
+    result = CliRunner().invoke(
+        app, ["stage", "--inventory", str(inventory), "--workspace", str(workspace)]
+    )
+
+    assert result.exit_code == 0, result.output
+    state = json.loads((workspace / "analysis" / "staging_state.json").read_text())
+    assert len(state["inventory"]) == 2
+    assert len(state["artifacts"]) == 2
+    assert all(item["is_primary"] for item in state["artifacts"])
+    assert {item["filename"] for item in state["artifacts"]} == {
+        "BelloQ.accdb",
+        "IntexLib.accdb",
+    }
+    assert (workspace / "staged_tools" / "BelloQ" / "bundle" / main.name).exists()
+    assert (workspace / "staged_tools" / "BelloQ" / "bundle" / library.name).exists()
+
+    reported = CliRunner().invoke(app, ["report", "--workspace", str(workspace)])
+
+    assert reported.exit_code == 0, reported.output
+    report = load_workbook(workspace / "reports" / "Portfolio_Analysis.xlsx", read_only=True)
+    applications = list(report["Applications"].iter_rows(values_only=True))
+    coverage = list(report["Analysis Coverage"].iter_rows(values_only=True))
+    assert applications[1][0:2] == ("BelloQ", "BelloQ.accdb")
+    assert applications[2][0:2] == ("BelloQ", "IntexLib.accdb")
+    assert coverage[1][0:2] == ("BelloQ", "BelloQ.accdb")
+    assert coverage[2][0:2] == ("BelloQ", "IntexLib.accdb")

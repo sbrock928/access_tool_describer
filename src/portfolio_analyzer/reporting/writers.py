@@ -101,6 +101,7 @@ def write_workbook(
             [
                 [
                     "EUC Name",
+                    "Primary File",
                     "Staging",
                     "Extraction",
                     "Analysis",
@@ -115,6 +116,7 @@ def write_workbook(
                 *[
                     [
                         item.tool_name,
+                        item.inventory_filename,
                         item.staging_status,
                         item.extraction_status,
                         item.analysis_status,
@@ -515,17 +517,18 @@ def _coverage_section(
                 Spacer(1, 0.18 * inch),
                 Paragraph("Applications requiring attention", styles["Heading2"]),
                 _table(
-                    [["EUC Name", "Extraction", "Analysis", "Warnings"]]
+                    [["EUC Name", "Primary File", "Extraction", "Analysis", "Warnings"]]
                     + [
                         [
                             item.tool_name,
+                            item.inventory_filename,
                             item.extraction_status.replace("_", " "),
                             item.analysis_status.replace("_", " "),
                             str(item.extraction_warning_count),
                         ]
                         for item in attention[:25]
                     ],
-                    [1.45 * inch, 1.8 * inch, 1.65 * inch, 1.2 * inch],
+                    [1.25 * inch, 1.35 * inch, 1.35 * inch, 1.25 * inch, 0.9 * inch],
                 ),
             ]
         )

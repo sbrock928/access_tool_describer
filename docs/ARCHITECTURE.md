@@ -10,3 +10,8 @@ Deterministic facts (for example a SQL statement references `dbo.Deal`) are stor
 and report labels use `EUCTNAME`. EUC names are validated for case-insensitive uniqueness after
 Windows-safe normalization, preventing two applications from sharing a directory. On staging, an
 unambiguous legacy inventory-ID directory is renamed to its EUC name.
+
+One inventory ID/EUC can contain multiple listed Access files. The staging state retains one
+inventory record per listed file, de-duplicates their shared bundle artifacts, and marks every
+listed Access file as primary. Extraction and analysis checkpoints distinguish those primaries by
+their SHA-256 values. Coverage reports show both the EUC name and primary filename.

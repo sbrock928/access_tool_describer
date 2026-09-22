@@ -74,7 +74,76 @@ def test_coverage_distinguishes_complete_zero_findings_from_not_analyzed() -> No
 
     assert coverage[0].analysis_status == "complete"
     assert coverage[0].evidence_count == 0
-    assert coverage[0].capability_count == 1
+    assert coverage[0].capability_count == 0
     assert coverage[1].extraction_status == "not_eligible"
     assert coverage[1].analysis_status == "not_eligible"
     assert coverage[1].notes == ["Staging: missing"]
+
+
+def test_coverage_matches_repeated_inventory_id_by_primary_file_hash() -> None:
+    inventory = [
+        InventoryRecord(
+            tool_inventory_id="13",
+            tool_name="BelloQ",
+            inventory_filename=filename,
+            filepath=Path(f"/source/{filename}"),
+        )
+        for filename in ("BelloQ.accdb", "IntexLib.accdb")
+    ]
+    artifacts = [
+        StagedArtifact(
+            tool_inventory_id="13",
+            original_source_path=record.filepath,
+            local_staged_path=Path(f"/staged/{record.inventory_filename}"),
+            filename=record.inventory_filename,
+            extension=".accdb",
+            sha256=f"hash-{index}",
+            status=ArtifactStatus.STAGED,
+        )
+        for index, record in enumerate(inventory, start=1)
+    ]
+    extraction_state = {
+        "applications": [
+            {
+                "tool_inventory_id": "13",
+                "sha256": "hash-1",
+                "extracted": {"objects": [{}], "extraction_errors": []},
+            },
+            {
+                "tool_inventory_id": "13",
+                "sha256": "hash-2",
+                "extracted": {"objects": [{}, {}], "extraction_errors": []},
+            },
+        ]
+    }
+    analysis_state = {
+        "applications": [
+            {
+                "tool_inventory_id": "13",
+                "sha256": "hash-1",
+                "evidence": [{"inference": "Excel automation"}],
+                "datasources": [],
+                "dependencies": [],
+            },
+            {
+                "tool_inventory_id": "13",
+                "sha256": "hash-2",
+                "evidence": [
+                    {"inference": "Database access"},
+                    {"inference": "Filesystem dependency"},
+                ],
+                "datasources": [],
+                "dependencies": [],
+            },
+        ]
+    }
+
+    coverage = build_analysis_coverage(inventory, artifacts, extraction_state, analysis_state, [])
+
+    assert [item.extracted_object_count for item in coverage] == [1, 2]
+    assert [item.inventory_filename for item in coverage] == [
+        "BelloQ.accdb",
+        "IntexLib.accdb",
+    ]
+    assert [item.evidence_count for item in coverage] == [1, 2]
+    assert [item.capability_count for item in coverage] == [1, 2]

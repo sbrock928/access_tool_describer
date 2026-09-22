@@ -20,7 +20,7 @@ def build_analysis_coverage(
     capabilities: list[CapabilityFinding],
 ) -> list[AnalysisCoverage]:
     """Reconcile current staged hashes with extraction and analysis checkpoints."""
-    primary = {item.tool_inventory_id: item for item in artifacts if item.is_primary}
+    primary = [item for item in artifacts if item.is_primary]
     extraction = _current_results(extraction_state)
     analysis = _current_results(analysis_state)
     capability_counts: dict[str, int] = {}
@@ -31,7 +31,15 @@ def build_analysis_coverage(
 
     coverage: list[AnalysisCoverage] = []
     for record in inventory:
-        artifact = primary.get(record.tool_inventory_id)
+        artifact = next(
+            (
+                item
+                for item in primary
+                if item.tool_inventory_id == record.tool_inventory_id
+                and str(item.original_source_path).casefold() == str(record.filepath).casefold()
+            ),
+            None,
+        )
         staging_status = artifact.status.value if artifact is not None else "missing"
         checksum = artifact.sha256 if artifact is not None else None
         extraction_result = extraction.get((record.tool_inventory_id, checksum))
@@ -71,6 +79,7 @@ def build_analysis_coverage(
             AnalysisCoverage(
                 tool_inventory_id=record.tool_inventory_id,
                 tool_name=record.tool_name,
+                inventory_filename=record.inventory_filename,
                 staging_status=staging_status,
                 extraction_status=extraction_status,
                 analysis_status=analysis_status,
@@ -83,7 +92,17 @@ def build_analysis_coverage(
                 dependency_count=(
                     len(analysis_result.get("dependencies", [])) if analysis_result else 0
                 ),
-                capability_count=capability_counts.get(record.tool_inventory_id, 0),
+                capability_count=(
+                    len(
+                        {
+                            item.get("inference")
+                            for item in analysis_result.get("evidence", [])
+                            if item.get("inference")
+                        }
+                    )
+                    if analysis_result
+                    else capability_counts.get(record.tool_inventory_id, 0)
+                ),
                 notes=notes,
             )
         )

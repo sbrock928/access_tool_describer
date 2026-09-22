@@ -271,12 +271,29 @@ def stage(
         typer.echo(message)
     stager = ArtifactStager(settings)
     session_factory = create_session_factory(settings.analysis_dir / "evidence.sqlite")
-    artifacts: list[StagedArtifact] = []
+    artifacts_by_source: dict[tuple[str, str], tuple[InventoryRecord, StagedArtifact]] = {}
+    for record in records:
+        for artifact in stager.stage_application_bundle(record):
+            key = (
+                artifact.tool_inventory_id,
+                str(artifact.original_source_path).casefold(),
+            )
+            existing = artifacts_by_source.get(key)
+            if existing is None:
+                artifacts_by_source[key] = (record, artifact)
+                continue
+            existing_record, existing_artifact = existing
+            if artifact.status.value == "staged" and existing_artifact.status.value != "staged":
+                artifacts_by_source[key] = (record, artifact)
+            elif artifact.is_primary and not existing_artifact.is_primary:
+                existing_artifact.is_primary = True
+                artifacts_by_source[key] = (record, existing_artifact)
+            else:
+                artifacts_by_source[key] = (existing_record, existing_artifact)
+    artifacts = [artifact for _, artifact in artifacts_by_source.values()]
     with session_factory.begin() as session:
-        for record in records:
-            for artifact in stager.stage_application_bundle(record):
-                artifacts.append(artifact)
-                save_inventory_and_artifact(session, record, artifact)
+        for record, artifact in artifacts_by_source.values():
+            save_inventory_and_artifact(session, record, artifact)
     state_path = settings.analysis_dir / "staging_state.json"
     state_path.write_text(
         json.dumps(
@@ -603,6 +620,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
         [
             {
                 "euc_name": item.tool_name,
+                "primary_file": item.inventory_filename,
                 "staging_status": item.staging_status,
                 "extraction_status": item.extraction_status,
                 "analysis_status": item.analysis_status,
@@ -618,6 +636,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
         ],
         headers=[
             "euc_name",
+            "primary_file",
             "staging_status",
             "extraction_status",
             "analysis_status",

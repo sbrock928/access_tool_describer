@@ -5,6 +5,8 @@ An evidence-driven, static-analysis system for a portfolio of Microsoft Access a
 The system has one non-negotiable safety invariant: source applications are copied to a verified local workspace before any extraction or analysis. The original inventory path is never passed to an extractor.
 
 The input workbook must contain `INVENTORY_ID`, `EUCTNAME`, `FILE_NAME`, `FULLPATH`, and `DESCRIPTION`. `FULLPATH` is source-only; it is never an analysis path.
+An inventory ID/EUC may span multiple rows when it has multiple Access files. Each distinct
+`FULLPATH` becomes a primary artifact; shared files in the same application bundle are staged once.
 
 ## Current MVP
 

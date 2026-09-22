@@ -131,6 +131,7 @@ class AnalysisCoverage(BaseModel):
 
     tool_inventory_id: str
     tool_name: str
+    inventory_filename: str = ""
     staging_status: str
     extraction_status: str
     analysis_status: str

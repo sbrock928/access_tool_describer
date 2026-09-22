@@ -18,3 +18,5 @@ Stated inventory descriptions remain claims and are never blended into observed 
 All application labels and normalized CSV keys use `EUCTNAME`; numeric inventory IDs remain internal
 and are omitted from report outputs.
 Reports ignore stale analysis checkpoints from older rule versions or different staged hashes.
+When an EUC has multiple listed Access applications, coverage and application reports include the
+primary filename beside the repeated EUC name so each application remains identifiable.

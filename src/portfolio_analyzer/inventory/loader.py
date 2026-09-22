@@ -66,21 +66,33 @@ def _optional_string(value: object) -> str | None:
 
 def _validate_unique_identifiers_and_names(records: list[InventoryRecord]) -> None:
     seen_ids: dict[str, str] = {}
-    seen_directories: dict[str, str] = {}
+    seen_directories: dict[str, tuple[str, str]] = {}
+    seen_files: set[tuple[str, str, str]] = set()
     for record in records:
         prior_name = seen_ids.get(record.tool_inventory_id)
-        if prior_name is not None:
+        if prior_name is not None and prior_name.casefold() != record.tool_name.casefold():
             raise InventoryValidationError(
-                f"Duplicate INVENTORY_ID '{record.tool_inventory_id}' for "
+                f"INVENTORY_ID '{record.tool_inventory_id}' has conflicting EUCTNAME values: "
                 f"'{prior_name}' and '{record.tool_name}'"
             )
         seen_ids[record.tool_inventory_id] = record.tool_name
 
         directory = euc_directory_name(record.tool_name)
-        prior_directory_name = seen_directories.get(directory.casefold())
-        if prior_directory_name is not None:
+        prior_directory = seen_directories.get(directory.casefold())
+        if prior_directory is not None and prior_directory[0] != record.tool_inventory_id:
             raise InventoryValidationError(
                 "EUCTNAME values must produce unique workspace folders; "
-                f"'{prior_directory_name}' and '{record.tool_name}' both map to '{directory}'"
+                f"'{prior_directory[1]}' and '{record.tool_name}' both map to '{directory}'"
             )
-        seen_directories[directory.casefold()] = record.tool_name
+        seen_directories[directory.casefold()] = (record.tool_inventory_id, record.tool_name)
+
+        file_key = (
+            record.tool_inventory_id,
+            directory.casefold(),
+            str(record.filepath).casefold(),
+        )
+        if file_key in seen_files:
+            raise InventoryValidationError(
+                f"Duplicate inventory row for '{record.tool_name}': {record.filepath}"
+            )
+        seen_files.add(file_key)
