@@ -2,7 +2,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from portfolio_analyzer.models import ArtifactStatus, StagedArtifact
+from portfolio_analyzer.models import ArtifactStatus, Confidence, Evidence, StagedArtifact
 from portfolio_analyzer.reporting.writers import write_csv, write_executive_pdf, write_workbook
 
 
@@ -37,3 +37,24 @@ def test_csv_escapes_formula_like_text_and_keeps_empty_headers(tmp_path: Path) -
     empty_path = tmp_path / "empty.csv"
     write_csv(empty_path, [], headers=["first", "second"])
     assert empty_path.read_text().strip() == "first,second"
+
+
+def test_report_writers_remove_illegal_spreadsheet_characters(tmp_path: Path) -> None:
+    evidence = Evidence(
+        tool_inventory_id="1",
+        artifact_path="source.accdb",
+        object_type="module",
+        object_name="Example",
+        text="UPDATE table\x00 SET value = 'kept'\x0b;",
+        confidence=Confidence.HIGH,
+    )
+    workbook_path = tmp_path / "Portfolio_Analysis.xlsx"
+    write_workbook(workbook_path, [], [], [evidence], [], [], [])
+
+    workbook = load_workbook(workbook_path)
+    assert workbook["Evidence"]["F2"].value == "UPDATE table SET value = 'kept';"
+
+    csv_path = tmp_path / "evidence.csv"
+    write_csv(csv_path, [{"evidence": "UPDATE table\x00 SET value = 'kept'\x0b;"}])
+    assert "\x00" not in csv_path.read_text()
+    assert "\x0b" not in csv_path.read_text()

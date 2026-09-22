@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from html import escape
@@ -27,6 +28,8 @@ from portfolio_analyzer.models import (
     Recommendation,
     StagedArtifact,
 )
+
+_ILLEGAL_SPREADSHEET_CHARACTERS = re.compile(r"[\x00-\x08\x0b-\x0c\x0e-\x1f]")
 
 
 def write_csv(
@@ -867,8 +870,11 @@ def _footer(canvas: Any, document: Any) -> None:
 
 
 def _spreadsheet_safe(value: object) -> object:
-    """Prevent report text from being interpreted as a spreadsheet formula."""
-    if isinstance(value, str) and value.startswith(("=", "+", "-", "@")):
+    """Return text that is valid and inert in spreadsheet output."""
+    if not isinstance(value, str):
+        return value
+    value = _ILLEGAL_SPREADSHEET_CHARACTERS.sub("", value)
+    if value.startswith(("=", "+", "-", "@")):
         return f"'{value}"
     return value
 
