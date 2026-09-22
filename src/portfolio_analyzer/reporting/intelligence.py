@@ -127,6 +127,28 @@ def write_semantic_datasets(
     )
     outputs.append(
         _csv(
+            directory / "similarity_edges.csv",
+            [
+                {
+                    "source_euc_name": application_names.get(edge.source_tool_id, "Unknown EUC"),
+                    "target_euc_name": application_names.get(edge.target_tool_id, "Unknown EUC"),
+                    "overall_similarity": edge.overall_similarity,
+                    "category_scores": json.dumps(edge.category_scores, sort_keys=True),
+                    "shared_features": json.dumps(edge.shared_features, sort_keys=True),
+                }
+                for edge in state.similarity_edges
+            ],
+            [
+                "source_euc_name",
+                "target_euc_name",
+                "overall_similarity",
+                "category_scores",
+                "shared_features",
+            ],
+        )
+    )
+    outputs.append(
+        _csv(
             directory / "architecture_components.csv",
             [
                 {
@@ -565,8 +587,7 @@ def _dependency_svg(dependencies: list[Dependency], names: dict[str, str]) -> st
     if len(dependencies) > len(visible):
         note = f'<p class="muted">Showing the first {len(visible)} of {len(dependencies)} observed dependency edges. The complete normalized set remains in the workbook and CSV.</p>'
     return (
-        note
-        + f'<svg class="dependency-map" viewBox="0 0 {width} {height}" role="img" '
+        note + f'<svg class="dependency-map" viewBox="0 0 {width} {height}" role="img" '
         f'aria-label="Observed application dependencies">{"".join(elements)}</svg>'
     )
 

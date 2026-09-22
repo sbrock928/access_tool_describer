@@ -33,8 +33,11 @@ def prompt_data(value: object) -> str:
     """Delimit serialized source data so it cannot be confused with instructions."""
     import json
 
+    serialized = json.dumps(value, ensure_ascii=True)
+    # Prevent source text from manufacturing our trust-boundary delimiter.
+    serialized = serialized.replace("<", "\\u003c").replace(">", "\\u003e")
     return (
         "<UNTRUSTED_SOURCE_DATA>\n"
-        + json.dumps(value, ensure_ascii=True)
+        + serialized
         + "\n</UNTRUSTED_SOURCE_DATA>"
     )

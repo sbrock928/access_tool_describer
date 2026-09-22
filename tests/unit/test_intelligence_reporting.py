@@ -1,4 +1,3 @@
-import math
 import tracemalloc
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,6 +30,7 @@ from portfolio_analyzer.reporting.intelligence import (
 from portfolio_analyzer.reporting.writers import write_executive_pdf, write_workbook
 from portfolio_analyzer.semantic.config import ClusteringSettings
 from portfolio_analyzer.semantic.graph import build_similarity_graph
+from portfolio_analyzer.semantic.model_store import APPROVED_MODEL
 
 
 def _state() -> SemanticPortfolioState:
@@ -54,9 +54,10 @@ def _state() -> SemanticPortfolioState:
         evidence_ids=["ev-1", "ev-2"],
         artifact_hashes=["a" * 64],
         input_fingerprint="fingerprint",
-        semantic_version="semantic-analysis-v1",
-        model_name="local-model",
-        model_sha256="b" * 64,
+        semantic_version="semantic-analysis-v2",
+        model_repo_id=APPROVED_MODEL.repo_id,
+        model_revision=APPROVED_MODEL.revision,
+        model_manifest_sha256="b" * 64,
     )
     neutral = ArchitectureComponent(
         component_id="component-requests",
@@ -92,16 +93,19 @@ def _state() -> SemanticPortfolioState:
     )
     return SemanticPortfolioState(
         metadata=SemanticRunMetadata(
-            semantic_version="semantic-analysis-v1",
-            semantic_schema_version="semantic-schema-v1",
-            prompt_version="semantic-prompts-v1",
+            semantic_version="semantic-analysis-v2",
+            semantic_schema_version="semantic-schema-v2",
+            prompt_version="semantic-prompts-v2",
             static_analysis_version="static-analysis-v4",
-            chat_model="local-model",
-            chat_model_sha256="b" * 64,
-            embedding_model="local-embedding",
-            embedding_model_sha256="c" * 64,
-            chat_base_url="http://127.0.0.1:8080/v1",
-            embedding_base_url="http://127.0.0.1:8081/v1",
+            deterministic_similarity_version="deterministic-similarity-v1",
+            model_repo_id=APPROVED_MODEL.repo_id,
+            model_revision=APPROVED_MODEL.revision,
+            model_manifest_sha256="b" * 64,
+            local_model_identifier=APPROVED_MODEL.local_identifier,
+            model_architecture=APPROVED_MODEL.architecture,
+            model_license=APPROVED_MODEL.license,
+            inference_library="transformers",
+            inference_library_version="5.17.0",
             generation_parameters={"temperature": 0.0},
             clustering_parameters={"strong_similarity": 0.88},
             approved_services=["Power Apps"],
@@ -111,12 +115,13 @@ def _state() -> SemanticPortfolioState:
         ),
         observed_evidence_ids=["ev-1", "ev-2"],
         applications=[profile],
-        embeddings={"1": [1.0, 0.0]},
         similarity_edges=[
             SimilarityEdge(
                 source_tool_id="1",
                 target_tool_id="1",
-                semantic_similarity=1.0,
+                overall_similarity=1.0,
+                category_scores={"business_capabilities": 1.0},
+                shared_features={"business_capabilities": ["request intake"]},
                 shared_capabilities=["Request intake"],
             )
         ],
@@ -266,7 +271,6 @@ def test_synthetic_500_application_graph_and_reports_stay_bounded(tmp_path: Path
     inventory = []
     coverage = []
     mappings = []
-    embeddings: dict[str, list[float]] = {}
     for index in range(500):
         tool_id = f"app-{index:03d}"
         profile = base.applications[0].model_copy(deep=True)
@@ -296,13 +300,10 @@ def test_synthetic_500_application_graph_and_reports_stay_bounded(tmp_path: Path
         mapping.mapping_id = f"mapping-{index:03d}"
         mapping.tool_inventory_id = tool_id
         mappings.append(mapping)
-        angle = (index + 1) / 503
-        embeddings[tool_id] = [math.cos(angle), math.sin(angle)]
 
     tracemalloc.start()
     edges, clusters = build_similarity_graph(
         profiles,
-        embeddings,
         [],
         ClusteringSettings(
             strong_similarity=1.0,
@@ -312,7 +313,6 @@ def test_synthetic_500_application_graph_and_reports_stay_bounded(tmp_path: Path
     )
     state = base.model_copy(deep=True)
     state.applications = profiles
-    state.embeddings = embeddings
     state.similarity_edges = edges
     state.clusters = clusters
     state.architecture.mappings = mappings

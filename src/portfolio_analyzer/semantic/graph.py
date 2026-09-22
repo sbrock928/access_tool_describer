@@ -1,85 +1,102 @@
-"""Explainable similarity graph and conservative portfolio clustering."""
+"""Explainable deterministic similarity and conservative portfolio clustering."""
 
 from __future__ import annotations
 
 import hashlib
-import math
 import random
+import re
 from collections import Counter, defaultdict
 
 from portfolio_analyzer.models import (
     Confidence,
     Datasource,
+    Evidence,
     PortfolioCluster,
     SemanticApplicationProfile,
+    SemanticSource,
     SimilarityEdge,
 )
 from portfolio_analyzer.semantic.config import ClusteringSettings
 
+_GENERIC_LABELS = {
+    "application",
+    "data",
+    "data management",
+    "database",
+    "general reporting",
+    "management",
+    "report",
+    "reporting",
+    "workflow",
+}
+_TECHNICAL_FINDING_CATEGORIES = {
+    "technical_capability",
+    "integration",
+    "automation_trigger",
+    "constraint",
+    "modernization_blocker",
+    "input",
+    "output",
+}
+
 
 def build_similarity_graph(
     profiles: list[SemanticApplicationProfile],
-    embeddings: dict[str, list[float]],
     datasources: list[Datasource],
     settings: ClusteringSettings,
+    *,
+    sources: list[SemanticSource] | None = None,
+    evidence: list[Evidence] | None = None,
 ) -> tuple[list[SimilarityEdge], list[PortfolioCluster]]:
-    capabilities = {
-        profile.tool_inventory_id: {
-            finding.label.casefold()
-            for finding in profile.findings
-            if finding.category in {"business_capability", "technical_capability", "workflow"}
-            and finding.evidence_ids
-            and finding.review_status != "rejected"
-        }
-        for profile in profiles
-    }
-    datasource_sets: dict[str, set[str]] = defaultdict(set)
-    for source in datasources:
-        datasource_sets[source.tool_inventory_id].add(
-            "|".join(
-                str(value or "").casefold()
-                for value in (
-                    source.platform,
-                    source.server,
-                    source.database,
-                    source.schema_name,
-                    source.object_name,
-                )
-            )
-        )
-
+    """Compare transparent category sets; no learned vectors or hidden state are used."""
+    features = _portfolio_features(profiles, datasources, sources or [], evidence or [])
+    weights = settings.category_weights()
     node_ids = [profile.tool_inventory_id for profile in profiles]
     adjacency: dict[str, dict[str, float]] = {node: {} for node in node_ids}
     edges: list[SimilarityEdge] = []
     for index, left in enumerate(profiles):
         for right in profiles[index + 1 :]:
-            left_vector = embeddings.get(left.tool_inventory_id)
-            right_vector = embeddings.get(right.tool_inventory_id)
-            if left_vector is None or right_vector is None:
-                continue
-            similarity = _cosine_similarity(left_vector, right_vector)
-            shared_capabilities = sorted(
-                capabilities[left.tool_inventory_id] & capabilities[right.tool_inventory_id]
+            left_features = features[left.tool_inventory_id]
+            right_features = features[right.tool_inventory_id]
+            category_scores: dict[str, float] = {}
+            shared_features: dict[str, list[str]] = {}
+            similarity = 0.0
+            for category, weight in weights.items():
+                left_values = left_features[category]
+                right_values = right_features[category]
+                score = _jaccard(left_values, right_values)
+                category_scores[category] = round(score, 6)
+                shared = sorted(left_values & right_values)
+                if shared:
+                    shared_features[category] = shared
+                similarity += weight * score
+            corroborated = any(
+                shared_features.get(category)
+                for category in (
+                    "business_capabilities",
+                    "workflows",
+                    "data_domains",
+                    "datasources",
+                    "technical_characteristics",
+                )
             )
-            shared_datasources = sorted(
-                datasource_sets[left.tool_inventory_id] & datasource_sets[right.tool_inventory_id]
-            )
-            corroborated = bool(shared_capabilities or shared_datasources)
             if similarity < settings.strong_similarity and not (
                 similarity >= settings.corroborated_similarity and corroborated
             ):
                 continue
+            overall = round(similarity, 6)
             edge = SimilarityEdge(
                 source_tool_id=left.tool_inventory_id,
                 target_tool_id=right.tool_inventory_id,
-                semantic_similarity=round(similarity, 6),
-                shared_capabilities=shared_capabilities,
-                shared_datasources=shared_datasources,
+                overall_similarity=overall,
+                category_scores=category_scores,
+                shared_features=shared_features,
+                shared_capabilities=shared_features.get("business_capabilities", []),
+                shared_datasources=shared_features.get("datasources", []),
             )
             edges.append(edge)
-            weight = max(similarity, 0.0)
-            adjacency[left.tool_inventory_id][right.tool_inventory_id] = weight
-            adjacency[right.tool_inventory_id][left.tool_inventory_id] = weight
+            adjacency[left.tool_inventory_id][right.tool_inventory_id] = overall
+            adjacency[right.tool_inventory_id][left.tool_inventory_id] = overall
 
     communities = _seeded_weighted_communities(adjacency, seed=settings.fixed_seed)
     profiles_by_id = {profile.tool_inventory_id: profile for profile in profiles}
@@ -88,6 +105,83 @@ def build_similarity_graph(
         for index, community in enumerate(sorted(communities, key=lambda group: sorted(group)))
     ]
     return sorted(edges, key=lambda edge: (edge.source_tool_id, edge.target_tool_id)), clusters
+
+
+def _portfolio_features(
+    profiles: list[SemanticApplicationProfile],
+    datasources: list[Datasource],
+    sources: list[SemanticSource],
+    evidence: list[Evidence],
+) -> dict[str, dict[str, set[str]]]:
+    output = {
+        profile.tool_inventory_id: {
+            "business_capabilities": set(),
+            "workflows": set(),
+            "data_domains": set(),
+            "datasources": set(),
+            "technical_characteristics": set(),
+            "object_composition": set(),
+            "application_archetype": {_normalize(profile.primary_archetype)},
+        }
+        for profile in profiles
+    }
+    for profile in profiles:
+        target = output[profile.tool_inventory_id]
+        for finding in profile.findings:
+            if not finding.evidence_ids or finding.review_status == "rejected":
+                continue
+            label = _normalize(finding.label)
+            if not label or label in _GENERIC_LABELS:
+                continue
+            if finding.category == "business_capability":
+                target["business_capabilities"].add(label)
+            elif finding.category == "workflow":
+                target["workflows"].add(label)
+            elif finding.category in {"data_domain", "data_entity"}:
+                target["data_domains"].add(label)
+            elif finding.category in _TECHNICAL_FINDING_CATEGORIES:
+                target["technical_characteristics"].add(label)
+    for datasource in datasources:
+        datasource_target = output.get(datasource.tool_inventory_id)
+        if datasource_target is None:
+            continue
+        values = [
+            _normalize(str(value or ""))
+            for value in (
+                datasource.platform,
+                datasource.server,
+                datasource.database,
+                datasource.schema_name,
+                datasource.object_name,
+            )
+        ]
+        datasource_target["datasources"].add("|".join(values))
+        if values[0]:
+            datasource_target["technical_characteristics"].add(f"datasource platform:{values[0]}")
+    for source in sources:
+        source_target = output.get(source.tool_inventory_id)
+        if source_target is not None:
+            source_target["object_composition"].add(_normalize(source.object_type))
+    for evidence_item in evidence:
+        evidence_target = output.get(evidence_item.tool_inventory_id)
+        if evidence_target is None:
+            continue
+        if evidence_item.inference:
+            normalized = _normalize(evidence_item.inference)
+            if normalized and normalized not in _GENERIC_LABELS:
+                evidence_target["technical_characteristics"].add(normalized)
+        if evidence_item.object_type:
+            evidence_target["object_composition"].add(_normalize(evidence_item.object_type))
+    return output
+
+
+def _jaccard(left: set[str], right: set[str]) -> float:
+    union = left | right
+    return len(left & right) / len(union) if union else 0.0
+
+
+def _normalize(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", value.casefold())).strip()
 
 
 def _seeded_weighted_communities(
@@ -163,23 +257,14 @@ def _cluster(
         shared_capabilities=shared_capabilities,
         shared_data_domains=shared_domains,
         rationale=(
-            "Grouped by local semantic similarity"
-            + (" with shared observed capabilities or datasources." if len(tool_ids) > 1 else ".")
+            "Grouped by deterministic weighted overlap of evidence-grounded semantic and "
+            "technical features."
+            if len(tool_ids) > 1
+            else "No qualifying deterministic similarity edge to another application."
         ),
         confidence=_minimum_confidence(confidences),
         evidence_ids=sorted(evidence_ids),
     )
-
-
-def _cosine_similarity(left: list[float], right: list[float]) -> float:
-    if len(left) != len(right) or not left:
-        return 0.0
-    numerator = sum(a * b for a, b in zip(left, right, strict=True))
-    left_norm = math.sqrt(sum(value * value for value in left))
-    right_norm = math.sqrt(sum(value * value for value in right))
-    if left_norm == 0.0 or right_norm == 0.0:
-        return 0.0
-    return numerator / (left_norm * right_norm)
 
 
 def _minimum_confidence(values: list[Confidence]) -> Confidence:

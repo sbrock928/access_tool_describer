@@ -1,106 +1,200 @@
 # Local Semantic Analysis
 
 The semantic subsystem is optional. Deterministic extraction and static analysis remain the source
-of truth and continue to work without a model. Semantic outputs are proposals with resolvable
-evidence or owner-claim references and a review status.
+of truth and work without ML dependencies. The model interprets bounded static evidence; its
+outputs remain evidence-gated, reviewable proposals.
 
-## Network and model boundary
+## Architecture
 
-- Model weights are acquired, approved, licensed, and stored outside this repository.
-- The documented acquisition workflow uses the official `huggingface_hub` Python package installed
-  with `uv`; it is a separate operator-run process and is not imported by the analyzer.
-- The analyzer accepts only `http` or `https` endpoints that resolve exclusively to loopback
-  addresses (`localhost`, `127.0.0.0/8`, or `::1`). Other hostnames and IP addresses are rejected.
-- HTTP redirects are rejected, including redirects originating at a loopback endpoint.
-- HTTP proxy environment settings are ignored so loopback traffic cannot be forwarded externally.
-- The analyzer has no hosted-model adapter, API-key setting, model downloader, or web fallback.
-- Chat and embedding servers are separately managed processes. A `llama.cpp` OpenAI-compatible
-  server is the initial supported contract; any compatible local server must pass `semantic-check`.
-- Prompts contain bounded, redacted packets. Extracted definitions and inventory text are delimited
-  as untrusted data. Credentials and local/network paths are stripped. Raw prompts are not stored.
+```text
+verified staged Access copies
+  -> metadata/static extraction
+  -> deterministic SQL/VBA/dependency/capability analysis
+  -> bounded, redacted evidence packets
+  -> one approved local instruct model
+  -> schema-validated application profiles
+  -> deterministic weighted similarity and clustering
+  -> evidence-gated architecture proposals
+  -> review and reporting
+```
 
-## Setup
+There is no embedding model, persisted neural vector, vector database, model server, hosted-model
+adapter, API-key configuration, HTTP inference, telemetry, or network fallback. The model is loaded
+once per semantic process and reused across applications.
 
-Run deterministic staging, extraction, and analysis first. Then initialize without overwriting any
-existing semantic files:
+## Approved model and selection
+
+The production allowlist contains exactly one model:
+
+- repository: `ibm-granite/granite-3.3-2b-instruct`;
+- revision: `707f574c62054322f6b5b04b6d075f0a8f05e0f0`;
+- publisher: IBM Granite;
+- license: Apache-2.0;
+- architecture: `GraniteForCausalLM`, supported natively by the pinned Transformers runtime;
+- weights: two BF16 safetensors shards, approximately 5 GB total;
+- intended strengths: instruction following, classification, extraction, summarization, and
+  function-style output.
+
+Granite 3.3 2B was selected as a maintainable CPU-capable baseline from an established publisher
+with a permissive license, normal Transformers loading, no repository Python requirement, and
+safetensors weights. SmolLM2 1.7B is lighter and Apache-2.0 but has a weaker structured-analysis
+quality ceiling. Qwen 2.5 3B has attractive JSON behavior but its model repository uses the Qwen
+Research license. Mistral 7B Instruct is Apache-2.0 and capable, but its roughly 14.5 GB BF16 weight
+set is materially less practical for the required workstation baseline.
+
+Changing the production model is a code-reviewed allowlist change, not a runtime configuration
+feature. A repository that requires `trust_remote_code=True`, custom Python, unsafe serialized
+weights, or an unclear license is ineligible.
+
+### Security approval record
+
+The [pinned revision](https://huggingface.co/ibm-granite/granite-3.3-2b-instruct/tree/707f574c62054322f6b5b04b6d075f0a8f05e0f0)
+was reviewed on 2026-09-22 using Hugging Face's per-file security status and artifact metadata. All
+12 files in the analyzer's allowlist reported an aggregate per-file status of `safe`. For both
+safetensors shards, Protect AI reported no findings, JFrog reported that the model does not support
+code execution on load, and VirusTotal reported 0/75 and 0/77 detections. Some scanner fields were
+`unscanned`, so these third-party results are supporting evidence rather than a security guarantee,
+consistent with [Hugging Face's scanner guidance](https://huggingface.co/docs/hub/security-malware).
+Reapproval of another model or revision must repeat and document this review.
+
+The approved size and SHA-256 of every allowlisted file are compiled into the analyzer. The weight
+digests match the publisher-hosted LFS object IDs; the remaining hashes were calculated from the
+pinned raw files during approval. Acquisition must match those independent values before it can
+create a local manifest. This avoids trusting a self-generated first-download manifest if the
+upstream service or transport supplies different bytes.
+
+## Dependencies
+
+Deterministic analysis has no ML dependency. Install the optional, exactly pinned semantic group
+with `pip`:
+
+```powershell
+python -m pip install -c requirements\semantic-py313.lock -e ".[semantic]"
+```
+
+The four direct dependencies have narrow responsibilities:
+
+- `huggingface-hub`: official client used only by the explicit acquisition command;
+- `transformers`: native tokenizer and causal-model loader/inference;
+- `torch`: tensor execution on CPU, CUDA, or Apple MPS;
+- `safetensors`: safe weight format enforced by the loader.
+
+No dependency is installed at runtime and none comes from a Git URL or model repository. The
+CPython 3.13 constraints file pins the resolved semantic dependency graph. Production builds should
+install it through the organization's approved package mirror. Run the organization's
+software-composition scan (or `pip-audit`) against the built environment before promotion. Where
+policy requires hash-locked wheels, generate platform-specific `pip --require-hashes` lock files
+from the approved mirror because Torch wheel hashes differ by OS and accelerator.
+
+## Setup and acquisition
+
+Run deterministic staging, extraction, and analysis first. Initialize semantic files without
+overwriting existing operator input:
 
 ```powershell
 portfolio-analyzer semantic-init --workspace .\workspace
 ```
 
-This creates:
+This creates `semantic.toml`, `business_context.csv`, and a stratified `gold_set.csv`. The TOML
+contains the approved repository and immutable revision plus the local path, generation bounds,
+deterministic similarity weights/thresholds, redaction policy, and approved Microsoft service list.
+The repository and revision are validated against the compiled allowlist.
 
-- `semantic/semantic.toml`: local chat and embedding endpoints, externally calculated model
-  SHA-256 values, generation limits, clustering thresholds, and the approved Microsoft catalog.
-- `semantic/business_context.csv`: optional owner, purpose, criticality, user band, lifecycle,
-  sensitivity, pain point, and target-constraint claims.
-- `semantic/gold_set.csv`: a stratified template of up to 20 applications.
-
-### Approved Hugging Face acquisition
-
-When policy permits access to Hugging Face during the acquisition phase, install the official
-client into the active environment with `uv`:
+During an explicitly approved connected acquisition window, run:
 
 ```powershell
-uv pip install huggingface_hub
+portfolio-analyzer semantic-model-download --workspace .\workspace
 ```
 
-The package name is `huggingface_hub`, not `hugging_face`. Use a separate Python script and pin an
-immutable model revision for reproducibility:
+This command alone imports `huggingface_hub` and calls `snapshot_download()` with the immutable
+revision and an exact filename allowlist. It downloads only the model card, configuration,
+tokenizer files, safetensors index, and safetensors shards. It does not read application inventory,
+evidence, prompts, or semantic state, and it never uploads data.
 
-```python
-from huggingface_hub import snapshot_download
+The command rejects an existing destination instead of modifying it, verifies every file against
+the code-reviewed size and SHA-256, validates the model type and architecture, rejects `auto_map`,
+custom pipelines, remote-code declarations, executable files, symlinks, unexpected files, and
+pickle-capable weight extensions, then writes
+`model_manifest.json`. The manifest records repository, immutable revision, license, architecture,
+acquisition time, expected file names, sizes, every SHA-256, and a canonical manifest SHA-256.
 
-snapshot_download(
-    repo_id="APPROVED_ORGANIZATION/APPROVED_MODEL",
-    revision="PINNED_COMMIT_HASH",
-    local_dir=r"C:\ApprovedModels\model-name",
-    allow_patterns=["*.gguf", "*.json", "*.md"],
-)
-```
+The approved model is public and does not need a token. Do not store Hugging Face credentials in
+the workspace or semantic TOML. Model weights are ignored by Git and must not be committed.
 
-This script is intentionally outside the analyzer. It may access Hugging Face only during an
-approved acquisition session. Do not add `huggingface_hub` as an analyzer dependency, place model
-weights in the repository or workspace, or put Hugging Face tokens in `semantic.toml`. After the
-download, record the repository ID and pinned revision in the operational record, review the model
-license, calculate the GGUF file's SHA-256, and perform analyzer runs offline against the loopback
-model servers.
+## Fully offline operation
 
-Replace every `REPLACE_...` value in `semantic.toml`. Calculate checksums with an approved local
-tool, for example `Get-FileHash -Algorithm SHA256` in PowerShell. The analyzer records model names,
-checksums, endpoints, server identity, prompt/schema/static-analysis versions, generation settings,
-clustering settings, approved services, and a context hash in `semantic_state.json`.
-
-The default configuration expects separate services:
-
-```text
-chat:       http://127.0.0.1:8080/v1
-embeddings: http://127.0.0.1:8081/v1
-```
-
-Start the approved local servers using their own operating instructions. Do not expose them on a
-LAN interface. The analyzer deliberately does not start, stop, install, or download models.
-
-## Preflight and gold-set acceptance
+After acquisition, disconnect the workstation when policy requires it. These commands perform no
+network operation:
 
 ```powershell
 portfolio-analyzer semantic-check --workspace .\workspace
+portfolio-analyzer semantic --workspace .\workspace
+portfolio-analyzer report --workspace .\workspace --semantic-mode auto
 ```
 
-Preflight checks both loopback endpoints, strict structured JSON, evidence-ID preservation, and
-embedding dimensions. The command requires completed archetype and capability labels for the
-20-application template (or the full portfolio when it contains fewer than 20 applications), then
-evaluates:
+Before inference, the analyzer verifies manifest identity, revision, inventory, sizes, all file
+hashes, model configuration, and safetensors index references. Missing, incomplete, modified, or
+unexpected files stop inference. The analyzer never repairs or redownloads a model.
 
+Inference sets `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_DATASETS_OFFLINE=1`, and telemetry
+disable flags before importing the ML runtime. Both tokenizer and model receive a local filesystem
+path, `local_files_only=True`, and `trust_remote_code=False`; the model also receives
+`use_safetensors=True`. No Hugging Face repository ID is passed to inference. The reviewed Granite
+role-token format is constructed by analyzer code, so inference does not execute the repository's
+chat template.
+
+## Safety and structured output
+
+Original source paths never cross the staging boundary. Semantic analysis uses already extracted
+local snapshots and deterministic evidence only. Secrets, URI credentials, local paths, and network
+paths are redacted; object excerpts and profiles are bounded; source material is wrapped in
+`UNTRUSTED_SOURCE_DATA` delimiters. Source VBA, SQL, descriptions, and model output are data, never
+instructions or executable content. Raw prompts are not persisted.
+
+The provider requests one JSON object matching a supplied Pydantic JSON Schema. Returned text is
+parsed only with `json.loads` and then validated by the task-specific Pydantic model. There is no
+`eval`, `exec`, dynamic import, generated SQL execution, or tool execution. Unknown evidence and
+claim IDs are intersected away; unsupported findings are discarded. Malformed output becomes an
+isolated per-application failure, while architecture generation has a conservative deterministic
+fallback.
+
+## Deterministic similarity
+
+Application similarity uses weighted Jaccard overlap over normalized, inspectable categories:
+
+- business capabilities: 0.25;
+- workflows: 0.18;
+- data domains/entities: 0.17;
+- datasources: 0.15;
+- technical/integration/automation characteristics: 0.13;
+- Access object composition: 0.08;
+- primary archetype: 0.04.
+
+Weights sum to 1. Generic labels such as `reporting`, `workflow`, and `data management` are excluded
+so they cannot dominate a relationship. A strong edge uses the configured strong threshold. A
+weaker edge must meet the corroborated threshold and share an evidence-backed capability, workflow,
+domain, datasource, or technical characteristic. Fixed-seed weighted label propagation produces
+repeatable clusters.
+
+Every edge stores its overall score, each category's Jaccard score, and the exact shared features.
+`reports/similarity_edges.csv`, the report data, and the offline intelligence HTML expose that
+breakdown. There is no opaque embedding score.
+
+## Preflight and gold-set acceptance
+
+`semantic-check` verifies the local model, loads it offline, tests schema-shaped JSON and evidence-ID
+preservation, then evaluates reviewed gold data. The gold set requires the stratified 20-application
+sample, or the full portfolio when smaller, and checks:
+
+- 100% schema validity for reviewed applications;
 - 100% resolvable evidence/claim references;
+- no unsupported high-confidence conclusions;
 - at least 80% primary-archetype agreement;
 - at least 75% macro-F1 for business-capability labels.
 
-The check exits unsuccessfully when the gold set is incomplete or misses a threshold. Unsupported
-generated statements are already discarded before evaluation, so they cannot become
-high-confidence results.
+The command exits unsuccessfully when the gold set is incomplete or a threshold is missed.
 
-## Run and resume
+## Run, resume, and migration
 
 ```powershell
 portfolio-analyzer semantic --workspace .\workspace
@@ -108,48 +202,30 @@ portfolio-analyzer semantic --workspace .\workspace --tool-id 12345
 portfolio-analyzer semantic --workspace .\workspace --force
 ```
 
-State is atomic and keyed by artifact hashes, context claims, static/semantic/prompt/schema
-versions, model checksums, generation settings, clustering thresholds, and the approved service
-catalog. Compatible application profiles and embeddings are reused. Failures are isolated to the
-affected application and force an `investigate` disposition.
+Atomic semantic state is fingerprinted by staged artifact hashes, evidence, claims, static,
+semantic, prompt and schema versions, model manifest hash, inference-library version, generation
+settings, deterministic similarity version/weights/thresholds, and approved service catalog.
+Compatible application profiles are reused. The model is loaded once per run.
 
-Processing is hierarchical: bounded object summaries become application profiles; profiles are
-embedded locally; conservative similarity edges form deterministic fixed-seed communities; each
-community is summarized; and validated community summaries drive target architecture.
+Schema v2 deliberately does not reinterpret v1 endpoint metadata or persisted embeddings. Legacy
+state is detected with a clear rerun message; deterministic extraction and analysis remain intact.
 
-## Context, confidence, and decisions
+## Confidence, review, and reporting
 
-Owner context is stored as `Claim` records and never presented as observed evidence. Confidence is
-calculated by the analyzer:
+Owner context remains distinct `Claim` data. Confidence is derived by the analyzer: high requires
+complete extraction and two independent observed references; medium requires observed evidence;
+claim-only, incomplete, ambiguous, or warning-qualified conclusions remain low. Retirement requires
+an owner lifecycle claim. Incomplete extraction forces `investigate` and Wave 0. Microsoft mappings
+are limited to the configured approved service catalog.
 
-- high: complete extraction and at least two independent observed references;
-- medium: one observed reference, or an owner claim with support;
-- low: claim-only, ambiguous, warning-qualified, or unsupported.
-
-Retirement requires a lifecycle claim containing a retirement/decommission intent. Incomplete or
-warning-qualified extraction forces `investigate` and Wave 0. Microsoft components are limited to
-the configured approved catalog. Unsupported mappings become open hosting decisions.
-
-## Review import
-
-Generate a report, edit only the `Decision`, `Edited Value`, `Reviewer`, and `Notes` columns in the
-`Review Queue`, and import it:
+Reviewers enter `Accept`, `Edit`, or `Reject` in the workbook's `Review Queue`, then import decisions:
 
 ```powershell
 portfolio-analyzer import-review --workspace .\workspace `
   --workbook .\workspace\reports\Portfolio_Analysis.xlsx
 ```
 
-Decisions are persisted separately in `semantic/review_decisions.json` and reapplied after semantic
-reruns. Formula cells and invalid decisions are rejected. Rejecting an application mapping returns
-it to Wave 0 pending replacement.
-
-## Reporting modes and reproducibility
-
-`report --semantic-mode auto` includes semantic data only when it is current and compatible. A
-precise coverage gap appears otherwise, while all deterministic reports are still generated.
-`require` fails clearly when current semantic state is unavailable. `off` excludes semantics.
-
-`reports/report_manifest.json` records file checksums and semantic provenance. For a reproducible
-rerun, preserve the staged artifact hashes, context and review files, semantic configuration, exact
-external model files/checksums, and the repository revision.
+`report --semantic-mode auto` includes only current compatible semantic data; `require` fails if it
+is absent, partial, stale, or incompatible; `off` produces deterministic-only reports. The report
+manifest records semantic provenance and output checksums without persisting an absolute local model
+path or workstation username.

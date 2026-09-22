@@ -1,41 +1,23 @@
-"""Local OpenAI-compatible semantic provider with constrained JSON output."""
+"""Direct, offline semantic inference from one integrity-verified local model."""
 
 from __future__ import annotations
 
+import importlib
+import importlib.metadata
 import json
-import socket
-import time
-from collections.abc import Sequence
-from ipaddress import ip_address
+import os
 from typing import Any, Protocol
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-from portfolio_analyzer.semantic.config import ModelEndpointSettings, SemanticSettings
+from portfolio_analyzer.semantic.config import SemanticSettings
+from portfolio_analyzer.semantic.model_store import VerifiedModel, verify_model_directory
 
 
 class SemanticProviderError(RuntimeError):
     pass
 
 
-class _RejectRedirects(HTTPRedirectHandler):
-    def redirect_request(
-        self,
-        req: Request,
-        fp: Any,
-        code: int,
-        msg: str,
-        headers: Any,
-        newurl: str,
-    ) -> None:
-        raise SemanticProviderError(
-            f"Local semantic endpoint attempted an HTTP redirect ({code}); redirects are disabled"
-        )
-
-
 class SemanticProvider(Protocol):
-    def health(self) -> dict[str, str | None]: ...
+    def health(self) -> dict[str, str | bool | None]: ...
 
     def complete_json(
         self,
@@ -46,28 +28,34 @@ class SemanticProvider(Protocol):
         schema: dict[str, Any],
     ) -> dict[str, Any]: ...
 
-    def embed(self, texts: Sequence[str]) -> list[list[float]]: ...
 
-
-class LocalOpenAIProvider:
-    """HTTP adapter for separately managed, local model servers."""
+class LocalTransformersProvider:
+    """Load the approved model once and run it in-process with offline-only APIs."""
 
     def __init__(self, settings: SemanticSettings) -> None:
         self.settings = settings
-        _require_loopback(settings.chat.base_url)
-        _require_loopback(settings.embeddings.base_url)
-        # Ignore process-level proxy configuration so a local request can never be
-        # forwarded to an external proxy, even on a misconfigured workstation.
-        self._opener = build_opener(ProxyHandler({}), _RejectRedirects())
+        self.verified: VerifiedModel = verify_model_directory(settings.model.local_path)
+        self._tokenizer: Any = None
+        self._model: Any = None
+        self._torch: Any = None
+        self._device: str | None = None
+        _enable_offline_mode()
 
-    def health(self) -> dict[str, str | None]:
-        chat = self._request(self.settings.chat, "GET", "/models")
-        embeddings = self._request(self.settings.embeddings, "GET", "/models")
+    def health(self) -> dict[str, str | bool | None]:
+        self._load()
+        manifest = self.verified.manifest
         return {
-            "chat_model": self.settings.chat.model,
-            "embedding_model": self.settings.embeddings.model,
-            "chat_server": _server_identity(chat),
-            "embedding_server": _server_identity(embeddings),
+            "ready": True,
+            "model_repo_id": manifest.repo_id,
+            "model_revision": manifest.revision,
+            "model_manifest_sha256": manifest.manifest_sha256,
+            "model_architecture": manifest.architecture,
+            "model_license": manifest.license,
+            "local_model_identifier": self.verified.directory.name,
+            "inference_library": "transformers",
+            "inference_library_version": importlib.metadata.version("transformers"),
+            "device": self._device,
+            "offline": True,
         }
 
     def complete_json(
@@ -78,112 +66,173 @@ class LocalOpenAIProvider:
         schema_name: str,
         schema: dict[str, Any],
     ) -> dict[str, Any]:
-        body = {
-            "model": self.settings.chat.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": self.settings.execution.temperature,
-            "max_tokens": self.settings.execution.max_output_tokens,
-            "response_format": {
-                "type": "json_schema",
-                "schema": schema,
-                "json_schema": {"name": schema_name, "strict": True, "schema": schema},
-            },
-        }
-        response = self._request(self.settings.chat, "POST", "/chat/completions", body)
-        try:
-            content = response["choices"][0]["message"]["content"]
-            if isinstance(content, dict):
-                return content
-            parsed = json.loads(str(content))
-            if not isinstance(parsed, dict):
-                raise TypeError("structured output must be an object")
-            return parsed
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-            raise SemanticProviderError("Local model returned invalid structured output") from exc
-
-    def embed(self, texts: Sequence[str]) -> list[list[float]]:
-        if not texts:
-            return []
-        response = self._request(
-            self.settings.embeddings,
-            "POST",
-            "/embeddings",
-            {"model": self.settings.embeddings.model, "input": list(texts)},
+        self._load()
+        schema_text = json.dumps(schema, sort_keys=True, ensure_ascii=True)
+        system_message = (
+            f"{system}\nThe response must be exactly one JSON object named "
+            f"{schema_name} matching this JSON Schema; do not use Markdown or commentary:\n"
+            f"{schema_text}"
         )
         try:
-            items = sorted(response["data"], key=lambda item: int(item["index"]))
-            vectors = [[float(value) for value in item["embedding"]] for item in items]
-        except (KeyError, TypeError, ValueError) as exc:
-            raise SemanticProviderError("Local embedding server returned invalid vectors") from exc
-        if len(vectors) != len(texts) or any(not vector for vector in vectors):
-            raise SemanticProviderError("Local embedding server returned the wrong vector count")
-        return vectors
-
-    def _request(
-        self,
-        endpoint: ModelEndpointSettings,
-        method: str,
-        path: str,
-        body: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        url = f"{endpoint.base_url.rstrip('/')}{path}"
-        _require_loopback(url)
-        data = json.dumps(body).encode("utf-8") if body is not None else None
-        request = Request(
-            url,
-            data=data,
-            method=method,
-            headers={"Content-Type": "application/json"},
-        )
-        for attempt in range(endpoint.max_retries + 1):
-            try:
-                with self._opener.open(request, timeout=endpoint.timeout_seconds) as response:
-                    value = json.load(response)
-                if not isinstance(value, dict):
-                    raise SemanticProviderError(f"Unexpected response from {url}")
-                return value
-            except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
-                if attempt >= endpoint.max_retries:
-                    raise SemanticProviderError(
-                        f"Local model request failed: {url}: {exc}"
-                    ) from exc
-                time.sleep(min(2**attempt, 4))
-        raise AssertionError("unreachable")
-
-
-def _require_loopback(url: str) -> None:
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ValueError(f"Semantic endpoint must be loopback-only: {url}")
-    hostname = parsed.hostname.casefold()
-    if hostname != "localhost":
-        try:
-            if ip_address(hostname).is_loopback:
-                return
-        except ValueError:
-            pass
-        raise ValueError(f"Semantic endpoint must be loopback-only: {url}")
-    try:
-        addresses = {
-            item[4][0]
-            for item in socket.getaddrinfo(
-                parsed.hostname,
-                parsed.port or 80,
-                type=socket.SOCK_STREAM,
+            input_limit = max(
+                1,
+                self.settings.execution.context_tokens - self.settings.execution.max_output_tokens,
             )
-        }
-    except socket.gaierror as exc:
-        raise ValueError(f"Semantic endpoint must be loopback-only: {url}") from exc
-    if not addresses or any(not ip_address(value).is_loopback for value in addresses):
-        raise ValueError(f"Semantic endpoint must resolve only to loopback addresses: {url}")
+            inputs = self._bounded_inputs(system_message, user, input_limit).to(self._device)
+            generation: dict[str, Any] = {
+                "max_new_tokens": self.settings.execution.max_output_tokens,
+                "do_sample": self.settings.execution.temperature > 0,
+                "pad_token_id": self._tokenizer.eos_token_id,
+            }
+            if self.settings.execution.temperature > 0:
+                generation["temperature"] = self.settings.execution.temperature
+            self._torch.manual_seed(0)
+            with self._torch.inference_mode():
+                output = self._model.generate(**inputs, **generation)
+            prompt_length = int(inputs["input_ids"].shape[-1])
+            text = self._tokenizer.decode(
+                output[0][prompt_length:],
+                skip_special_tokens=True,
+            )
+            return _parse_json_object(text)
+        except SemanticProviderError:
+            raise
+        except Exception as exc:
+            raise SemanticProviderError("Local model inference failed") from exc
+
+    def _bounded_inputs(self, system: str, user: str, token_limit: int) -> Any:
+        """Fit untrusted data without allowing token truncation to remove its closing boundary."""
+        upper = min(len(user), self.settings.execution.max_profile_characters)
+
+        def render(budget: int) -> Any:
+            bounded_user = _bound_untrusted_message(user, budget)
+            prompt = _granite_prompt(system, bounded_user)
+            return self._tokenizer(prompt, return_tensors="pt")
+
+        largest = render(upper)
+        if int(largest["input_ids"].shape[-1]) <= token_limit:
+            return largest
+        upper -= 1
+        lower = 0
+        best: Any = None
+        while lower <= upper:
+            budget = (lower + upper) // 2
+            candidate = render(budget)
+            if int(candidate["input_ids"].shape[-1]) <= token_limit:
+                best = candidate
+                lower = budget + 1
+            else:
+                upper = budget - 1
+        if best is None:
+            raise SemanticProviderError(
+                "System prompt and JSON schema exceed the input token budget"
+            )
+        return best
+
+    def _load(self) -> None:
+        if self._model is not None:
+            return
+        _enable_offline_mode()
+        try:
+            torch = importlib.import_module("torch")
+            transformers = importlib.import_module("transformers")
+            auto_model = transformers.AutoModelForCausalLM
+            auto_tokenizer = transformers.AutoTokenizer
+        except (ImportError, AttributeError) as exc:  # pragma: no cover - dependency guidance
+            raise SemanticProviderError(
+                "Semantic inference dependencies are not installed. Run "
+                "'python -m pip install -e \".[semantic]\"'."
+            ) from exc
+        local_path = str(self.verified.directory)
+        try:
+            tokenizer = auto_tokenizer.from_pretrained(
+                local_path,
+                local_files_only=True,
+                trust_remote_code=False,
+            )
+            model = auto_model.from_pretrained(
+                local_path,
+                local_files_only=True,
+                trust_remote_code=False,
+                use_safetensors=True,
+                dtype="auto",
+            )
+            device = _select_device(self.settings.execution.device, torch)
+            model.to(device)
+            model.eval()
+        except Exception as exc:
+            raise SemanticProviderError(
+                "The integrity-verified approved model could not be loaded locally"
+            ) from exc
+        self._torch = torch
+        self._tokenizer = tokenizer
+        self._model = model
+        self._device = device
 
 
-def _server_identity(response: dict[str, Any]) -> str | None:
-    data = response.get("data")
-    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
-        return None
-    value = data[0].get("owned_by") or data[0].get("id")
-    return str(value) if value is not None else None
+def _enable_offline_mode() -> None:
+    # These are deliberately process-wide. Inference has no network-enabled fallback.
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_DATASETS_OFFLINE"] = "1"
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    os.environ["DISABLE_TELEMETRY"] = "1"
+
+
+def _select_device(requested: str, torch: Any) -> str:
+    if requested == "auto":
+        if torch.cuda.is_available():
+            return "cuda"
+        mps = getattr(torch.backends, "mps", None)
+        if mps is not None and mps.is_available():
+            return "mps"
+        return "cpu"
+    if requested == "cuda" and not torch.cuda.is_available():
+        raise SemanticProviderError("CUDA was requested but is unavailable")
+    if requested == "mps":
+        mps = getattr(torch.backends, "mps", None)
+        if mps is None or not mps.is_available():
+            raise SemanticProviderError("MPS was requested but is unavailable")
+    return requested
+
+
+def _parse_json_object(value: str) -> dict[str, Any]:
+    text = value.strip()
+    if text.startswith("<response>") and text.endswith("</response>"):
+        text = text[len("<response>") : -len("</response>")].strip()
+    if text.startswith("```json") and text.endswith("```"):
+        text = text[len("```json") : -len("```")].strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SemanticProviderError("Local model returned malformed structured output") from exc
+    if not isinstance(parsed, dict):
+        raise SemanticProviderError("Local model structured output must be a JSON object")
+    return parsed
+
+
+def _bound_untrusted_message(value: str, budget: int) -> str:
+    if len(value) <= budget:
+        return value
+    opening = "<UNTRUSTED_SOURCE_DATA>\n"
+    closing = "\n</UNTRUSTED_SOURCE_DATA>"
+    if value.startswith(opening) and value.endswith(closing):
+        fixed = opening + '{"truncated":true,"source_prefix":""}' + closing
+        if budget <= len(fixed):
+            return opening + "{}" + closing
+        inner = value[len(opening) : -len(closing)]
+        available = max(0, budget - len(fixed) - 12)
+        payload = json.dumps(
+            {"truncated": True, "source_prefix": inner[:available]}, ensure_ascii=True
+        )
+        return opening + payload + closing
+    return value[: max(0, budget)]
+
+
+def _granite_prompt(system: str, user: str) -> str:
+    """Use the reviewed Granite role format without executing a repository chat template."""
+    return (
+        f"<|start_of_role|>system<|end_of_role|>{system}<|end_of_text|>\n"
+        f"<|start_of_role|>user<|end_of_role|>{user}<|end_of_text|>\n"
+        "<|start_of_role|>assistant<|end_of_role|>"
+    )

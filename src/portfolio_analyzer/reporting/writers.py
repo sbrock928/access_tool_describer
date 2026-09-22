@@ -800,9 +800,9 @@ def _review_queue_sheet(
                 )
             )
         for question in semantic.architecture.open_questions:
-            proposal_id = "open_question_" + hashlib.sha256(
-                question.encode("utf-8")
-            ).hexdigest()[:20]
+            proposal_id = (
+                "open_question_" + hashlib.sha256(question.encode("utf-8")).hexdigest()[:20]
+            )
             rows.append(
                 _review_row(
                     proposal_id,
@@ -874,7 +874,7 @@ def _method_sheet(
         ["Item", "Value"],
         ["Semantic status", semantic_status],
         ["Interpretation boundary", "AI results are reviewable proposals, not observed facts."],
-        ["Network boundary", "Local loopback model endpoints only; no web API access."],
+        ["Network boundary", "Integrity-verified in-process model; offline inference only."],
         [
             "Confidence policy",
             "System-derived from cited evidence, claims, and extraction coverage.",
@@ -888,10 +888,16 @@ def _method_sheet(
                 ["Schema version", metadata.semantic_schema_version],
                 ["Prompt version", metadata.prompt_version],
                 ["Static analysis version", metadata.static_analysis_version],
-                ["Chat model", metadata.chat_model],
-                ["Chat model SHA-256", metadata.chat_model_sha256],
-                ["Embedding model", metadata.embedding_model],
-                ["Embedding model SHA-256", metadata.embedding_model_sha256],
+                ["Model repository", metadata.model_repo_id],
+                ["Model revision", metadata.model_revision],
+                ["Model manifest SHA-256", metadata.model_manifest_sha256],
+                ["Model architecture", metadata.model_architecture],
+                ["Model license", metadata.model_license],
+                [
+                    "Inference runtime",
+                    f"{metadata.inference_library} {metadata.inference_library_version}",
+                ],
+                ["Similarity version", metadata.deterministic_similarity_version],
                 ["Generated at", metadata.generated_at.isoformat()],
                 ["Semantic errors", len(semantic.errors)],
             ]

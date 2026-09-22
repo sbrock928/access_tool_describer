@@ -246,8 +246,9 @@ class SemanticApplicationProfile(BaseModel):
     artifact_hashes: list[str] = Field(default_factory=list)
     input_fingerprint: str
     semantic_version: str
-    model_name: str
-    model_sha256: str
+    model_repo_id: str
+    model_revision: str
+    model_manifest_sha256: str
     status: Literal["complete", "partial", "failed"] = "complete"
     error: str | None = None
 
@@ -255,7 +256,9 @@ class SemanticApplicationProfile(BaseModel):
 class SimilarityEdge(BaseModel):
     source_tool_id: str
     target_tool_id: str
-    semantic_similarity: float = Field(ge=-1.0, le=1.0)
+    overall_similarity: float = Field(ge=0.0, le=1.0)
+    category_scores: dict[str, float] = Field(default_factory=dict)
+    shared_features: dict[str, list[str]] = Field(default_factory=dict)
     shared_capabilities: list[str] = Field(default_factory=list)
     shared_datasources: list[str] = Field(default_factory=list)
 
@@ -351,17 +354,19 @@ class SemanticRunMetadata(BaseModel):
     semantic_schema_version: str
     prompt_version: str
     static_analysis_version: str
-    chat_model: str
-    chat_model_sha256: str
-    embedding_model: str
-    embedding_model_sha256: str
-    chat_base_url: str = ""
-    embedding_base_url: str = ""
+    deterministic_similarity_version: str
+    model_repo_id: str
+    model_revision: str
+    model_manifest_sha256: str
+    local_model_identifier: str
+    model_architecture: str
+    model_license: str
+    inference_library: str
+    inference_library_version: str
     generation_parameters: dict[str, object] = Field(default_factory=dict)
     clustering_parameters: dict[str, object] = Field(default_factory=dict)
     approved_services: list[str] = Field(default_factory=list)
     context_hash: str = ""
-    server_version: str | None = None
     generated_at: datetime
     input_fingerprint: str
 
@@ -372,7 +377,6 @@ class SemanticPortfolioState(BaseModel):
     observed_evidence_ids: list[str] = Field(default_factory=list)
     claims: list[Claim] = Field(default_factory=list)
     applications: list[SemanticApplicationProfile] = Field(default_factory=list)
-    embeddings: dict[str, list[float]] = Field(default_factory=dict)
     similarity_edges: list[SimilarityEdge] = Field(default_factory=list)
     clusters: list[PortfolioCluster] = Field(default_factory=list)
     architecture: TargetArchitecture = Field(default_factory=TargetArchitecture)

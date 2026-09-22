@@ -16,7 +16,8 @@ hotspots, and migration waves. Review Queue decisions are constrained to `Accept
 workbook and normalized CSV files so oversized evidence does not make the PDF unreadable.
 
 Semantic runs add `semantic_applications.csv`, `semantic_findings.csv`,
-`portfolio_clusters.csv`, `architecture_components.csv`, `architecture_relations.csv`,
+`portfolio_clusters.csv`, `similarity_edges.csv`, `architecture_components.csv`,
+`architecture_relations.csv`,
 `application_target_map.csv`, `migration_waves.csv`, `architecture_model.json`, and portable
 `Target_Architecture.md` Mermaid diagrams. `report_manifest.json` includes output checksums and
 semantic provenance.

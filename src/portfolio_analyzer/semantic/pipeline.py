@@ -31,9 +31,11 @@ from portfolio_analyzer.models import (
 from portfolio_analyzer.semantic.architecture import synthesize_architecture
 from portfolio_analyzer.semantic.config import SemanticSettings
 from portfolio_analyzer.semantic.graph import build_similarity_graph
+from portfolio_analyzer.semantic.model_store import verify_model_directory
 from portfolio_analyzer.semantic.provider import SemanticProvider, SemanticProviderError
 from portfolio_analyzer.semantic.safety import prompt_data, redact_semantic_text
 from portfolio_analyzer.versions import (
+    DETERMINISTIC_SIMILARITY_VERSION,
     SEMANTIC_ANALYSIS_VERSION,
     SEMANTIC_PROMPT_VERSION,
     SEMANTIC_SCHEMA_VERSION,
@@ -127,6 +129,14 @@ def run_semantic_pipeline(
 ) -> SemanticPortfolioState:
     notify = progress or (lambda _message: None)
     _validate_model_configuration(settings)
+    health = provider.health()
+    provenance = _validated_provenance(health)
+    if prior_state is not None and not _profile_cache_is_compatible(
+        prior_state, settings, provenance
+    ):
+        notify("Prior semantic runtime provenance changed; refreshing every application profile")
+        prior_state = None
+        tool_id = None
     sources = build_semantic_sources(extracted, settings)
     sources_by_tool: dict[str, list[SemanticSource]] = defaultdict(list)
     for source in sources:
@@ -162,6 +172,7 @@ def run_semantic_pipeline(
             claims_by_tool[record.tool_inventory_id],
             artifact_hashes[record.tool_inventory_id],
             settings,
+            provenance,
         )
         selected = tool_id is None or record.tool_inventory_id == tool_id
         if prior and prior.input_fingerprint == fingerprint and (not force or not selected):
@@ -183,7 +194,7 @@ def run_semantic_pipeline(
                 artifact_hashes[record.tool_inventory_id],
                 fingerprint,
                 settings,
-                prior if not force else None,
+                provenance,
             )
             profiles.append(profile)
         except (SemanticProviderError, ValueError) as exc:
@@ -201,27 +212,21 @@ def run_semantic_pipeline(
                     artifact_hashes=sorted(artifact_hashes[record.tool_inventory_id]),
                     input_fingerprint=fingerprint,
                     semantic_version=SEMANTIC_ANALYSIS_VERSION,
-                    model_name=settings.chat.model,
-                    model_sha256=settings.chat.model_sha256,
+                    model_repo_id=provenance["model_repo_id"],
+                    model_revision=provenance["model_revision"],
+                    model_manifest_sha256=provenance["model_manifest_sha256"],
                     status="failed",
                     error=str(exc),
                 )
             )
 
     profiles.sort(key=lambda item: item.tool_name.casefold())
-    embeddings = _profile_embeddings(
-        provider,
-        profiles,
-        prior_state,
-        errors,
-        notify,
-        settings,
-    )
     edges, clusters = build_similarity_graph(
         [profile for profile in profiles if profile.status != "failed"],
-        embeddings,
         datasources,
         settings.clustering,
+        sources=sources,
+        evidence=evidence,
     )
     clusters = _refine_clusters(provider, clusters, profiles, errors, notify)
     notify("Synthesizing target architecture")
@@ -237,25 +242,26 @@ def run_semantic_pipeline(
     )
     if architecture_error:
         errors["architecture"] = architecture_error
-    portfolio_fingerprint = _portfolio_fingerprint(profiles, claims, settings)
-    health = provider.health()
+    portfolio_fingerprint = _portfolio_fingerprint(profiles, claims, settings, provenance)
     return SemanticPortfolioState(
         metadata=SemanticRunMetadata(
             semantic_version=SEMANTIC_ANALYSIS_VERSION,
             semantic_schema_version=SEMANTIC_SCHEMA_VERSION,
             prompt_version=SEMANTIC_PROMPT_VERSION,
             static_analysis_version=STATIC_ANALYSIS_VERSION,
-            chat_model=settings.chat.model,
-            chat_model_sha256=settings.chat.model_sha256,
-            embedding_model=settings.embeddings.model,
-            embedding_model_sha256=settings.embeddings.model_sha256,
-            chat_base_url=settings.chat.base_url,
-            embedding_base_url=settings.embeddings.base_url,
+            deterministic_similarity_version=DETERMINISTIC_SIMILARITY_VERSION,
+            model_repo_id=provenance["model_repo_id"],
+            model_revision=provenance["model_revision"],
+            model_manifest_sha256=provenance["model_manifest_sha256"],
+            local_model_identifier=provenance["local_model_identifier"],
+            model_architecture=provenance["model_architecture"],
+            model_license=provenance["model_license"],
+            inference_library=provenance["inference_library"],
+            inference_library_version=provenance["inference_library_version"],
             generation_parameters=settings.execution.model_dump(mode="json"),
             clustering_parameters=settings.clustering.model_dump(mode="json"),
             approved_services=settings.microsoft.approved_services,
             context_hash=_claims_hash(claims),
-            server_version=health.get("chat_server"),
             generated_at=datetime.now(UTC),
             input_fingerprint=portfolio_fingerprint,
         ),
@@ -263,7 +269,6 @@ def run_semantic_pipeline(
         observed_evidence_ids=sorted({item.evidence_id for item in evidence}),
         claims=claims,
         applications=profiles,
-        embeddings=embeddings,
         similarity_edges=edges,
         clusters=clusters,
         architecture=architecture,
@@ -345,11 +350,8 @@ def preflight_semantic_provider(
         schema=schema,
     )
     if result.get("message") != "ready" or result.get("evidence_ids") != ["probe_1"]:
-        raise SemanticProviderError("The chat model did not preserve the required evidence ID")
-    vectors = provider.embed(["semantic preflight", "semantic preflight"])
-    if len(vectors) != 2 or len(vectors[0]) != len(vectors[1]):
-        raise SemanticProviderError("The embedding endpoint returned incompatible vectors")
-    return {**health, "embedding_dimensions": len(vectors[0]), "structured_output": True}
+        raise SemanticProviderError("The local model did not preserve the required evidence ID")
+    return {**health, "structured_output": True}
 
 
 def evaluate_gold_set(
@@ -410,9 +412,7 @@ def evaluate_gold_set(
     capability_macro_f1 = (
         sum(capability_scores) / len(capability_scores) if capability_scores else None
     )
-    reviewed_tool_ids = {
-        ids_by_name[name] for name in reviewed_names if name in ids_by_name
-    }
+    reviewed_tool_ids = {ids_by_name[name] for name in reviewed_names if name in ids_by_name}
     schema_validity = (
         sum(
             profiles.get(tool_id) is not None and profiles[tool_id].status != "failed"
@@ -453,15 +453,17 @@ def semantic_state_is_current(
     artifacts: list[StagedArtifact],
     claims: list[Claim] | None = None,
 ) -> bool:
+    verified = verify_model_directory(settings.model.local_path)
     if (
         state.metadata.semantic_version != SEMANTIC_ANALYSIS_VERSION
         or state.metadata.semantic_schema_version != SEMANTIC_SCHEMA_VERSION
         or state.metadata.prompt_version != SEMANTIC_PROMPT_VERSION
         or state.metadata.static_analysis_version != STATIC_ANALYSIS_VERSION
-        or state.metadata.chat_model_sha256 != settings.chat.model_sha256
-        or state.metadata.embedding_model_sha256 != settings.embeddings.model_sha256
-        or state.metadata.chat_base_url != settings.chat.base_url
-        or state.metadata.embedding_base_url != settings.embeddings.base_url
+        or state.metadata.deterministic_similarity_version != DETERMINISTIC_SIMILARITY_VERSION
+        or state.metadata.model_repo_id != verified.manifest.repo_id
+        or state.metadata.model_revision != verified.manifest.revision
+        or state.metadata.model_manifest_sha256 != verified.manifest.manifest_sha256
+        or state.metadata.model_architecture != verified.manifest.architecture
         or state.metadata.generation_parameters != settings.execution.model_dump(mode="json")
         or state.metadata.clustering_parameters != settings.clustering.model_dump(mode="json")
         or state.metadata.approved_services != settings.microsoft.approved_services
@@ -490,17 +492,10 @@ def _profile_application(
     artifact_hashes: list[str],
     fingerprint: str,
     settings: SemanticSettings,
-    prior: SemanticApplicationProfile | None,
+    provenance: dict[str, str],
 ) -> SemanticApplicationProfile:
-    prior_summaries = (
-        {summary.source_id: summary for summary in prior.object_summaries} if prior else {}
-    )
     summaries: list[ObjectSemanticSummary] = []
     for source in sources:
-        cached = prior_summaries.get(source.source_id)
-        if cached:
-            summaries.append(cached)
-            continue
         related = [
             item
             for item in evidence
@@ -518,12 +513,8 @@ def _profile_application(
                 user=prompt_data(
                     {
                         "source": source.model_dump(mode="json"),
-                        "observed_findings": [
-                            _evidence_packet(item, settings) for item in related
-                        ],
-                        "owner_claims": [
-                            _claim_packet(claim, settings) for claim in claims
-                        ],
+                        "observed_findings": [_evidence_packet(item, settings) for item in related],
+                        "owner_claims": [_claim_packet(claim, settings) for claim in claims],
                         "allowed_evidence_ids": sorted(allowed_evidence),
                         "allowed_claim_ids": sorted(allowed_claims),
                     }
@@ -631,59 +622,11 @@ def _profile_application(
         artifact_hashes=sorted(artifact_hashes),
         input_fingerprint=fingerprint,
         semantic_version=SEMANTIC_ANALYSIS_VERSION,
-        model_name=settings.chat.model,
-        model_sha256=settings.chat.model_sha256,
+        model_repo_id=provenance["model_repo_id"],
+        model_revision=provenance["model_revision"],
+        model_manifest_sha256=provenance["model_manifest_sha256"],
         status="complete" if confidence != Confidence.LOW else "partial",
     )
-
-
-def _profile_embeddings(
-    provider: SemanticProvider,
-    profiles: list[SemanticApplicationProfile],
-    prior_state: SemanticPortfolioState | None,
-    errors: dict[str, str],
-    notify: ProgressCallback,
-    settings: SemanticSettings,
-) -> dict[str, list[float]]:
-    previous_profiles = (
-        {profile.tool_inventory_id: profile for profile in prior_state.applications}
-        if prior_state
-        else {}
-    )
-    previous_embeddings = prior_state.embeddings if prior_state else {}
-    embeddings: dict[str, list[float]] = {}
-    pending: list[SemanticApplicationProfile] = []
-    for profile in profiles:
-        previous = previous_profiles.get(profile.tool_inventory_id)
-        if (
-            previous
-            and prior_state is not None
-            and prior_state.metadata.embedding_model_sha256 == settings.embeddings.model_sha256
-            and previous.input_fingerprint == profile.input_fingerprint
-            and profile.tool_inventory_id in previous_embeddings
-        ):
-            embeddings[profile.tool_inventory_id] = previous_embeddings[profile.tool_inventory_id]
-        elif profile.status != "failed":
-            pending.append(profile)
-    if not pending:
-        return embeddings
-    notify(f"Embedding {len(pending)} semantic profiles")
-    texts = [_embedding_document(profile) for profile in pending]
-    try:
-        vectors = provider.embed(texts)
-        embeddings.update(
-            {
-                profile.tool_inventory_id: vector
-                for profile, vector in zip(pending, vectors, strict=True)
-            }
-        )
-    except SemanticProviderError:
-        for profile, text in zip(pending, texts, strict=True):
-            try:
-                embeddings[profile.tool_inventory_id] = provider.embed([text])[0]
-            except SemanticProviderError as exc:
-                errors[f"embedding:{profile.tool_inventory_id}"] = str(exc)
-    return embeddings
 
 
 def _refine_clusters(
@@ -834,6 +777,7 @@ def _application_fingerprint(
     claims: list[Claim],
     artifact_hashes: list[str],
     settings: SemanticSettings,
+    provenance: dict[str, str],
 ) -> str:
     value = {
         "tool_id": tool_id,
@@ -844,19 +788,26 @@ def _application_fingerprint(
         "static_version": STATIC_ANALYSIS_VERSION,
         "semantic_version": SEMANTIC_ANALYSIS_VERSION,
         "prompt_version": SEMANTIC_PROMPT_VERSION,
-        "chat_model_sha256": settings.chat.model_sha256,
+        "schema_version": SEMANTIC_SCHEMA_VERSION,
+        "model_manifest_sha256": provenance["model_manifest_sha256"],
+        "inference_library_version": provenance["inference_library_version"],
+        "generation": settings.execution.model_dump(mode="json"),
     }
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def _portfolio_fingerprint(
-    profiles: list[SemanticApplicationProfile], claims: list[Claim], settings: SemanticSettings
+    profiles: list[SemanticApplicationProfile],
+    claims: list[Claim],
+    settings: SemanticSettings,
+    provenance: dict[str, str],
 ) -> str:
     value = {
         "profiles": [profile.input_fingerprint for profile in profiles],
         "claims": [claim.claim_id for claim in claims],
-        "chat": settings.chat.model_sha256,
-        "embeddings": settings.embeddings.model_sha256,
+        "model_manifest_sha256": provenance["model_manifest_sha256"],
+        "inference_library_version": provenance["inference_library_version"],
+        "similarity_version": DETERMINISTIC_SIMILARITY_VERSION,
         "clustering": settings.clustering.model_dump(mode="json"),
         "services": settings.microsoft.approved_services,
     }
@@ -875,23 +826,6 @@ def _claims_hash(claims: list[Claim]) -> str:
         for claim in claims
     )
     return hashlib.sha256(json.dumps(values, ensure_ascii=True).encode("utf-8")).hexdigest()
-
-
-def _embedding_document(profile: SemanticApplicationProfile) -> str:
-    findings = "\n".join(
-        f"{finding.category}: {finding.label} - {finding.description}"
-        for finding in profile.findings
-        if finding.review_status != "rejected"
-    )
-    return "\n".join(
-        (
-            profile.tool_name,
-            profile.summary,
-            profile.business_purpose,
-            profile.primary_archetype,
-            findings,
-        )
-    )[:16000]
 
 
 def _derive_confidence(
@@ -1042,12 +976,10 @@ def _unsupported_high_confidence_count(state: SemanticPortfolioState) -> int:
         for component in state.architecture.components
     )
     items.extend(
-        (relation.confidence, relation.evidence_ids)
-        for relation in state.architecture.relations
+        (relation.confidence, relation.evidence_ids) for relation in state.architecture.relations
     )
     items.extend(
-        (mapping.confidence, mapping.evidence_ids)
-        for mapping in state.architecture.mappings
+        (mapping.confidence, mapping.evidence_ids) for mapping in state.architecture.mappings
     )
     return sum(
         confidence == Confidence.HIGH and len(set(evidence_ids)) < 2
@@ -1056,11 +988,49 @@ def _unsupported_high_confidence_count(state: SemanticPortfolioState) -> int:
 
 
 def _validate_model_configuration(settings: SemanticSettings) -> None:
-    placeholders = (
-        settings.chat.model,
-        settings.chat.model_sha256,
-        settings.embeddings.model,
-        settings.embeddings.model_sha256,
+    if settings.model.revision.casefold() in {"main", "latest"}:
+        raise ValueError("semantic model revision must be an immutable commit SHA")
+    if len(settings.model.revision) != 40 or any(
+        value not in "0123456789abcdef" for value in settings.model.revision.casefold()
+    ):
+        raise ValueError("semantic model revision must be a 40-character commit SHA")
+
+
+def _validated_provenance(health: dict[str, str | bool | None]) -> dict[str, str]:
+    required = (
+        "model_repo_id",
+        "model_revision",
+        "model_manifest_sha256",
+        "local_model_identifier",
+        "model_architecture",
+        "model_license",
+        "inference_library",
+        "inference_library_version",
     )
-    if any(value.casefold().startswith("replace_") for value in placeholders):
-        raise ValueError("semantic.toml still contains model configuration placeholders")
+    output: dict[str, str] = {}
+    for key in required:
+        value = health.get(key)
+        if not isinstance(value, str) or not value:
+            raise SemanticProviderError(f"Local semantic provider omitted provenance: {key}")
+        output[key] = value
+    return output
+
+
+def _profile_cache_is_compatible(
+    state: SemanticPortfolioState,
+    settings: SemanticSettings,
+    provenance: dict[str, str],
+) -> bool:
+    metadata = state.metadata
+    return bool(
+        metadata.semantic_version == SEMANTIC_ANALYSIS_VERSION
+        and metadata.semantic_schema_version == SEMANTIC_SCHEMA_VERSION
+        and metadata.prompt_version == SEMANTIC_PROMPT_VERSION
+        and metadata.static_analysis_version == STATIC_ANALYSIS_VERSION
+        and metadata.model_repo_id == provenance["model_repo_id"]
+        and metadata.model_revision == provenance["model_revision"]
+        and metadata.model_manifest_sha256 == provenance["model_manifest_sha256"]
+        and metadata.inference_library == provenance["inference_library"]
+        and metadata.inference_library_version == provenance["inference_library_version"]
+        and metadata.generation_parameters == settings.execution.model_dump(mode="json")
+    )

@@ -41,23 +41,28 @@ See [docs/REPORTS.md](docs/REPORTS.md) and [docs/REFACTOR_PLAN.md](docs/REFACTOR
 
 ## Optional local semantic analysis
 
-Semantic analysis is opt-in and talks only to separately managed OpenAI-compatible services that
-resolve to the local loopback interface. The analyzer cannot call hosted model APIs, does not
-download weights, follows redirects from no model endpoint, ignores HTTP proxy configuration,
-and retains no raw prompts.
-
-For approved external model acquisition, this project documents using
-`uv pip install huggingface_hub` and a separate Python download script. That acquisition step is
-not part of the analyzer: the analyzer never imports `huggingface_hub` or contacts Hugging Face.
+Semantic analysis is opt-in and uses one approved model loaded directly in-process. Model
+acquisition is the only network-enabled phase. Analysis uses an integrity-verified local directory,
+sets Hugging Face and Transformers offline mode, passes `local_files_only=True` and
+`trust_remote_code=False`, and has no HTTP provider, API key, telemetry, or hosted fallback.
+Portfolio similarity is deterministic and explainable; it does not use embeddings or a vector
+database.
 
 ```powershell
+python -m pip install -c requirements\semantic-py313.lock -e ".[dev,windows,semantic]"
 portfolio-analyzer semantic-init --workspace .\workspace
-# Edit workspace\semantic\semantic.toml with local model names and SHA-256 checksums.
-# Start the approved chat and embedding servers separately on localhost.
+portfolio-analyzer semantic-model-download --workspace .\workspace
+# Disconnect from external networks here when policy requires it.
 portfolio-analyzer semantic-check --workspace .\workspace
 portfolio-analyzer semantic --workspace .\workspace
 portfolio-analyzer report --workspace .\workspace --semantic-mode auto
 ```
+
+The approved model is `ibm-granite/granite-3.3-2b-instruct`, pinned to an immutable commit.
+Acquisition downloads only its allowlisted Transformers configuration, tokenizer files, model card,
+and safetensors weights. Every file must match a code-reviewed size and SHA-256 before acquisition
+writes the local manifest. Missing, altered, unsafe, or unexpected model files stop inference; they
+are never repaired by an implicit download.
 
 Use `--semantic-mode require` in controlled production runs, or `off` for deterministic-only
 reporting. Reviewers can enter `Accept`, `Edit`, or `Reject` in the workbook's `Review Queue` and

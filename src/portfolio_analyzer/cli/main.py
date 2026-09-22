@@ -51,13 +51,14 @@ from portfolio_analyzer.semantic.context import (
     load_claims,
     read_gold_set,
 )
+from portfolio_analyzer.semantic.model_store import APPROVED_MODEL, acquire_approved_model
 from portfolio_analyzer.semantic.pipeline import (
     evaluate_gold_set,
     preflight_semantic_provider,
     run_semantic_pipeline,
     semantic_state_is_current,
 )
-from portfolio_analyzer.semantic.provider import LocalOpenAIProvider
+from portfolio_analyzer.semantic.provider import LocalTransformersProvider, SemanticProviderError
 from portfolio_analyzer.semantic.review import apply_review_decisions, import_review_workbook
 from portfolio_analyzer.semantic.state import (
     read_review_decisions,
@@ -768,32 +769,66 @@ def semantic_init(workspace: Path = typer.Option(...)) -> None:
     for path, was_created in created:
         typer.echo(f"{'Created' if was_created else 'Preserved'}: {path}")
     typer.echo(
-        "Model weights remain external. Configure separately managed loopback-only chat and "
-        "embedding servers before running semantic-check."
+        "The approved model is not downloaded automatically. Install semantic dependencies, "
+        "then run 'portfolio-analyzer semantic-model-download --workspace ...'."
     )
     typer.echo(
-        "Approved acquisition may use 'uv pip install huggingface_hub' and a separate Python "
-        "download script; the analyzer itself never contacts Hugging Face."
+        "Only that explicit acquisition command can contact Hugging Face; semantic analysis "
+        "loads the verified local files directly in offline mode."
     )
 
 
-@app.command("semantic-check")
-def semantic_check(workspace: Path = typer.Option(...)) -> None:
-    """Validate local endpoints, structured output, citations, and reviewed gold-set quality."""
+@app.command("semantic-model-download")
+def semantic_model_download(workspace: Path = typer.Option(...)) -> None:
+    """Acquire the allowlisted model at its immutable Hugging Face revision."""
     settings = _settings(workspace)
     config_path = _semantic_config_path(settings)
     if not config_path.exists():
         raise typer.BadParameter("No semantic configuration found. Run 'semantic-init' first.")
     semantic_settings = load_semantic_settings(config_path)
-    provider = LocalOpenAIProvider(semantic_settings)
-    result = preflight_semantic_provider(semantic_settings, provider)
+    typer.echo(
+        f"Downloading approved model {APPROVED_MODEL.repo_id}@{APPROVED_MODEL.revision} "
+        f"to {semantic_settings.model.local_path}"
+    )
+    try:
+        manifest = acquire_approved_model(semantic_settings.model.local_path)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise typer.BadParameter(f"Approved model acquisition failed: {exc}") from exc
+    typer.echo(
+        json.dumps(
+            {
+                "repo_id": manifest.repo_id,
+                "revision": manifest.revision,
+                "license": manifest.license,
+                "architecture": manifest.architecture,
+                "files": len(manifest.files),
+                "manifest_sha256": manifest.manifest_sha256,
+            },
+            indent=2,
+        )
+    )
+
+
+@app.command("semantic-check")
+def semantic_check(workspace: Path = typer.Option(...)) -> None:
+    """Verify the local model, structured output, citations, and gold-set quality offline."""
+    settings = _settings(workspace)
+    config_path = _semantic_config_path(settings)
+    if not config_path.exists():
+        raise typer.BadParameter("No semantic configuration found. Run 'semantic-init' first.")
+    semantic_settings = load_semantic_settings(config_path)
+    try:
+        provider = LocalTransformersProvider(semantic_settings)
+        result = preflight_semantic_provider(semantic_settings, provider)
+    except (OSError, SemanticProviderError, ValueError) as exc:
+        raise typer.BadParameter(f"Offline semantic preflight failed: {exc}") from exc
     state_path = settings.analysis_dir / "staging_state.json"
     inventory, _ = _read_state(state_path) if state_path.exists() else ([], [])
-    gold_result = evaluate_gold_set(
-        read_gold_set(_semantic_gold_path(settings)),
-        inventory,
-        read_semantic_state(_semantic_state_path(settings)),
-    )
+    try:
+        state = read_semantic_state(_semantic_state_path(settings))
+    except ValueError as exc:
+        raise typer.BadParameter(f"Semantic state is incompatible; rerun semantic: {exc}") from exc
+    gold_result = evaluate_gold_set(read_gold_set(_semantic_gold_path(settings)), inventory, state)
     typer.echo(json.dumps({"provider": result, "gold_set": gold_result}, indent=2))
     if not gold_result.get("passed"):
         raise typer.Exit(code=1)
@@ -805,13 +840,16 @@ def semantic_analysis(
     tool_id: str | None = typer.Option(None, help="Refresh one tool inventory ID."),
     force: bool = typer.Option(False, help="Refresh compatible cached semantic results."),
 ) -> None:
-    """Run resumable semantic analysis against loopback-only local model servers."""
+    """Run resumable semantic analysis with the approved in-process model, fully offline."""
     settings = _settings(workspace)
     config_path = _semantic_config_path(settings)
     if not config_path.exists():
         raise typer.BadParameter("No semantic configuration found. Run 'semantic-init' first.")
     semantic_settings = load_semantic_settings(config_path)
-    provider = LocalOpenAIProvider(semantic_settings)
+    try:
+        provider = LocalTransformersProvider(semantic_settings)
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter(f"Approved local model verification failed: {exc}") from exc
     staging_path = settings.analysis_dir / "staging_state.json"
     if not staging_path.exists():
         raise typer.BadParameter("No staging state found. Run 'stage' first.")
@@ -837,21 +875,29 @@ def semantic_analysis(
     extracted = _current_extractions(settings, artifacts)
     if not extracted:
         raise typer.BadParameter("No current extraction snapshots are available.")
-    state = run_semantic_pipeline(
-        semantic_settings,
-        provider,
-        inventory,
-        artifacts,
-        extracted,
-        evidence,
-        datasources,
-        coverage,
-        claims,
-        prior_state=read_semantic_state(_semantic_state_path(settings)),
-        tool_id=tool_id,
-        force=force,
-        progress=typer.echo,
-    )
+    try:
+        prior_state = read_semantic_state(_semantic_state_path(settings))
+    except ValueError as exc:
+        typer.echo(f"Prior semantic state is incompatible and will be replaced: {exc}")
+        prior_state = None
+    try:
+        state = run_semantic_pipeline(
+            semantic_settings,
+            provider,
+            inventory,
+            artifacts,
+            extracted,
+            evidence,
+            datasources,
+            coverage,
+            claims,
+            prior_state=prior_state,
+            tool_id=tool_id,
+            force=force,
+            progress=typer.echo,
+        )
+    except (SemanticProviderError, ValueError) as exc:
+        raise typer.BadParameter(f"Semantic analysis stopped safely: {exc}") from exc
     decisions = read_review_decisions(_review_decisions_path(settings))
     if decisions:
         state = apply_review_decisions(state, decisions)
@@ -919,9 +965,16 @@ def report(
     decisions = read_review_decisions(_review_decisions_path(settings))
     if semantic_mode != "off":
         config_path = _semantic_config_path(settings)
-        state = read_semantic_state(_semantic_state_path(settings))
+        state_error: str | None = None
+        try:
+            state = read_semantic_state(_semantic_state_path(settings))
+        except ValueError as exc:
+            state = None
+            state_error = str(exc)
         if not config_path.exists():
             semantic_status = "not configured; run semantic-init"
+        elif state_error is not None:
+            semantic_status = f"incompatible semantic state; rerun semantic analysis: {state_error}"
         elif state is None:
             semantic_status = "not run; deterministic report only"
         else:
@@ -976,8 +1029,7 @@ def report(
                 semantic_status = f"unavailable: {exc}"
         if semantic_mode == "require" and (semantic_state is None or semantic_partial):
             raise typer.BadParameter(
-                f"Complete current semantic results are required but unavailable: "
-                f"{semantic_status}"
+                f"Complete current semantic results are required but unavailable: {semantic_status}"
             )
     produced: list[Path] = []
     workbook_path = settings.reports_dir / "Portfolio_Analysis.xlsx"

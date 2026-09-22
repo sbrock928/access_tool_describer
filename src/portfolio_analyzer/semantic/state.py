@@ -7,14 +7,23 @@ import os
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from portfolio_analyzer.models import ReviewDecision, SemanticPortfolioState
 
 
 def read_semantic_state(path: Path) -> SemanticPortfolioState | None:
     if not path.exists():
         return None
-    with path.open(encoding="utf-8") as source:
-        return SemanticPortfolioState.model_validate(json.load(source))
+    try:
+        with path.open(encoding="utf-8") as source:
+            raw = json.load(source)
+        return SemanticPortfolioState.model_validate(raw)
+    except (json.JSONDecodeError, ValidationError, KeyError, TypeError) as exc:
+        raise ValueError(
+            "semantic state uses an invalid or legacy schema (including the removed embedding "
+            "format); preserve deterministic analysis and rerun 'semantic'"
+        ) from exc
 
 
 def write_semantic_state(path: Path, state: SemanticPortfolioState) -> None:
