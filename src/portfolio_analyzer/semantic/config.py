@@ -94,6 +94,8 @@ def write_semantic_settings_template(path: Path) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         """# Local semantic inference. Model weights are managed outside this repository.
+# Approved acquisition may use `uv pip install huggingface_hub` plus a separate Python script.
+# The analyzer never imports huggingface_hub, downloads weights, or contacts Hugging Face.
 [chat]
 base_url = "http://127.0.0.1:8080/v1"
 model = "REPLACE_WITH_APPROVED_CHAT_MODEL"

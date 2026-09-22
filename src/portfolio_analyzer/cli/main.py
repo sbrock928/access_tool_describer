@@ -771,6 +771,10 @@ def semantic_init(workspace: Path = typer.Option(...)) -> None:
         "Model weights remain external. Configure separately managed loopback-only chat and "
         "embedding servers before running semantic-check."
     )
+    typer.echo(
+        "Approved acquisition may use 'uv pip install huggingface_hub' and a separate Python "
+        "download script; the analyzer itself never contacts Hugging Face."
+    )
 
 
 @app.command("semantic-check")

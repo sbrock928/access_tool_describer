@@ -46,6 +46,10 @@ resolve to the local loopback interface. The analyzer cannot call hosted model A
 download weights, follows redirects from no model endpoint, ignores HTTP proxy configuration,
 and retains no raw prompts.
 
+For approved external model acquisition, this project documents using
+`uv pip install huggingface_hub` and a separate Python download script. That acquisition step is
+not part of the analyzer: the analyzer never imports `huggingface_hub` or contacts Hugging Face.
+
 ```powershell
 portfolio-analyzer semantic-init --workspace .\workspace
 # Edit workspace\semantic\semantic.toml with local model names and SHA-256 checksums.

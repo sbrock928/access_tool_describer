@@ -7,6 +7,8 @@ evidence or owner-claim references and a review status.
 ## Network and model boundary
 
 - Model weights are acquired, approved, licensed, and stored outside this repository.
+- The documented acquisition workflow uses the official `huggingface_hub` Python package installed
+  with `uv`; it is a separate operator-run process and is not imported by the analyzer.
 - The analyzer accepts only `http` or `https` endpoints that resolve exclusively to loopback
   addresses (`localhost`, `127.0.0.0/8`, or `::1`). Other hostnames and IP addresses are rejected.
 - HTTP redirects are rejected, including redirects originating at a loopback endpoint.
@@ -33,6 +35,36 @@ This creates:
 - `semantic/business_context.csv`: optional owner, purpose, criticality, user band, lifecycle,
   sensitivity, pain point, and target-constraint claims.
 - `semantic/gold_set.csv`: a stratified template of up to 20 applications.
+
+### Approved Hugging Face acquisition
+
+When policy permits access to Hugging Face during the acquisition phase, install the official
+client into the active environment with `uv`:
+
+```powershell
+uv pip install huggingface_hub
+```
+
+The package name is `huggingface_hub`, not `hugging_face`. Use a separate Python script and pin an
+immutable model revision for reproducibility:
+
+```python
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="APPROVED_ORGANIZATION/APPROVED_MODEL",
+    revision="PINNED_COMMIT_HASH",
+    local_dir=r"C:\ApprovedModels\model-name",
+    allow_patterns=["*.gguf", "*.json", "*.md"],
+)
+```
+
+This script is intentionally outside the analyzer. It may access Hugging Face only during an
+approved acquisition session. Do not add `huggingface_hub` as an analyzer dependency, place model
+weights in the repository or workspace, or put Hugging Face tokens in `semantic.toml`. After the
+download, record the repository ID and pinned revision in the operational record, review the model
+license, calculate the GGUF file's SHA-256, and perform analyzer runs offline against the loopback
+model servers.
 
 Replace every `REPLACE_...` value in `semantic.toml`. Calculate checksums with an approved local
 tool, for example `Get-FileHash -Algorithm SHA256` in PowerShell. The analyzer records model names,

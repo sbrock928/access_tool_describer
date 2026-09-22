@@ -58,6 +58,8 @@ def test_semantic_init_is_non_destructive_and_loopback_only(tmp_path: Path) -> N
     contents = config.read_text(encoding="utf-8")
     assert "127.0.0.1" in contents
     assert "allow_remote" not in contents
+    assert "uv pip install huggingface_hub" in contents
+    assert "never imports huggingface_hub" in contents
 
     config.write_text(contents + "\n# operator note\n", encoding="utf-8")
     second = runner.invoke(app, ["semantic-init", "--workspace", str(workspace)])
