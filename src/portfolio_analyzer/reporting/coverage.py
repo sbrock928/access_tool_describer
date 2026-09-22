@@ -56,10 +56,16 @@ def build_analysis_coverage(
         elif extraction_result is not None and extraction_result.get("error"):
             extraction_status = "failed"
             notes.append(f"Extraction: {extraction_result['error']}")
-        elif extraction_result is not None and "extracted" in extraction_result:
-            extracted = extraction_result["extracted"]
-            errors = extracted.get("extraction_errors", [])
-            object_count = len(extracted.get("objects", []))
+        elif extraction_result is not None and (
+            "extracted" in extraction_result or "snapshot_path" in extraction_result
+        ):
+            if "extracted" in extraction_result:
+                extracted = extraction_result["extracted"]
+                errors = extracted.get("extraction_errors", [])
+                object_count = len(extracted.get("objects", []))
+            else:
+                errors = extraction_result.get("extraction_errors", [])
+                object_count = int(extraction_result.get("object_count", 0))
             warning_count = len(errors)
             extraction_status = "complete_with_warnings" if errors else "complete"
             notes.extend(f"Extraction warning: {warning}" for warning in errors)

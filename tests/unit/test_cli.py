@@ -82,6 +82,71 @@ def test_extract_uses_euc_name_for_output_directory(tmp_path: Path, monkeypatch)
     assert extracted.exit_code == 0, extracted.output
     assert (workspace / "extracted" / "Payments EUC").is_dir()
     assert "[Payments EUC] completed." in extracted.output
+    extraction_state = json.loads((workspace / "extracted" / "extraction_state.json").read_text())
+    extraction_result = extraction_state["applications"][0]
+    assert "extracted" not in extraction_result
+    snapshot_path = workspace / "extracted" / extraction_result["snapshot_path"]
+    assert json.loads(snapshot_path.read_text())["tool_inventory_id"] == "42"
+    analyzed = runner.invoke(app, ["analyze", "--workspace", str(workspace), "--force"])
+    assert analyzed.exit_code == 0, analyzed.output
+
+
+def test_extract_preserves_and_rebuilds_malformed_state(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "source" / "payments.accdb"
+    source.parent.mkdir()
+    source.write_bytes(b"synthetic database")
+    inventory = tmp_path / "inventory.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["INVENTORY_ID", "EUCTNAME", "FILE_NAME", "FULLPATH", "DESCRIPTION"])
+    sheet.append(["42", "Payments EUC", source.name, str(source), "Claim"])
+    workbook.save(inventory)
+    workspace = tmp_path / "workspace"
+    runner = CliRunner()
+    staged = runner.invoke(
+        app, ["stage", "--inventory", str(inventory), "--workspace", str(workspace)]
+    )
+    assert staged.exit_code == 0, staged.output
+    state_path = workspace / "extracted" / "extraction_state.json"
+    state_path.write_text('{"applications": [', encoding="utf-8")
+
+    def fake_extract(artifact, destination, settings, timeout_seconds, on_progress):
+        return ExtractedApplication(
+            tool_inventory_id=artifact.tool_inventory_id,
+            staged_path=artifact.local_staged_path,
+            extractor_version="fixture",
+        )
+
+    monkeypatch.setattr(cli_main.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(cli_main, "_extract_with_timeout", fake_extract)
+
+    extracted = runner.invoke(app, ["extract", "--workspace", str(workspace)])
+
+    assert extracted.exit_code == 0, extracted.output
+    assert "prior extraction state is incomplete" in extracted.output
+    assert len(list((workspace / "extracted").glob("extraction_state.corrupt-*.json"))) == 1
+    assert len(json.loads(state_path.read_text())["applications"]) == 1
+
+
+def test_atomic_json_write_keeps_previous_file_on_failure(tmp_path: Path, monkeypatch) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text('{"old": true}\n', encoding="utf-8")
+
+    def failing_dump(value, destination, *, indent):
+        destination.write('{"new":')
+        raise MemoryError("simulated exhaustion")
+
+    monkeypatch.setattr(cli_main.json, "dump", failing_dump)
+
+    try:
+        cli_main._write_json_atomic(state_path, {"new": True})
+    except MemoryError:
+        pass
+    else:
+        raise AssertionError("expected the simulated write to fail")
+
+    assert state_path.read_text(encoding="utf-8") == '{"old": true}\n'
+    assert list(tmp_path.glob("*.tmp")) == []
 
 
 def test_stage_keeps_multiple_primaries_for_one_inventory_euc_without_bundle_duplicates(

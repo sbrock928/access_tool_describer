@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import os
 import platform
 import subprocess
 import time
@@ -50,7 +51,7 @@ def _settings(workspace: Path) -> AnalyzerSettings:
 
 
 def _read_state(state_path: Path) -> tuple[list[InventoryRecord], list[StagedArtifact]]:
-    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state = _read_json(state_path)
     return (
         [InventoryRecord.model_validate(item) for item in state["inventory"]],
         [StagedArtifact.model_validate(item) for item in state["artifacts"]],
@@ -65,15 +66,144 @@ def _extraction_state_path(settings: AnalyzerSettings) -> Path:
     return settings.extracted_dir / "extraction_state.json"
 
 
+def _read_json(path: Path) -> Any:
+    """Read JSON without first making a second, file-sized string in memory."""
+    with path.open(encoding="utf-8") as source:
+        return json.load(source)
+
+
+def _write_json_atomic(path: Path, value: Any) -> None:
+    """Stream JSON to a temporary file and publish it only after a complete write."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as destination:
+            json.dump(value, destination, indent=2)
+            destination.write("\n")
+            destination.flush()
+            os.fsync(destination.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _extraction_snapshot_path(settings: AnalyzerSettings, euc_name: str, sha256: str) -> Path:
+    return settings.extracted_dir / euc_directory_name(euc_name) / f"snapshot-{sha256}.json"
+
+
+def _has_extraction(result: dict[str, Any]) -> bool:
+    return "extracted" in result or "snapshot_path" in result
+
+
+def _load_extracted_application(
+    settings: AnalyzerSettings, result: dict[str, Any]
+) -> ExtractedApplication:
+    """Load either a legacy embedded extraction or a current per-application snapshot."""
+    if "extracted" in result:
+        return ExtractedApplication.model_validate(result["extracted"])
+    relative_path = result.get("snapshot_path")
+    if not isinstance(relative_path, str):
+        raise ValueError("Extraction result has no snapshot payload")
+    extraction_root = settings.extracted_dir.resolve()
+    snapshot_path = (extraction_root / relative_path).resolve()
+    if not snapshot_path.is_relative_to(extraction_root):
+        raise ValueError(f"Extraction snapshot is outside the workspace: {relative_path}")
+    return ExtractedApplication.model_validate(_read_json(snapshot_path))
+
+
+def _snapshot_result(
+    settings: AnalyzerSettings,
+    artifact: StagedArtifact,
+    euc_name: str,
+    extractor_version: str,
+    extracted: ExtractedApplication,
+) -> dict[str, Any]:
+    """Persist a large payload separately and return its lightweight index entry."""
+    if artifact.sha256 is None:
+        raise ValueError("A staged artifact must have a SHA-256 before extraction")
+    snapshot_path = _extraction_snapshot_path(settings, euc_name, artifact.sha256)
+    _write_json_atomic(snapshot_path, extracted.model_dump(mode="json"))
+    return {
+        "tool_inventory_id": artifact.tool_inventory_id,
+        "sha256": artifact.sha256,
+        "extractor_version": extractor_version,
+        "snapshot_path": snapshot_path.relative_to(settings.extracted_dir).as_posix(),
+        "object_count": len(extracted.objects),
+        "extraction_errors": list(extracted.extraction_errors),
+    }
+
+
+def _externalize_embedded_extractions(settings: AnalyzerSettings, state: dict[str, Any]) -> bool:
+    """Upgrade legacy portfolio-sized payloads to small entries plus snapshot files."""
+    applications = state.get("applications", [])
+    if not isinstance(applications, list):
+        return False
+    names = _inventory_names(settings)
+    changed = False
+    for index, result in enumerate(applications):
+        if not isinstance(result, dict) or "extracted" not in result:
+            continue
+        sha256 = result.get("sha256")
+        tool_inventory_id = result.get("tool_inventory_id")
+        extracted = result.get("extracted")
+        if (
+            not isinstance(sha256, str)
+            or not isinstance(tool_inventory_id, str)
+            or not isinstance(extracted, dict)
+        ):
+            continue
+        euc_name = names.get(tool_inventory_id, tool_inventory_id)
+        snapshot_path = _extraction_snapshot_path(settings, euc_name, sha256)
+        _write_json_atomic(snapshot_path, extracted)
+        objects = extracted.get("objects", [])
+        errors = extracted.get("extraction_errors", [])
+        lightweight = {key: value for key, value in result.items() if key != "extracted"}
+        lightweight.update(
+            {
+                "snapshot_path": snapshot_path.relative_to(settings.extracted_dir).as_posix(),
+                "object_count": len(objects) if isinstance(objects, list) else 0,
+                "extraction_errors": list(errors) if isinstance(errors, list) else [],
+            }
+        )
+        applications[index] = lightweight
+        changed = True
+    return changed
+
+
+def _read_extraction_state_for_resume(output_path: Path) -> dict[str, Any]:
+    """Preserve malformed state for diagnosis and start a safe rebuild."""
+    if not output_path.exists():
+        return {}
+    try:
+        state = _read_json(output_path)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        backup = output_path.with_name(
+            f"{output_path.stem}.corrupt-{time.time_ns()}{output_path.suffix}"
+        )
+        output_path.replace(backup)
+        typer.echo(
+            f"The prior extraction state is incomplete ({exc}). "
+            f"It was preserved as {backup.name}; rebuilding the extraction index."
+        )
+        return {}
+    if not isinstance(state, dict):
+        raise typer.BadParameter(f"Invalid extraction state in {output_path}: expected an object.")
+    return state
+
+
 def _load_extraction_state(settings: AnalyzerSettings) -> tuple[dict[str, Any], bool]:
     """Load extraction snapshots, migrating the pre-split state format when available."""
     extraction_path = _extraction_state_path(settings)
     if extraction_path.exists():
-        return json.loads(extraction_path.read_text(encoding="utf-8")), False
+        state = _read_json(extraction_path)
+        migrated = _externalize_embedded_extractions(settings, state)
+        if migrated:
+            _write_json_atomic(extraction_path, state)
+        return state, migrated
     legacy_path = _analysis_state_path(settings)
     if not legacy_path.exists():
         raise typer.BadParameter("No extraction state found. Run 'extract' on Windows first.")
-    legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+    legacy = _read_json(legacy_path)
     applications = [
         {
             "tool_inventory_id": item["tool_inventory_id"],
@@ -87,7 +217,8 @@ def _load_extraction_state(settings: AnalyzerSettings) -> tuple[dict[str, Any], 
     if not applications:
         raise typer.BadParameter("No extraction state found. Run 'extract' on Windows first.")
     state = {"applications": applications}
-    extraction_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    _externalize_embedded_extractions(settings, state)
+    _write_json_atomic(extraction_path, state)
     return state, True
 
 
@@ -161,9 +292,7 @@ def _access_extraction_worker(
 
 def _write_worker_result(path: Path, result: dict[str, Any]) -> None:
     """Atomically publish a worker result without multiprocessing queue shutdown semantics."""
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(result), encoding="utf-8")
-    temporary.replace(path)
+    _write_json_atomic(path, result)
 
 
 def _extract_with_timeout(
@@ -197,7 +326,7 @@ def _extract_with_timeout(
         while process.is_alive() and time.monotonic() < deadline:
             process.join(0.25)
             if result_path.exists():
-                worker_result = json.loads(result_path.read_text(encoding="utf-8"))
+                worker_result = _read_json(result_path)
                 # Do not let a COM-release hang consume the full tool timeout.
                 process.join(2)
                 if process.is_alive():
@@ -216,7 +345,7 @@ def _extract_with_timeout(
             )
         if worker_result is None:
             if result_path.exists():
-                worker_result = json.loads(result_path.read_text(encoding="utf-8"))
+                worker_result = _read_json(result_path)
             else:
                 raise RuntimeError(
                     f"Extraction worker exited without a result (exit code {process.exitcode})"
@@ -295,15 +424,12 @@ def stage(
         for record, artifact in artifacts_by_source.values():
             save_inventory_and_artifact(session, record, artifact)
     state_path = settings.analysis_dir / "staging_state.json"
-    state_path.write_text(
-        json.dumps(
-            {
-                "inventory": [record.model_dump(mode="json") for record in records],
-                "artifacts": [item.model_dump(mode="json") for item in artifacts],
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
+    _write_json_atomic(
+        state_path,
+        {
+            "inventory": [record.model_dump(mode="json") for record in records],
+            "artifacts": [item.model_dump(mode="json") for item in artifacts],
+        },
     )
     primary = [artifact for artifact in artifacts if artifact.is_primary]
     success_count = sum(a.status.value == "staged" for a in primary)
@@ -332,17 +458,16 @@ def extract(
         )
         return
     output_path = _extraction_state_path(settings)
-    previous = (
-        json.loads(output_path.read_text(encoding="utf-8"))
-        if output_path.exists() and not force
-        else {}
-    )
+    previous = _read_extraction_state_for_resume(output_path) if not force else {}
     extractor = WindowsAccessExtractor(settings)
     names = _inventory_names(settings)
+    if _externalize_embedded_extractions(settings, previous):
+        _write_json_atomic(output_path, previous)
+        typer.echo("Migrated prior embedded extractions to per-application snapshots.")
     completed = {
         (result["tool_inventory_id"], result["sha256"])
         for result in previous.get("applications", [])
-        if result.get("extractor_version") == extractor.version and "extracted" in result
+        if result.get("extractor_version") == extractor.version and _has_extraction(result)
     }
     results_by_key = (
         {}
@@ -360,8 +485,7 @@ def extract(
             continue
         try:
             typer.echo(
-                f"[{euc_name}] extracting {artifact.filename} "
-                f"(timeout: {timeout_seconds}s)..."
+                f"[{euc_name}] extracting {artifact.filename} (timeout: {timeout_seconds}s)..."
             )
             extracted = _extract_with_timeout(
                 artifact,
@@ -370,12 +494,9 @@ def extract(
                 timeout_seconds,
                 partial(_echo_progress, euc_name),
             )
-            results_by_key[key] = {
-                "tool_inventory_id": artifact.tool_inventory_id,
-                "sha256": artifact.sha256,
-                "extractor_version": extractor.version,
-                "extracted": extracted.model_dump(mode="json"),
-            }
+            results_by_key[key] = _snapshot_result(
+                settings, artifact, euc_name, extractor.version, extracted
+            )
             if extracted.extraction_errors:
                 typer.echo(f"[{euc_name}] completed with extraction warnings:")
                 for error in extracted.extraction_errors:
@@ -391,8 +512,10 @@ def extract(
                 "error": str(exc),
             }
             typer.echo(f"[{euc_name}] failed safely: {exc}")
-    results = list(results_by_key.values())
-    output_path.write_text(json.dumps({"applications": results}, indent=2), encoding="utf-8")
+        # Checkpoint each application. A crash cannot discard previously completed work.
+        _write_json_atomic(output_path, {"applications": list(results_by_key.values())})
+    if not output_path.exists() or not eligible:
+        _write_json_atomic(output_path, {"applications": list(results_by_key.values())})
     typer.echo(f"Extraction state written to {output_path}")
 
 
@@ -428,11 +551,7 @@ def analyze(
             "Migrated existing extraction snapshots to workspace/extracted/extraction_state.json."
         )
     output_path = _analysis_state_path(settings)
-    previous = (
-        json.loads(output_path.read_text(encoding="utf-8"))
-        if output_path.exists() and not force
-        else {}
-    )
+    previous = _read_json(output_path) if output_path.exists() and not force else {}
     completed = {
         (
             result["tool_inventory_id"],
@@ -453,7 +572,7 @@ def analyze(
     eligible = [
         result
         for result in extraction_state.get("applications", [])
-        if "extracted" in result and (tool_id is None or result["tool_inventory_id"] == tool_id)
+        if _has_extraction(result) and (tool_id is None or result["tool_inventory_id"] == tool_id)
     ]
     names = _inventory_names(settings)
     typer.echo(f"{len(eligible)} saved extraction snapshots are eligible for static analysis.")
@@ -466,7 +585,7 @@ def analyze(
             continue
         try:
             typer.echo(f"[{euc_name}] analyzing saved extraction snapshot...")
-            extracted = ExtractedApplication.model_validate(result["extracted"])
+            extracted = _load_extracted_application(settings, result)
             evidence, datasources, dependencies = analyze_application(extracted)
             results_by_key[key] = {
                 "tool_inventory_id": result["tool_inventory_id"],
@@ -487,9 +606,7 @@ def analyze(
                 "error": str(exc),
             }
             typer.echo(f"[{euc_name}] analysis failed safely: {exc}")
-    output_path.write_text(
-        json.dumps({"applications": list(results_by_key.values())}, indent=2), encoding="utf-8"
-    )
+    _write_json_atomic(output_path, {"applications": list(results_by_key.values())})
     typer.echo(f"Analysis state written to {output_path}")
 
 
@@ -513,7 +630,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
     inventory, artifacts = _read_state(state_path)
     application_names = {item.tool_inventory_id: item.tool_name for item in inventory}
     analysis_path = _analysis_state_path(settings)
-    state = json.loads(analysis_path.read_text(encoding="utf-8")) if analysis_path.exists() else {}
+    state = _read_json(analysis_path) if analysis_path.exists() else {}
     current_artifacts = {
         (item.tool_inventory_id, item.sha256) for item in artifacts if item.is_primary
     }
@@ -541,11 +658,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
     capabilities = discover_capabilities(evidence)
     recommendations = build_recommendations(capabilities, datasources)
     extraction_path = _extraction_state_path(settings)
-    extraction_state = (
-        json.loads(extraction_path.read_text(encoding="utf-8"))
-        if extraction_path.exists()
-        else {}
-    )
+    extraction_state = _read_json(extraction_path) if extraction_path.exists() else {}
     coverage = build_analysis_coverage(
         inventory,
         artifacts,
@@ -757,8 +870,7 @@ def report(workspace: Path = typer.Option(...)) -> None:
                 "title": item.title,
                 "confidence": item.confidence.value,
                 "affected_euc_names": " | ".join(
-                    _euc_name(tool_id, application_names)
-                    for tool_id in item.affected_tool_ids
+                    _euc_name(tool_id, application_names) for tool_id in item.affected_tool_ids
                 ),
                 "application_count": len(item.affected_tool_ids),
                 "evidence_count": len(item.evidence),
