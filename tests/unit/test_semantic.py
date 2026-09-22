@@ -632,7 +632,11 @@ def test_quick_mode_samples_objects_checkpoints_and_is_not_acceptable() -> None:
     assert all(item.metadata.run_status == "in_progress" for item in checkpoints)
     assert [len(item.applications) for item in checkpoints] == [1, 2]
     assert any("quick test: 5/8 objects" in message for message in progress)
-    assert any("Object 5/5" in message for message in progress)
+    assert any("Starting Object 5/5" in message for message in progress)
+    assert any("Completed Object 5/5" in message for message in progress)
+    assert any("Completed semantic profile" in message for message in progress)
+    assert any("Checkpoint saved" in message for message in progress)
+    assert progress[-1] == "Completed semantic pipeline"
     result = evaluate_gold_set([], inventory, state)
     assert result["passed"] is False
     assert "test-only" in result["reason"]

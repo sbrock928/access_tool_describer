@@ -3,8 +3,11 @@
 ## Semantic analysis appears idle or is too slow
 
 Production semantic analysis makes one local-model call per extracted Access object, followed by
-application, cluster, and architecture calls. The CLI prints each object as it starts and writes an
-atomic checkpoint after each application. For a bounded smoke test, run `portfolio-analyzer
+application, cluster, and architecture calls. The CLI prints timestamped start/completion events
+with both `step` and `total` elapsed time, and writes an atomic checkpoint after each application.
+The elapsed `step` value on a `Completed Object` line is that object's generation time. If the
+matching completion line has not appeared, that model call is still active; CPU/GPU activity can
+provide a second confirmation. For a bounded smoke test, run `portfolio-analyzer
 semantic --workspace .\workspace --quick`; the resulting state and reports are test-only and cannot
 pass production acceptance. Restart an interrupted command with the same mode and settings to reuse
 its compatible application checkpoints.

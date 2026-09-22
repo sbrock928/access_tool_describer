@@ -1,10 +1,32 @@
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 from typer.testing import CliRunner
 
-from portfolio_analyzer.cli.main import app
+from portfolio_analyzer.cli.main import _format_duration, _semantic_progress_reporter, app
 from portfolio_analyzer.models import ExtractedApplication, ExtractedObject
+
+
+def test_semantic_progress_reports_wall_step_and_total_times() -> None:
+    output: list[str] = []
+    ticks = iter((100.0, 102.5, 165.25))
+    progress = _semantic_progress_reporter(
+        output=output.append,
+        clock=lambda: next(ticks),
+        wall_clock=lambda: datetime(2026, 9, 22, 14, 30, tzinfo=UTC),
+    )
+
+    progress("Completed first step")
+    progress("Completed second step")
+
+    assert _format_duration(3661.125) == "01:01:01.125"
+    assert output == [
+        "[2026-09-22T14:30:00+00:00] "
+        "[+00:00:02.500 step | +00:00:02.500 total] Completed first step",
+        "[2026-09-22T14:30:00+00:00] "
+        "[+00:01:02.750 step | +00:01:05.250 total] Completed second step",
+    ]
 
 
 def test_analyze_reuses_saved_extraction_without_windows_or_access(tmp_path: Path) -> None:

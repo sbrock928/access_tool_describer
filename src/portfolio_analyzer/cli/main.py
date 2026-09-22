@@ -9,6 +9,7 @@ import platform
 import subprocess
 import time
 from collections.abc import Callable
+from datetime import datetime
 from functools import partial
 from multiprocessing.process import BaseProcess
 from pathlib import Path
@@ -75,6 +76,39 @@ from portfolio_analyzer.staging.copying import (
 from portfolio_analyzer.versions import STATIC_ANALYSIS_VERSION
 
 app = typer.Typer(no_args_is_help=True, help="Static, evidence-driven Access portfolio analysis.")
+
+
+def _format_duration(seconds: float) -> str:
+    """Format an elapsed duration for compact, sortable console progress."""
+    total_milliseconds = max(0, round(seconds * 1000))
+    total_seconds, milliseconds = divmod(total_milliseconds, 1000)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds_part = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds_part:02d}.{milliseconds:03d}"
+
+
+def _semantic_progress_reporter(
+    *,
+    output: Callable[[str], None] = typer.echo,
+    clock: Callable[[], float] = time.perf_counter,
+    wall_clock: Callable[[], datetime] | None = None,
+) -> Callable[[str], None]:
+    """Create a semantic progress callback with step and total elapsed times."""
+    started_at = clock()
+    previous_at = started_at
+    current_datetime = wall_clock or (lambda: datetime.now().astimezone())
+
+    def report(message: str) -> None:
+        nonlocal previous_at
+        now = clock()
+        output(
+            f"[{current_datetime().isoformat(timespec='seconds')}] "
+            f"[+{_format_duration(now - previous_at)} step | "
+            f"+{_format_duration(now - started_at)} total] {message}"
+        )
+        previous_at = now
+
+    return report
 
 
 def _settings(workspace: Path) -> AnalyzerSettings:
@@ -873,15 +907,21 @@ def semantic_analysis(
     semantic_settings = quick_mode_settings(configured_settings) if quick else configured_settings
     run_mode: Literal["production", "quick"] = "quick" if quick else "production"
     object_limit = QUICK_MODE_MAX_OBJECTS if quick else None
+    progress = _semantic_progress_reporter()
+    progress(f"Starting {run_mode} semantic analysis")
     if quick:
-        typer.echo(
+        progress(
             "TEST ONLY quick semantic mode: at most five representative objects per application; "
             "results cannot pass semantic-check or --semantic-mode require."
         )
+    progress("Starting approved model directory verification")
     try:
         provider = LocalTransformersProvider(semantic_settings)
     except (OSError, ValueError) as exc:
+        progress(f"Failed approved model directory verification: {exc}")
         raise typer.BadParameter(f"Approved local model verification failed: {exc}") from exc
+    progress("Completed approved model directory verification")
+    progress("Starting semantic input preparation")
     staging_path = settings.analysis_dir / "staging_state.json"
     if not staging_path.exists():
         raise typer.BadParameter("No staging state found. Run 'stage' first.")
@@ -907,11 +947,23 @@ def semantic_analysis(
     extracted = _current_extractions(settings, artifacts)
     if not extracted:
         raise typer.BadParameter("No current extraction snapshots are available.")
+    progress(
+        f"Completed semantic input preparation: {len(inventory)} inventory rows, "
+        f"{len(extracted)} extraction snapshots"
+    )
+    progress("Starting prior semantic checkpoint load")
     try:
         prior_state = read_semantic_state(_semantic_state_path(settings))
     except ValueError as exc:
-        typer.echo(f"Prior semantic state is incompatible and will be replaced: {exc}")
+        progress(f"Prior semantic state is incompatible and will be replaced: {exc}")
         prior_state = None
+    if prior_state is None:
+        progress("Completed prior semantic checkpoint load: no compatible checkpoint found")
+    else:
+        progress(
+            "Completed prior semantic checkpoint load: "
+            f"{len(prior_state.applications)} application profiles found"
+        )
     try:
         state = run_semantic_pipeline(
             semantic_settings,
@@ -926,21 +978,24 @@ def semantic_analysis(
             prior_state=prior_state,
             tool_id=tool_id,
             force=force,
-            progress=typer.echo,
+            progress=progress,
             checkpoint=partial(write_semantic_state, _semantic_state_path(settings)),
             run_mode=run_mode,
             max_objects_per_application=object_limit,
         )
     except (SemanticProviderError, ValueError) as exc:
+        progress(f"Semantic analysis stopped safely: {exc}")
         raise typer.BadParameter(f"Semantic analysis stopped safely: {exc}") from exc
     decisions = read_review_decisions(_review_decisions_path(settings))
     if decisions and not quick:
         state = apply_review_decisions(state, decisions)
+        progress(f"Applied {len(decisions)} retained review decisions")
     elif decisions and quick:
-        typer.echo("TEST ONLY quick mode does not apply retained production review decisions.")
+        progress("TEST ONLY quick mode does not apply retained production review decisions.")
+    progress("Writing final semantic state")
     write_semantic_state(_semantic_state_path(settings), state)
     mode_label = "TEST-ONLY quick" if quick else "production"
-    typer.echo(
+    progress(
         f"{mode_label} semantic state written to {_semantic_state_path(settings)} "
         f"({len(state.applications)} profiles, {len(state.errors)} isolated errors)."
     )

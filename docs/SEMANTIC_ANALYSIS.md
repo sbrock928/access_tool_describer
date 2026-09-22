@@ -204,8 +204,11 @@ portfolio-analyzer semantic --workspace .\workspace --force
 
 The CLI writes an atomic `in_progress` semantic checkpoint after every newly processed
 application. Restarting the same command reuses compatible checkpointed profiles and continues the
-portfolio. It also prints progress for every selected Access object, so a long local generation is
-visible. `--force` deliberately regenerates selected compatible profiles.
+portfolio. Normal and quick runs print timestamped start/completion events for model loading, each
+selected Access object, application synthesis, checkpoints, clustering, architecture synthesis,
+and final state writing. Every line includes elapsed time for the preceding step and for the total
+run, so a long local generation remains visible and measurable. `--force` deliberately regenerates
+selected compatible profiles.
 
 ### Quick test mode
 

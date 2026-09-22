@@ -139,8 +139,10 @@ def run_semantic_pipeline(
 ) -> SemanticPortfolioState:
     notify = progress or (lambda _message: None)
     _validate_model_configuration(settings)
+    notify("Starting approved local model load and health check")
     health = provider.health()
     provenance = _validated_provenance(health)
+    notify(f"Approved local model loaded on {health.get('device', 'unknown device')}")
     if prior_state is not None and not _profile_cache_is_compatible(
         prior_state,
         settings,
@@ -151,6 +153,7 @@ def run_semantic_pipeline(
         notify("Prior semantic runtime provenance changed; refreshing every application profile")
         prior_state = None
         tool_id = None
+    notify("Starting semantic source preparation")
     sources = build_semantic_sources(extracted, settings)
     sources_by_tool: dict[str, list[SemanticSource]] = defaultdict(list)
     for source in sources:
@@ -168,6 +171,7 @@ def run_semantic_pipeline(
     for artifact in artifacts:
         if artifact.is_primary and artifact.sha256:
             artifact_hashes[artifact.tool_inventory_id].append(artifact.sha256)
+    notify(f"Prepared {len(sources)} semantic sources")
 
     prior_profiles = (
         {profile.tool_inventory_id: profile for profile in prior_state.applications}
@@ -198,8 +202,10 @@ def run_semantic_pipeline(
         selected = tool_id is None or record.tool_inventory_id == tool_id
         if prior and prior.input_fingerprint == fingerprint and (not force or not selected):
             profile_map[record.tool_inventory_id] = prior
+            notify(f"Reused compatible checkpoint: {record.tool_name}")
             continue
         if not selected:
+            notify(f"Skipped unselected application: {record.tool_name}")
             continue
         application_sources = sources_by_tool[record.tool_inventory_id]
         selected_sources = _representative_sources(
@@ -208,11 +214,11 @@ def run_semantic_pipeline(
         )
         if run_mode == "quick":
             notify(
-                f"Semantic profile: {record.tool_name} "
+                f"Starting semantic profile: {record.tool_name} "
                 f"(quick test: {len(selected_sources)}/{len(application_sources)} objects)"
             )
         else:
-            notify(f"Semantic profile: {record.tool_name}")
+            notify(f"Starting semantic profile: {record.tool_name}")
         try:
             profile = _profile_application(
                 provider,
@@ -228,26 +234,28 @@ def run_semantic_pipeline(
                 progress=notify,
             )
             profile_map[record.tool_inventory_id] = profile
+            notify(f"Completed semantic profile: {record.tool_name}")
         except (SemanticProviderError, ValueError) as exc:
             errors[record.tool_inventory_id] = str(exc)
             profile_map[record.tool_inventory_id] = SemanticApplicationProfile(
-                    tool_inventory_id=record.tool_inventory_id,
-                    tool_name=record.tool_name,
-                    summary="Semantic interpretation failed and requires review.",
-                    business_purpose="Unknown",
-                    primary_archetype="unknown",
-                    proposed_disposition="investigate",
-                    confidence=Confidence.LOW,
-                    open_questions=["Resolve the semantic analysis failure."],
-                    artifact_hashes=sorted(artifact_hashes[record.tool_inventory_id]),
-                    input_fingerprint=fingerprint,
-                    semantic_version=SEMANTIC_ANALYSIS_VERSION,
-                    model_repo_id=provenance["model_repo_id"],
-                    model_revision=provenance["model_revision"],
-                    model_manifest_sha256=provenance["model_manifest_sha256"],
-                    status="failed",
-                    error=str(exc),
-                )
+                tool_inventory_id=record.tool_inventory_id,
+                tool_name=record.tool_name,
+                summary="Semantic interpretation failed and requires review.",
+                business_purpose="Unknown",
+                primary_archetype="unknown",
+                proposed_disposition="investigate",
+                confidence=Confidence.LOW,
+                open_questions=["Resolve the semantic analysis failure."],
+                artifact_hashes=sorted(artifact_hashes[record.tool_inventory_id]),
+                input_fingerprint=fingerprint,
+                semantic_version=SEMANTIC_ANALYSIS_VERSION,
+                model_repo_id=provenance["model_repo_id"],
+                model_revision=provenance["model_revision"],
+                model_manifest_sha256=provenance["model_manifest_sha256"],
+                status="failed",
+                error=str(exc),
+            )
+            notify(f"Failed semantic profile: {record.tool_name} ({exc})")
         if checkpoint is not None:
             checkpoint_profiles = sorted(
                 profile_map.values(), key=lambda item: item.tool_name.casefold()
@@ -269,6 +277,7 @@ def run_semantic_pipeline(
             notify(f"Checkpoint saved after {record.tool_name}")
 
     profiles = sorted(profile_map.values(), key=lambda item: item.tool_name.casefold())
+    notify("Starting deterministic similarity and clustering")
     edges, clusters = build_similarity_graph(
         [profile for profile in profiles if profile.status != "failed"],
         datasources,
@@ -276,8 +285,12 @@ def run_semantic_pipeline(
         sources=sources,
         evidence=evidence,
     )
+    notify(
+        f"Completed deterministic similarity: {len(edges)} edges, "
+        f"{len(clusters)} initial clusters"
+    )
     clusters = _refine_clusters(provider, clusters, profiles, errors, notify)
-    notify("Synthesizing target architecture")
+    notify("Starting target architecture synthesis")
     architecture, architecture_error = synthesize_architecture(
         provider,
         profiles,
@@ -290,7 +303,10 @@ def run_semantic_pipeline(
     )
     if architecture_error:
         errors["architecture"] = architecture_error
-    return _semantic_state(
+        notify(f"Completed target architecture with deterministic fallback: {architecture_error}")
+    else:
+        notify("Completed target architecture synthesis")
+    state = _semantic_state(
         settings,
         provenance,
         profiles,
@@ -305,6 +321,8 @@ def run_semantic_pipeline(
         clusters=clusters,
         architecture=architecture,
     )
+    notify("Completed semantic pipeline")
+    return state
 
 
 def _semantic_state(
@@ -645,7 +663,7 @@ def _profile_application(
     notify = progress or (lambda _message: None)
     for index, source in enumerate(sources, start=1):
         notify(
-            f"  Object {index}/{len(sources)}: {source.object_type} {source.object_name}"
+            f"Starting Object {index}/{len(sources)}: {source.object_type} {source.object_name}"
         )
         related = [
             item
@@ -688,6 +706,9 @@ def _profile_application(
                 claim_ids=sorted(set(object_response.claim_ids) & allowed_claims),
             )
         )
+        notify(
+            f"Completed Object {index}/{len(sources)}: {source.object_type} {source.object_name}"
+        )
     allowed_evidence = {item.evidence_id for item in evidence} | {
         source.source_id for source in sources
     }
@@ -701,6 +722,7 @@ def _profile_application(
         allowed_claims,
         settings,
     )
+    notify(f"Starting application profile synthesis: {record.tool_name}")
     profile_response = _ProfileResponse.model_validate(
         provider.complete_json(
             system=(
@@ -714,6 +736,7 @@ def _profile_application(
             schema=_ProfileResponse.model_json_schema(),
         )
     )
+    notify(f"Completed application profile synthesis: {record.tool_name}")
     findings: list[SemanticFinding] = []
     for proposed in profile_response.findings:
         cited_evidence = sorted(set(proposed.evidence_ids) & allowed_evidence)
@@ -793,7 +816,7 @@ def _refine_clusters(
         if len(cluster.application_ids) < 2:
             output.append(cluster)
             continue
-        notify(f"Naming semantic cluster with {len(cluster.application_ids)} applications")
+        notify(f"Starting semantic cluster naming: {len(cluster.application_ids)} applications")
         members = [profiles_by_id[tool_id] for tool_id in cluster.application_ids]
         allowed = {item for member in members for item in member.evidence_ids}
         try:
@@ -840,9 +863,11 @@ def _refine_clusters(
                     }
                 )
             )
+            notify(f"Completed semantic cluster naming: {cluster.cluster_id}")
         except (SemanticProviderError, ValueError) as exc:
             errors[f"cluster:{cluster.cluster_id}"] = str(exc)
             output.append(cluster)
+            notify(f"Failed semantic cluster naming: {cluster.cluster_id} ({exc})")
     return output
 
 
