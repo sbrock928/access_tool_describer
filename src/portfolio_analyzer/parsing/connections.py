@@ -4,7 +4,19 @@ from __future__ import annotations
 
 import re
 
-SECRET_KEYS = frozenset({"password", "pwd", "token", "access token", "secret", "client secret"})
+SECRET_KEYS = frozenset(
+    {
+        "password",
+        "pwd",
+        "token",
+        "access token",
+        "secret",
+        "client secret",
+        "user id",
+        "userid",
+        "uid",
+    }
+)
 
 
 def parse_connection_string(value: str) -> dict[str, str]:
@@ -29,9 +41,19 @@ def redact_connection_string(value: str) -> str:
 
 def infer_platform(pairs: dict[str, str]) -> str:
     flattened = " ".join(f"{key}={value}" for key, value in pairs.items()).casefold()
-    if "oracle" in flattened or "ora" in flattened:
+    oracle_hint = any(
+        key in {"driver", "dsn", "provider"} and value.casefold().startswith("ora")
+        for key, value in pairs.items()
+    )
+    if "oracle" in flattened or oracle_hint:
         return "Oracle"
-    if "sql server" in flattened or "sqloledb" in flattened or "server=" in flattened:
+    if "postgres" in flattened or "psqlodbc" in flattened:
+        return "PostgreSQL"
+    if "mysql" in flattened or "mariadb" in flattened:
+        return "MySQL/MariaDB"
+    if "snowflake" in flattened:
+        return "Snowflake"
+    if "sql server" in flattened or "sqloledb" in flattened or "msoledbsql" in flattened:
         return "SQL Server"
     if ".accdb" in flattened or ".mdb" in flattened:
         return "Access"

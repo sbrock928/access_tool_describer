@@ -5,6 +5,8 @@ An evidence-driven, static-analysis system for a portfolio of Microsoft Access a
 The system has one non-negotiable safety invariant: source applications are copied to a verified local workspace before any extraction or analysis. The original inventory path is never passed to an extractor.
 
 The input workbook must contain `INVENTORY_ID`, `EUCTNAME`, `FILE_NAME`, `FULLPATH`, and `DESCRIPTION`. `FULLPATH` is source-only; it is never an analysis path.
+An inventory ID/EUC may span multiple rows when it has multiple Access files. Each distinct
+`FULLPATH` becomes a primary artifact; shared files in the same application bundle are staged once.
 
 ## Current MVP
 
@@ -27,3 +29,11 @@ portfolio-analyzer report --workspace .\workspace
 `extract` only considers successful staged artifacts and is the only command that opens Access. It persists
 snapshots under `workspace/extracted/`. `analyze --force` can be run repeatedly against those snapshots as
 rules evolve, without opening Access or the original source file again.
+
+`report` writes an Excel workbook, an executive PDF, and normalized CSV datasets. The reports make
+pipeline coverage explicit so zero findings are not confused with missing or incomplete analysis.
+See [docs/REPORTS.md](docs/REPORTS.md) and [docs/REFACTOR_PLAN.md](docs/REFACTOR_PLAN.md).
+
+Per-application folders under `workspace/staged_tools` and `workspace/extracted`, along with every
+application reference in generated reports, use the human-readable `EUCTNAME`. `INVENTORY_ID`
+remains an internal provenance key and is not exposed as the report label.

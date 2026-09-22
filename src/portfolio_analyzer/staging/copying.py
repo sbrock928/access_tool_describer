@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
 from portfolio_analyzer.config import AnalyzerSettings
 from portfolio_analyzer.models import ArtifactStatus, InventoryRecord, StagedArtifact
+from portfolio_analyzer.naming import euc_directory_name, legacy_inventory_directory_name
 from portfolio_analyzer.staging.hashing import sha256_file
-
-
-def safe_component(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._") or "unnamed"
 
 
 class ArtifactStager:
@@ -68,7 +64,7 @@ class ArtifactStager:
         relative_path: Path | None = None,
     ) -> StagedArtifact:
         filename = source.name
-        target_dir = self.settings.staged_tools_dir / safe_component(record.tool_inventory_id)
+        target_dir = self.settings.staged_tools_dir / euc_directory_name(record.tool_name)
         target = target_dir / "bundle" / (relative_path or Path(filename))
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
@@ -111,3 +107,28 @@ class ArtifactStager:
             and candidate.suffix.casefold() not in self._TRANSIENT_LOCK_EXTENSIONS
             and not candidate.name.startswith("~$")
         )
+
+
+def migrate_legacy_application_directories(
+    settings: AnalyzerSettings, records: list[InventoryRecord]
+) -> list[str]:
+    """Rename unambiguous inventory-ID directories from earlier analyzer versions."""
+    messages: list[str] = []
+    for record in records:
+        legacy_name = legacy_inventory_directory_name(record.tool_inventory_id)
+        euc_name = euc_directory_name(record.tool_name)
+        if legacy_name.casefold() == euc_name.casefold():
+            continue
+        for root in (settings.staged_tools_dir, settings.extracted_dir):
+            legacy = root / legacy_name
+            destination = root / euc_name
+            if not legacy.is_dir() or legacy.is_symlink():
+                continue
+            if destination.exists():
+                messages.append(
+                    f"Could not migrate legacy folder '{legacy}': destination already exists."
+                )
+                continue
+            legacy.rename(destination)
+            messages.append(f"Migrated legacy folder '{legacy.name}' to '{destination.name}'.")
+    return messages
