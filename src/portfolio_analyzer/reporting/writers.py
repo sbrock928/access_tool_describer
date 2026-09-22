@@ -30,6 +30,7 @@ from portfolio_analyzer.models import (
 )
 
 _ILLEGAL_SPREADSHEET_CHARACTERS = re.compile(r"[\x00-\x08\x0b-\x0c\x0e-\x1f]")
+_PDF_TABLE_TRUNCATION_SUFFIX = "... [truncated; see workbook]"
 
 
 def write_csv(
@@ -753,9 +754,7 @@ def _risk_and_next_steps_section(
             [
                 [
                     pattern,
-                    ", ".join(
-                        _application_name(tool_id, application_names) for tool_id in tools
-                    ),
+                    _summarize_application_names(tools, application_names),
                     implication,
                 ]
                 for pattern, tools, implication in risks
@@ -831,8 +830,11 @@ def _table(rows: list[list[str]], widths: list[float]) -> Table:
     )
     wrapped = [
         [
-            Paragraph(escape(str(value)), header_style if row_index == 0 else body_style)
-            for value in row
+            Paragraph(
+                escape(_pdf_table_text(value, widths[column_index])),
+                header_style if row_index == 0 else body_style,
+            )
+            for column_index, value in enumerate(row)
         ]
         for row_index, row in enumerate(rows)
     ]
@@ -856,6 +858,25 @@ def _table(rows: list[list[str]], widths: list[float]) -> Table:
         )
     )
     return table
+
+
+def _summarize_application_names(
+    tool_ids: list[str], names: dict[str, str], *, limit: int = 8
+) -> str:
+    resolved = [_application_name(tool_id, names) for tool_id in tool_ids]
+    if len(resolved) <= limit:
+        return ", ".join(resolved)
+    return ", ".join(resolved[:limit]) + f", ... (+{len(resolved) - limit} more; see workbook)"
+
+
+def _pdf_table_text(value: object, width: float) -> str:
+    """Bound executive-summary cells so every table row can fit on a page."""
+    text = str(value)
+    max_characters = max(80, int(width / inch * 160))
+    if len(text) <= max_characters:
+        return text
+    prefix_length = max_characters - len(_PDF_TABLE_TRUNCATION_SUFFIX)
+    return text[:prefix_length].rstrip() + _PDF_TABLE_TRUNCATION_SUFFIX
 
 
 def _footer(canvas: Any, document: Any) -> None:

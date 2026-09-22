@@ -2,7 +2,13 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from portfolio_analyzer.models import ArtifactStatus, Confidence, Evidence, StagedArtifact
+from portfolio_analyzer.models import (
+    ArtifactStatus,
+    Confidence,
+    Evidence,
+    InventoryRecord,
+    StagedArtifact,
+)
 from portfolio_analyzer.reporting.writers import write_csv, write_executive_pdf, write_workbook
 
 
@@ -58,3 +64,31 @@ def test_report_writers_remove_illegal_spreadsheet_characters(tmp_path: Path) ->
     write_csv(csv_path, [{"evidence": "UPDATE table\x00 SET value = 'kept'\x0b;"}])
     assert "\x00" not in csv_path.read_text()
     assert "\x0b" not in csv_path.read_text()
+
+
+def test_executive_pdf_handles_risk_shared_by_large_portfolio(tmp_path: Path) -> None:
+    inventory = [
+        InventoryRecord(
+            tool_inventory_id=str(index),
+            tool_name=f"Application with a descriptive name {index}",
+            inventory_filename=f"application-{index}.accdb",
+            filepath=Path(f"application-{index}.accdb"),
+        )
+        for index in range(300)
+    ]
+    evidence = [
+        Evidence(
+            tool_inventory_id=item.tool_inventory_id,
+            artifact_path=item.inventory_filename,
+            object_type="module",
+            object_name="Example",
+            text="CurrentDb.Execute sql",
+            inference="Database access",
+        )
+        for item in inventory
+    ]
+    pdf_path = tmp_path / "Portfolio_Analysis.pdf"
+
+    write_executive_pdf(pdf_path, inventory, [], [], evidence=evidence)
+
+    assert pdf_path.read_bytes().startswith(b"%PDF")
