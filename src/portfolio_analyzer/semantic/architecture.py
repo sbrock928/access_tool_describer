@@ -88,6 +88,7 @@ def synthesize_architecture(
     *,
     all_tool_ids: list[str],
     approved_services: list[str],
+    max_output_tokens: int | None = None,
 ) -> tuple[TargetArchitecture, str | None]:
     allowed_evidence = {
         evidence_id for profile in profiles for evidence_id in profile.evidence_ids
@@ -139,6 +140,7 @@ def synthesize_architecture(
             user=prompt_data(payload),
             schema_name="target_architecture",
             schema=_ArchitectureProposal.model_json_schema(),
+            max_output_tokens=max_output_tokens,
         )
         proposal = _ArchitectureProposal.model_validate(raw)
         architecture = _validated_architecture(

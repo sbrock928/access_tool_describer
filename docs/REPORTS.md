@@ -27,10 +27,11 @@ carry a prominent `TEST ONLY` warning, the HTML semantic status identifies quick
 report manifest records the run mode, object limit, effective generation bounds, and completion
 status. Production-required reporting rejects quick state.
 
-Excel is the primary detailed report. It includes portfolio and per-application coverage,
-applications, artifacts, datasources, dependencies, capabilities, recommendations, evidence, and
-staging errors. Coverage distinguishes a completed analysis with zero findings from an application
-that was never analyzed or whose extraction was incomplete.
+Excel is the primary detailed report. It includes portfolio and per-application deterministic and
+semantic code coverage, including modeled/eligible segment counts, along with applications,
+artifacts, datasources, dependencies, capabilities, recommendations, evidence, and staging errors.
+Coverage distinguishes a completed analysis with zero findings from an application that was never
+analyzed or whose extraction was incomplete.
 
 The PDF is an executive and architecture overview. Its rankings aggregate applications and
 evidence rather than depending on input order. Extraction warnings qualify the conclusions and

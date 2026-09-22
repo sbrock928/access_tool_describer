@@ -2,15 +2,17 @@
 
 ## Semantic analysis appears idle or is too slow
 
-Production semantic analysis makes one local-model call per extracted Access object, followed by
-application, cluster, and architecture calls. The CLI prints timestamped start/completion events
-with both `step` and `total` elapsed time, and writes an atomic checkpoint after each application.
-The elapsed `step` value on a `Completed Object` line is that object's generation time. If the
-matching completion line has not appeared, that model call is still active; CPU/GPU activity can
-provide a second confirmation. For a bounded smoke test, run `portfolio-analyzer
+Production semantic analysis no longer makes one model call per Access object. It covers all
+modules, queries, macros, and form/report code-behind using procedure-aware segments packed into
+bounded batches; tables, links, references, and UI layout remain deterministically inventoried.
+The CLI prints timestamped start/completion events with both `step` and `total` elapsed time and
+writes an atomic checkpoint after each batch and application. The elapsed `step` value on a
+`Completed semantic batch` line is that batch's generation time. If the matching completion line
+has not appeared, that model call is still active; CPU/GPU activity can provide a second
+confirmation. For a bounded smoke test, run `portfolio-analyzer
 semantic --workspace .\workspace --quick`; the resulting state and reports are test-only and cannot
 pass production acceptance. Restart an interrupted command with the same mode and settings to reuse
-its compatible application checkpoints.
+its compatible batch and application checkpoints.
 
 - A staging error means the tool is intentionally not analyzed. Fix source accessibility and rerun staging.
 - `WindowsAccessExtractor` on macOS/Linux is expected to fail safely; use extracted fixtures for cross-platform development.
@@ -30,5 +32,5 @@ its compatible application checkpoints.
   is incomplete or below its quality thresholds. Complete `semantic/gold_set.csv`, run `semantic`,
   and rerun the check.
 - Legacy semantic state containing chat/embedding endpoints or persisted vectors is incompatible
-  with schema v3. Deterministic analysis remains valid; rerun `semantic` to replace only semantic
+  with schema v4. Deterministic analysis remains valid; rerun `semantic` to replace only semantic
   state.

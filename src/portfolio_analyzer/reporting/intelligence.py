@@ -41,6 +41,31 @@ def write_semantic_datasets(
                     "proposed_disposition": profile.proposed_disposition,
                     "confidence": profile.confidence.value,
                     "status": profile.status,
+                    "complete_code_coverage": (
+                        profile.semantic_coverage.complete_code_coverage
+                        if profile.semantic_coverage
+                        else False
+                    ),
+                    "modeled_code_objects": (
+                        profile.semantic_coverage.modeled_objects
+                        if profile.semantic_coverage
+                        else 0
+                    ),
+                    "eligible_code_objects": (
+                        profile.semantic_coverage.model_eligible_objects
+                        if profile.semantic_coverage
+                        else 0
+                    ),
+                    "modeled_code_segments": (
+                        profile.semantic_coverage.modeled_segments
+                        if profile.semantic_coverage
+                        else 0
+                    ),
+                    "eligible_code_segments": (
+                        profile.semantic_coverage.model_eligible_segments
+                        if profile.semantic_coverage
+                        else 0
+                    ),
                     "open_questions": " | ".join(profile.open_questions),
                     "evidence_ids": " | ".join(profile.evidence_ids),
                     "claim_ids": " | ".join(profile.claim_ids),
@@ -55,6 +80,11 @@ def write_semantic_datasets(
                 "proposed_disposition",
                 "confidence",
                 "status",
+                "complete_code_coverage",
+                "modeled_code_objects",
+                "eligible_code_objects",
+                "modeled_code_segments",
+                "eligible_code_segments",
                 "open_questions",
                 "evidence_ids",
                 "claim_ids",
@@ -380,6 +410,11 @@ def write_intelligence_html(
                 "disposition": mapping.disposition if mapping else "investigate",
                 "wave": mapping.wave if mapping else 0,
                 "review": mapping.review_status if mapping else "pending",
+                "semantic_coverage": (
+                    profile.semantic_coverage.model_dump(mode="json")
+                    if profile and profile.semantic_coverage
+                    else None
+                ),
                 "findings": [item.model_dump(mode="json") for item in profile.findings]
                 if profile
                 else [],
@@ -434,6 +469,16 @@ def write_report_manifest(
             "semantic_applications": len(state.applications) if state else 0,
             "semantic_findings": (
                 sum(len(profile.findings) for profile in state.applications) if state else 0
+            ),
+            "semantic_batches": len(state.batch_summaries) if state else 0,
+            "complete_code_coverage_applications": (
+                sum(
+                    profile.semantic_coverage is not None
+                    and profile.semantic_coverage.complete_code_coverage
+                    for profile in state.applications
+                )
+                if state
+                else 0
             ),
             "clusters": len(state.clusters) if state else 0,
             "architecture_components": len(state.architecture.components) if state else 0,
@@ -639,7 +684,7 @@ input[type=search]{{width:100%;max-width:520px;padding:11px;border:1px solid #ae
 const D=JSON.parse(document.getElementById('portfolio-data').textContent);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
 const apps=document.getElementById('apps'),drawer=document.getElementById('drawer'),detail=document.getElementById('detail');
 function rows(q=''){{q=q.toLowerCase();apps.innerHTML=D.applications.filter(a=>Object.values(a).join(' ').toLowerCase().includes(q)).map(a=>`<tr><td><button class="link" data-id="${{esc(a.id)}}">${{esc(a.name)}}</button></td><td>${{esc(a.purpose)}}</td><td>${{esc(a.archetype)}}</td><td>${{esc(a.disposition)}}</td><td>${{a.wave}}</td><td><span class="pill ${{esc(a.confidence)}}">${{esc(a.confidence)}}</span></td></tr>`).join('')}}
-function openApp(id){{const a=D.applications.find(x=>x.id===id);if(!a)return;detail.innerHTML=`<h2>${{esc(a.name)}}</h2><p>${{esc(a.summary)}}</p><dl><dt>Business purpose</dt><dd>${{esc(a.purpose)}}</dd><dt>Archetype</dt><dd>${{esc(a.archetype)}}</dd><dt>Proposed disposition</dt><dd>${{esc(a.disposition)}} · Wave ${{a.wave}}</dd></dl><h3>Observed sources</h3>${{a.observed_sources.map(s=>`<div class="finding"><strong>${{esc(s.object)}}</strong><p>${{esc(s.excerpt)}}</p><small>Observed source · ${{esc(s.source_id)}}</small></div>`).join('')||'<p class="muted">No bounded observed source available.</p>'}}<h3>Owner claims</h3>${{a.owner_claims.map(c=>`<div class="finding"><strong>${{esc(c.field.replaceAll('_',' '))}}</strong><p>${{esc(c.value)}}</p><small>Owner claim · ${{esc(c.claim_id)}} · source ${{esc(c.source)}}</small></div>`).join('')||'<p class="muted">No owner context supplied.</p>'}}<h3>AI proposals</h3>${{a.findings.map(f=>`<div class="finding"><strong>${{esc(f.category.replaceAll('_',' '))}}: ${{esc(f.label)}}</strong><p>${{esc(f.description)}}</p><small>AI proposal · ${{esc(f.confidence)}} confidence · ${{esc(f.review_status)}} · evidence ${{esc(f.evidence_ids.join(', '))}}${{f.claim_ids.length?' · claims '+esc(f.claim_ids.join(', ')):''}}</small></div>`).join('')||'<p class="muted">No grounded semantic findings.</p>'}}<h3>Open questions</h3><ul>${{a.open_questions.map(x=>`<li>${{esc(x)}}</li>`).join('')||'<li>None recorded</li>'}}</ul>`;drawer.classList.add('open')}}
+function openApp(id){{const a=D.applications.find(x=>x.id===id);if(!a)return;const c=a.semantic_coverage;detail.innerHTML=`<h2>${{esc(a.name)}}</h2><p>${{esc(a.summary)}}</p><dl><dt>Business purpose</dt><dd>${{esc(a.purpose)}}</dd><dt>Archetype</dt><dd>${{esc(a.archetype)}}</dd><dt>Proposed disposition</dt><dd>${{esc(a.disposition)}} · Wave ${{a.wave}}</dd><dt>Semantic code coverage</dt><dd>${{c?(c.complete_code_coverage?'Complete':'Sampled')+' · '+c.modeled_objects+'/'+c.model_eligible_objects+' objects · '+c.modeled_segments+'/'+c.model_eligible_segments+' segments':'Unavailable'}}</dd></dl><h3>Observed sources</h3>${{a.observed_sources.map(s=>`<div class="finding"><strong>${{esc(s.object)}}</strong><p>${{esc(s.excerpt)}}</p><small>Observed source · ${{esc(s.source_id)}}</small></div>`).join('')||'<p class="muted">No bounded observed source available.</p>'}}<h3>Owner claims</h3>${{a.owner_claims.map(c=>`<div class="finding"><strong>${{esc(c.field.replaceAll('_',' '))}}</strong><p>${{esc(c.value)}}</p><small>Owner claim · ${{esc(c.claim_id)}} · source ${{esc(c.source)}}</small></div>`).join('')||'<p class="muted">No owner context supplied.</p>'}}<h3>AI proposals</h3>${{a.findings.map(f=>`<div class="finding"><strong>${{esc(f.category.replaceAll('_',' '))}}: ${{esc(f.label)}}</strong><p>${{esc(f.description)}}</p><small>AI proposal · ${{esc(f.confidence)}} confidence · ${{esc(f.review_status)}} · evidence ${{esc(f.evidence_ids.join(', '))}}${{f.claim_ids.length?' · claims '+esc(f.claim_ids.join(', ')):''}}</small></div>`).join('')||'<p class="muted">No grounded semantic findings.</p>'}}<h3>Open questions</h3><ul>${{a.open_questions.map(x=>`<li>${{esc(x)}}</li>`).join('')||'<li>None recorded</li>'}}</ul>`;drawer.classList.add('open')}}
 rows();document.getElementById('search').addEventListener('input',e=>rows(e.target.value));document.addEventListener('click',e=>{{const id=e.target.closest('[data-id]')?.dataset.id||e.target.closest('[data-app-id]')?.dataset.appId;if(id)openApp(id)}});document.getElementById('close').onclick=()=>drawer.classList.remove('open');
 document.addEventListener('keydown',e=>{{if(e.key==='Escape')drawer.classList.remove('open')}});
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{{document.querySelectorAll('nav button,main section').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById(b.dataset.tab).classList.add('active')}});

@@ -26,6 +26,8 @@ class SemanticProvider(Protocol):
         user: str,
         schema_name: str,
         schema: dict[str, Any],
+        max_output_tokens: int | None = None,
+        require_full_input: bool = False,
     ) -> dict[str, Any]: ...
 
 
@@ -65,6 +67,8 @@ class LocalTransformersProvider:
         user: str,
         schema_name: str,
         schema: dict[str, Any],
+        max_output_tokens: int | None = None,
+        require_full_input: bool = False,
     ) -> dict[str, Any]:
         self._load()
         schema_text = json.dumps(schema, sort_keys=True, ensure_ascii=True)
@@ -74,13 +78,22 @@ class LocalTransformersProvider:
             f"{schema_text}"
         )
         try:
+            output_limit = min(
+                max_output_tokens or self.settings.execution.max_output_tokens,
+                self.settings.execution.max_output_tokens,
+            )
             input_limit = max(
                 1,
-                self.settings.execution.context_tokens - self.settings.execution.max_output_tokens,
+                self.settings.execution.context_tokens - output_limit,
             )
-            inputs = self._bounded_inputs(system_message, user, input_limit).to(self._device)
+            inputs = self._bounded_inputs(
+                system_message,
+                user,
+                input_limit,
+                require_full_input=require_full_input,
+            ).to(self._device)
             generation: dict[str, Any] = {
-                "max_new_tokens": self.settings.execution.max_output_tokens,
+                "max_new_tokens": output_limit,
                 "do_sample": self.settings.execution.temperature > 0,
                 "pad_token_id": self._tokenizer.eos_token_id,
             }
@@ -100,8 +113,20 @@ class LocalTransformersProvider:
         except Exception as exc:
             raise SemanticProviderError("Local model inference failed") from exc
 
-    def _bounded_inputs(self, system: str, user: str, token_limit: int) -> Any:
+    def _bounded_inputs(
+        self,
+        system: str,
+        user: str,
+        token_limit: int,
+        *,
+        require_full_input: bool = False,
+    ) -> Any:
         """Fit untrusted data without allowing token truncation to remove its closing boundary."""
+        if require_full_input and len(user) > self.settings.execution.max_profile_characters:
+            raise SemanticProviderError(
+                "Complete semantic input exceeds max_profile_characters; reduce the configured "
+                "batch/profile payload instead of truncating source data"
+            )
         upper = min(len(user), self.settings.execution.max_profile_characters)
 
         def render(budget: int) -> Any:
@@ -112,6 +137,11 @@ class LocalTransformersProvider:
         largest = render(upper)
         if int(largest["input_ids"].shape[-1]) <= token_limit:
             return largest
+        if require_full_input:
+            raise SemanticProviderError(
+                "Complete semantic input exceeds the model token budget; reduce the configured "
+                "batch/profile payload instead of truncating source data"
+            )
         upper -= 1
         lower = 0
         best: Any = None

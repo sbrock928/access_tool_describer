@@ -562,6 +562,8 @@ def _semantic_workbook_sheets(
             [
                 "EUC Name",
                 "Analysis Coverage",
+                "Semantic Code Coverage",
+                "Modeled Code Segments",
                 "Business Purpose",
                 "Application Archetype",
                 "Proposed Disposition",
@@ -729,6 +731,7 @@ def _application_portfolio_row(
 ) -> list[object]:
     semantic_profile = profile if hasattr(profile, "primary_archetype") else None
     target_mapping = mapping if hasattr(mapping, "disposition") else None
+    semantic_coverage = getattr(semantic_profile, "semantic_coverage", None)
     coverage_items = coverage.get(tool_id, [])
     coverage_label = (
         "Complete"
@@ -742,6 +745,16 @@ def _application_portfolio_row(
     return [
         names.get(tool_id, "Unknown EUC"),
         coverage_label,
+        (
+            "Complete"
+            if getattr(semantic_coverage, "complete_code_coverage", False)
+            else "Sampled or unavailable"
+        ),
+        (
+            f"{semantic_coverage.modeled_segments}/{semantic_coverage.model_eligible_segments}"
+            if semantic_coverage is not None
+            else "0/0"
+        ),
         getattr(semantic_profile, "business_purpose", "Unknown"),
         getattr(semantic_profile, "primary_archetype", "unknown"),
         getattr(target_mapping, "disposition", "investigate"),
@@ -912,6 +925,15 @@ def _method_sheet(
                 ["Similarity version", metadata.deterministic_similarity_version],
                 ["Generated at", metadata.generated_at.isoformat()],
                 ["Semantic errors", len(semantic.errors)],
+                ["Checkpointed semantic batches", len(semantic.batch_summaries)],
+                [
+                    "Applications with complete code coverage",
+                    sum(
+                        profile.semantic_coverage is not None
+                        and profile.semantic_coverage.complete_code_coverage
+                        for profile in semantic.applications
+                    ),
+                ],
             ]
         )
     _sheet(workbook, "Method & Provenance", rows)

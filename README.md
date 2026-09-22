@@ -76,11 +76,13 @@ portfolio-analyzer report --workspace .\workspace
 
 For a faster end-to-end smoke test, use `portfolio-analyzer semantic --workspace .\workspace
 --quick`. Quick mode uses the same approved model but samples at most five representative objects
-per application and applies smaller generation bounds. Its state and reports are marked `TEST
+per application and includes every code segment of each selected object. Normal mode covers all
+modules, queries, macros, and form/report code-behind using bounded multi-object batches rather than
+one model call per object. Quick-mode state and reports are marked `TEST
 ONLY`; `semantic-check`, `--semantic-mode require`, and review import reject quick results. Each
-completed application is checkpointed so an interrupted quick or production run can resume. Both
-modes print wall-clock timestamps plus per-step and total elapsed time for model calls and pipeline
-stages.
+completed batch and application is checkpointed so an interrupted quick or production run can
+resume. Both modes print wall-clock timestamps plus per-step and total elapsed time for model calls
+and pipeline stages.
 
 See [docs/SEMANTIC_ANALYSIS.md](docs/SEMANTIC_ANALYSIS.md) for model setup, security boundaries,
 gold-set evaluation, review import, and reproducible reruns.

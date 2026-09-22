@@ -188,7 +188,7 @@ class Claim(BaseModel):
 
 
 class SemanticSource(BaseModel):
-    """A bounded, redacted source excerpt available to the semantic model."""
+    """A bounded, redacted source segment or deterministic inventory record."""
 
     source_id: str
     tool_inventory_id: str
@@ -198,6 +198,39 @@ class SemanticSource(BaseModel):
     location: str | None = None
     excerpt: str
     content_sha256: str
+    model_eligible: bool = True
+    segment_index: int = Field(default=1, ge=1)
+    segment_count: int = Field(default=1, ge=1)
+
+
+class SemanticBatchSummary(BaseModel):
+    """A resumable semantic reduction over source segments or earlier summaries."""
+
+    batch_id: str
+    tool_inventory_id: str
+    level: int = Field(default=0, ge=0)
+    source_ids: list[str] = Field(default_factory=list)
+    child_summary_ids: list[str] = Field(default_factory=list)
+    summary: str
+    business_terms: list[str] = Field(default_factory=list)
+    workflows: list[str] = Field(default_factory=list)
+    data_entities: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    claim_ids: list[str] = Field(default_factory=list)
+    input_fingerprint: str
+
+
+class SemanticCoverage(BaseModel):
+    """Auditable inventory and model coverage for one application."""
+
+    inventory_objects: int = Field(ge=0)
+    model_eligible_objects: int = Field(ge=0)
+    modeled_objects: int = Field(ge=0)
+    model_eligible_segments: int = Field(ge=0)
+    modeled_segments: int = Field(ge=0)
+    object_type_inventory: dict[str, int] = Field(default_factory=dict)
+    object_type_modeled: dict[str, int] = Field(default_factory=dict)
+    complete_code_coverage: bool = False
 
 
 class SemanticFinding(BaseModel):
@@ -240,6 +273,8 @@ class SemanticApplicationProfile(BaseModel):
     confidence: Confidence
     findings: list[SemanticFinding] = Field(default_factory=list)
     object_summaries: list[ObjectSemanticSummary] = Field(default_factory=list)
+    batch_summary_ids: list[str] = Field(default_factory=list)
+    semantic_coverage: SemanticCoverage | None = None
     open_questions: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
     claim_ids: list[str] = Field(default_factory=list)
@@ -379,6 +414,7 @@ class SemanticPortfolioState(BaseModel):
     sources: list[SemanticSource] = Field(default_factory=list)
     observed_evidence_ids: list[str] = Field(default_factory=list)
     claims: list[Claim] = Field(default_factory=list)
+    batch_summaries: list[SemanticBatchSummary] = Field(default_factory=list)
     applications: list[SemanticApplicationProfile] = Field(default_factory=list)
     similarity_edges: list[SimilarityEdge] = Field(default_factory=list)
     clusters: list[PortfolioCluster] = Field(default_factory=list)

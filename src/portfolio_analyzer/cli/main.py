@@ -895,7 +895,10 @@ def semantic_analysis(
     quick: bool = typer.Option(
         False,
         "--quick",
-        help="TEST ONLY: sample five representative objects per application with smaller bounds.",
+        help=(
+            "TEST ONLY: sample five representative code-bearing objects per application with "
+            "smaller bounds."
+        ),
     ),
 ) -> None:
     """Run resumable semantic analysis with the approved in-process model, fully offline."""
@@ -911,8 +914,8 @@ def semantic_analysis(
     progress(f"Starting {run_mode} semantic analysis")
     if quick:
         progress(
-            "TEST ONLY quick semantic mode: at most five representative objects per application; "
-            "results cannot pass semantic-check or --semantic-mode require."
+            "TEST ONLY quick semantic mode: at most five representative code-bearing objects per "
+            "application; results cannot pass semantic-check or --semantic-mode require."
         )
     progress("Starting approved model directory verification")
     try:

@@ -10,7 +10,8 @@ outputs remain evidence-gated, reviewable proposals.
 verified staged Access copies
   -> metadata/static extraction
   -> deterministic SQL/VBA/dependency/capability analysis
-  -> bounded, redacted evidence packets
+  -> procedure-aware, redacted code segments
+  -> bounded semantic batches and hierarchical rollups
   -> one approved local instruct model
   -> schema-validated application profiles
   -> deterministic weighted similarity and clustering
@@ -100,6 +101,10 @@ contains the approved repository and immutable revision plus the local path, gen
 deterministic similarity weights/thresholds, redaction policy, and approved Microsoft service list.
 The repository and revision are validated against the compiled allowlist.
 
+Existing `semantic.toml` files do not need to be regenerated for batching. Missing batch and
+task-specific output settings receive the reviewed defaults shown by a newly initialized workspace;
+operators only need to add them when intentionally tuning those bounds.
+
 During an explicitly approved connected acquisition window, run:
 
 ```powershell
@@ -147,9 +152,22 @@ chat template.
 
 Original source paths never cross the staging boundary. Semantic analysis uses already extracted
 local snapshots and deterministic evidence only. Secrets, URI credentials, local paths, and network
-paths are redacted; object excerpts and profiles are bounded; source material is wrapped in
+paths are redacted; code batches and profiles are bounded; source material is wrapped in
 `UNTRUSTED_SOURCE_DATA` delimiters. Source VBA, SQL, descriptions, and model output are data, never
 instructions or executable content. Raw prompts are not persisted.
+
+Production inference covers all extracted standard modules, query SQL, macros, and form/report
+code-behind. VBA is partitioned at procedure boundaries and an oversized procedure is split without
+discarding its tail. Tables, linked-table metadata, references, and form/report layout remain in the
+deterministic inventory rather than consuming generation calls. Multiple complete code segments are
+packed into each model request. If a complete batch does not fit the token budget, analysis fails
+that application explicitly; it never silently truncates a code batch.
+
+Batch summaries use a 384-token output ceiling. Application profiles use 1,024 tokens, cluster
+labels 384, and architecture synthesis 1,536, all additionally capped by the global output limit.
+When batch summaries cannot all fit in an application prompt, bounded hierarchical rollups reduce
+them until every batch is represented. Reports and semantic state record modeled object/segment
+counts and whether code-bearing coverage is complete.
 
 The provider requests one JSON object matching a supplied Pydantic JSON Schema. Returned text is
 parsed only with `json.loads` and then validated by the task-specific Pydantic model. There is no
@@ -187,6 +205,7 @@ preservation, then evaluates reviewed gold data. The gold set requires the strat
 sample, or the full portfolio when smaller, and checks:
 
 - 100% schema validity for reviewed applications;
+- 100% production semantic coverage of code-bearing segments;
 - 100% resolvable evidence/claim references;
 - no unsupported high-confidence conclusions;
 - at least 80% primary-archetype agreement;
@@ -202,13 +221,13 @@ portfolio-analyzer semantic --workspace .\workspace --tool-id 12345
 portfolio-analyzer semantic --workspace .\workspace --force
 ```
 
-The CLI writes an atomic `in_progress` semantic checkpoint after every newly processed
-application. Restarting the same command reuses compatible checkpointed profiles and continues the
-portfolio. Normal and quick runs print timestamped start/completion events for model loading, each
-selected Access object, application synthesis, checkpoints, clustering, architecture synthesis,
-and final state writing. Every line includes elapsed time for the preceding step and for the total
-run, so a long local generation remains visible and measurable. `--force` deliberately regenerates
-selected compatible profiles.
+The CLI writes an atomic `in_progress` semantic checkpoint after every completed semantic batch and
+every newly processed application. Restarting the same command reuses compatible batches and
+profiles, including batches completed before a later batch or application synthesis failed. Normal
+and quick runs print timestamped start/completion events for model loading, each batch and rollup,
+application synthesis, checkpoints, clustering, architecture synthesis, and final state writing.
+Every line includes elapsed time for the preceding step and total run. `--force` deliberately
+regenerates the selected application's batches and profile.
 
 ### Quick test mode
 
@@ -221,10 +240,12 @@ portfolio-analyzer report --workspace .\workspace --semantic-mode auto
 ```
 
 Quick mode retains the approved Granite model and all integrity/offline controls. For each
-application it deterministically selects at most five objects, round-robin across available object
-types, and caps execution at a 4,096-token context, 768 output tokens, 1,000 source characters per
-object, and 6,000 profile characters. It records `run_mode = quick`, the object limit, effective
-generation settings, and checkpoint status in semantic provenance.
+application it deterministically selects at most five code-bearing objects, round-robin across
+available object types, and includes every segment of each selected object. It caps execution at a
+4,096-token context, 768 global/profile/architecture output tokens, 256 batch/cluster output tokens,
+1,000 characters per segment, 4,000 characters per batch, and 6,000 profile characters. It records
+`run_mode = quick`, the object limit, effective generation settings, checkpoint status, and sampled
+coverage in semantic provenance.
 
 Quick outputs are deliberately test-only. The workbook and PDF carry a prominent warning, the HTML
 semantic status and report manifest identify quick mode, `semantic-check` cannot pass it,
@@ -238,14 +259,16 @@ portfolio-analyzer semantic-check --workspace .\workspace
 portfolio-analyzer report --workspace .\workspace --semantic-mode require
 ```
 
-Atomic semantic state is fingerprinted by staged artifact hashes, evidence, claims, static,
+Atomic semantic state and each resumable batch are fingerprinted by staged artifact hashes,
+source-segment hashes, evidence, claims, static,
 semantic, prompt and schema versions, model manifest hash, inference-library version, generation
 settings, run mode and object-selection limit, deterministic similarity
 version/weights/thresholds, and approved service catalog.
-Compatible application profiles are reused. The model is loaded once per run.
+Compatible batch summaries and application profiles are reused. The model is loaded once per run.
 
-Schema v3 records production versus quick mode, checkpoint completion, and the object-selection
-limit. Compatible v2 state can be read but is cache-incompatible and is refreshed; v1 endpoint and
+Schema v4 records source segments, resumable batch summaries, per-application semantic coverage,
+production versus quick mode, checkpoint completion, and the object-selection limit. Older
+non-endpoint state may be readable but is cache-incompatible and is refreshed; v1 endpoint and
 embedding state remains invalid. Deterministic extraction and analysis remain intact.
 
 ## Confidence, review, and reporting

@@ -15,6 +15,7 @@ from portfolio_analyzer.models import (
     MigrationWave,
     PortfolioCluster,
     SemanticApplicationProfile,
+    SemanticCoverage,
     SemanticFinding,
     SemanticPortfolioState,
     SemanticRunMetadata,
@@ -51,6 +52,16 @@ def _state() -> SemanticPortfolioState:
         proposed_disposition="replatform",
         confidence=Confidence.HIGH,
         findings=[finding],
+        semantic_coverage=SemanticCoverage(
+            inventory_objects=12,
+            model_eligible_objects=5,
+            modeled_objects=5,
+            model_eligible_segments=8,
+            modeled_segments=8,
+            object_type_inventory={"module": 5, "table": 7},
+            object_type_modeled={"module": 5},
+            complete_code_coverage=True,
+        ),
         evidence_ids=["ev-1", "ev-2"],
         artifact_hashes=["a" * 64],
         input_fingerprint="fingerprint",
@@ -218,6 +229,13 @@ def test_semantic_reports_are_offline_traceable_and_reviewable(tmp_path: Path) -
     }.issubset(workbook.sheetnames)
     assert workbook["Review Queue"].data_validations.count == 1
     assert len(workbook["Portfolio Summary"]._charts) == 5
+    portfolio_headers = [cell.value for cell in workbook["Application Portfolio"][1]]
+    assert "Semantic Code Coverage" in portfolio_headers
+    provenance = {
+        row[0].value: row[1].value
+        for row in workbook["Method & Provenance"].iter_rows(min_row=2, max_col=2)
+    }
+    assert provenance["Applications with complete code coverage"] == 1
 
     pdf_path = tmp_path / "Portfolio_Analysis.pdf"
     write_executive_pdf(
@@ -247,6 +265,7 @@ def test_semantic_reports_are_offline_traceable_and_reviewable(tmp_path: Path) -
     assert "Observed dependency map" in html
     assert "Request table" in html
     assert "Observed sources" in html
+    assert "Semantic code coverage" in html
     assert "Owner claims" in html
     assert "AI proposals" in html
     assert "unknown-evidence" not in html
