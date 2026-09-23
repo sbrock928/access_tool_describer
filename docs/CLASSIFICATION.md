@@ -17,25 +17,29 @@ The deterministic application IR keeps the complete extracted object inventory s
 inspected code objects. Forms and reports without VBA still contribute their definitions and root
 RecordSource / entry settings. Code coverage counts continue to describe code-bearing segments only.
 
-Role assignment uses static behavior, with source citations and an explicit rationale:
+Roles are assessed independently, with source citations and a rationale for each:
 
-- Transactional workflow requires a bound form explicitly configured for editing/entry, form
-  record-editing code, literal update SQL, or a form invoking a known writing query. Names alone
-  (including `Entry`, `Edit`, or `Save`) do not qualify.
-- Reporting and analytics includes report definitions/actions and read queries. Local or linked
-  datasource reads are not integrations. Exports, Excel, and email remain secondary capabilities
-  when they support read-only reporting.
-- Integration utility requires explicit transfers or external interactions without a supported
-  reporting or transactional role. Connections alone do not qualify.
-- Batch automation covers noninteractive action queries, command execution, and macro processing.
-- Mixed application requires independently supported transactional and reporting roles. Read queries
-  supporting entry forms do not, by themselves, make an application mixed.
-- Unknown means that available behavior is insufficient. Its confidence is low.
+- **Transactional workflow:** bound forms configured for entry/editing, record-editing code,
+  literal update SQL in a form, or a form invoking a known writing query. Names alone do not qualify.
+- **Reporting and analytics:** report definitions/actions or independent read/query behavior.
+  Reads within a writing query and queries bound only to entry forms do not establish analytics.
+  Reading local or linked tables is compatible with reporting.
+- **Batch automation:** action queries or processing code outside forms/reports. A writing query
+  called only by a form remains interactive evidence. Scheduling and unattended execution require
+  confirmation; a static action query cannot prove either.
+- **Integration:** explicit transfer or external interaction behavior. Connections alone do not
+  qualify. Reporting applications with exports can support both reporting and integration roles.
 
-Import/transfer processing can include supporting read queries without becoming a reporting role.
-Incomplete extraction or sampled inspection marks the result provisional. Static definitions describe
-possible/configured behavior, not proof of runtime execution, scheduling, or execution order.
-Dynamic arguments and unrecognized references remain unresolved rather than guessed.
+Applications can have any supported combination, including reporting plus batch or all four roles.
+An empty role list means insufficient evidence, rather than a forced category. Incomplete extraction
+or sampled inspection qualifies conclusions. Static definitions do not prove execution order.
+Dynamic arguments and unrecognized references remain unresolved.
+
+`primary_archetype` and its historical precedence remain for compatibility with older integrations
+and reviewed gold sets. Reports and similarity role features use the independent role assessments. Modernization
+groups and default target components are discovered separately from shared evidence; a role alone
+cannot create a group or select a platform. The legacy `mixed application` label is no longer
+needed to express overlapping behavior in the report.
 
 Descriptions prioritize representative reads, writes, entry, reports, and transfers. Identifier words
 are no longer converted into invented business capabilities such as "Sales management". Owner purpose

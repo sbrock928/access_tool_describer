@@ -208,6 +208,7 @@ class BehaviorFact(BaseModel):
     """A static behavior and the objects/evidence that support it, not an execution trace."""
 
     action: str
+    artifact_hash: str = ""
     description: str
     object_type: str
     object_name: str
@@ -296,12 +297,48 @@ class ObjectSemanticSummary(BaseModel):
     claim_ids: list[str] = Field(default_factory=list)
 
 
+class ApplicationRole(BaseModel):
+    """An independently supported role; several can apply to the same application."""
+
+    role: str
+    rationale: str
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class ThemeLocation(BaseModel):
+    tool_inventory_id: str
+    object_type: str
+    object_name: str
+    artifact: str
+    location: str = ""
+    observation: str
+    evidence_id: str
+
+
+class PortfolioTheme(BaseModel):
+    theme_id: str
+    title: str
+    category: str
+    observed_pattern: str
+    proposed_solution: str
+    alternative_options: list[str] = Field(default_factory=list)
+    grouping_basis: list[str] = Field(default_factory=list)
+    generation_method: str = "evidence_discovery"
+    affected_tool_ids: list[str]
+    locations: list[ThemeLocation] = Field(default_factory=list)
+    next_steps: list[str] = Field(default_factory=list)
+    validation_questions: list[str] = Field(default_factory=list)
+    confidence: Confidence = Confidence.MEDIUM
+    coverage_note: str = ""
+
+
 class SemanticApplicationProfile(BaseModel):
     tool_inventory_id: str
     tool_name: str
     summary: str
     business_purpose: str
     primary_archetype: str
+    roles: list[ApplicationRole] = Field(default_factory=list)
     proposed_disposition: str
     confidence: Confidence
     purpose_provenance: str = "unconfirmed"
@@ -463,4 +500,5 @@ class SemanticPortfolioState(BaseModel):
     similarity_edges: list[SimilarityEdge] = Field(default_factory=list)
     clusters: list[PortfolioCluster] = Field(default_factory=list)
     architecture: TargetArchitecture = Field(default_factory=TargetArchitecture)
+    discovered_themes: list[PortfolioTheme] = Field(default_factory=list)
     errors: dict[str, str] = Field(default_factory=dict)

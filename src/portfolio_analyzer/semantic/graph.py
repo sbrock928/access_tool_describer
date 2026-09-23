@@ -121,7 +121,8 @@ def _portfolio_features(
             "datasources": set(),
             "technical_characteristics": set(),
             "object_composition": set(),
-            "application_archetype": {_normalize(profile.primary_archetype)},
+            "application_archetype": {_normalize(role.role) for role in profile.roles}
+            or {_normalize(profile.primary_archetype)},
         }
         for profile in profiles
     }
@@ -228,7 +229,9 @@ def _cluster(
         profile = profiles[tool_id]
         confidences.append(profile.confidence)
         evidence_ids.update(profile.evidence_ids)
-        archetypes[profile.primary_archetype] += 1
+        archetypes.update(role.role for role in profile.roles)
+        if not profile.roles:
+            archetypes[profile.primary_archetype] += 1
         for finding in profile.findings:
             if not finding.evidence_ids or finding.review_status == "rejected":
                 continue

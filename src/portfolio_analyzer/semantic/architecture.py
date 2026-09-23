@@ -20,6 +20,7 @@ from portfolio_analyzer.models import (
     Datasource,
     MigrationWave,
     PortfolioCluster,
+    PortfolioTheme,
     SemanticApplicationProfile,
     TargetArchitecture,
 )
@@ -90,7 +91,9 @@ def synthesize_architecture(
     approved_services: list[str],
     max_output_tokens: int | None = None,
     use_model: bool = True,
+    themes: list[PortfolioTheme] | None = None,
 ) -> tuple[TargetArchitecture, str | None]:
+    themes = themes or []
     allowed_evidence = {
         evidence_id for profile in profiles for evidence_id in profile.evidence_ids
     } | {
@@ -99,6 +102,7 @@ def synthesize_architecture(
         for finding in profile.findings
         for evidence_id in finding.evidence_ids
     }
+    allowed_evidence.update(loc.evidence_id for theme in themes for loc in theme.locations)
     allowed_claims = {claim.claim_id for claim in claims}
     payload = {
         "applications": [
@@ -107,6 +111,7 @@ def synthesize_architecture(
                 "name": profile.tool_name,
                 "summary": profile.summary,
                 "archetype": profile.primary_archetype,
+                "roles": [role.model_dump(mode="json") for role in profile.roles],
                 "proposed_disposition": profile.proposed_disposition,
                 "confidence": profile.confidence.value,
                 "findings": [
@@ -122,9 +127,23 @@ def synthesize_architecture(
             for profile in profiles
         ],
         "clusters": [cluster.model_dump(mode="json") for cluster in clusters],
+        "discovered_groups": [
+            {
+                "id": theme.theme_id,
+                "label": theme.title,
+                "application_ids": theme.affected_tool_ids,
+                "shared_patterns": theme.grouping_basis[:10],
+                "candidate_options": [theme.proposed_solution, *theme.alternative_options],
+                "evidence_ids": sorted({loc.evidence_id for loc in theme.locations})[:30],
+            }
+            for theme in themes[:30]
+        ],
+        "omitted_discovered_groups": max(0, len(themes) - 30),
         "approved_microsoft_services": approved_services,
         "rules": {
-            "architecture": "modular platform, not a replacement monolith",
+            "architecture": "Infer useful boundaries and alternatives from the supplied evidence. "
+            "Choose group names freely; no fixed role-to-solution or role-to-product mapping. "
+            "Applications may belong to multiple groups. A common role alone is insufficient.",
             "microsoft_boundary": "Only approved services may be named as platform_service.",
             "retirement": "Retire candidate requires an owner lifecycle claim.",
             "citations": "Use only supplied evidence_ids and claim_ids.",
@@ -140,6 +159,7 @@ def synthesize_architecture(
                 claims,
                 all_tool_ids=all_tool_ids,
                 approved_services=approved_services,
+                themes=themes,
             ),
             None,
         )
@@ -153,6 +173,7 @@ def synthesize_architecture(
                 claims,
                 all_tool_ids=all_tool_ids,
                 approved_services=approved_services,
+                themes=themes,
             ),
             "Architecture model generation is enabled but no provider is available",
         )
@@ -179,6 +200,7 @@ def synthesize_architecture(
             claims,
             all_tool_ids=all_tool_ids,
             approved_services=approved_services,
+            themes=themes,
             allowed_evidence=allowed_evidence,
             allowed_claims=allowed_claims,
         )
@@ -193,6 +215,7 @@ def synthesize_architecture(
                 claims,
                 all_tool_ids=all_tool_ids,
                 approved_services=approved_services,
+                themes=themes,
             ),
             str(exc),
         )
@@ -210,10 +233,18 @@ def _validated_architecture(
     approved_services: list[str],
     allowed_evidence: set[str],
     allowed_claims: set[str],
+    themes: list[PortfolioTheme],
 ) -> TargetArchitecture:
     valid_apps = set(all_tool_ids)
     valid_clusters = {cluster.cluster_id for cluster in clusters}
     approved = {service.casefold(): service for service in approved_services}
+    evidence_by_app = {p.tool_inventory_id: set(p.evidence_ids) for p in profiles}
+    for theme in themes:
+        for location in theme.locations:
+            evidence_by_app.setdefault(location.tool_inventory_id, set()).add(location.evidence_id)
+    claims_by_app: dict[str, set[str]] = defaultdict(set)
+    for claim in claims:
+        claims_by_app[claim.tool_inventory_id].add(claim.claim_id)
     components: list[ArchitectureComponent] = []
     key_to_id: dict[str, str] = {}
     open_questions = list(dict.fromkeys(proposal.open_questions))
@@ -227,26 +258,31 @@ def _validated_architecture(
                 f"{component_proposal.name}."
             )
             continue
-        component_evidence = sorted(
-            set(component_proposal.evidence_ids) & allowed_evidence
-        )
+        component_evidence = sorted(set(component_proposal.evidence_ids) & allowed_evidence)
         component_claims = sorted(set(component_proposal.claim_ids) & allowed_claims)
         if not component_evidence and not component_claims:
             open_questions.append(
-                f"Supporting evidence or an owner claim is required for: "
-                f"{component_proposal.name}."
+                f"Supporting evidence or an owner claim is required for: {component_proposal.name}."
             )
             continue
         component_applications = sorted(
-            set(component_proposal.application_ids) & valid_apps
+            app for app in set(component_proposal.application_ids) & valid_apps
+            if evidence_by_app.get(app, set()) & set(component_evidence)
+            or claims_by_app.get(app, set()) & set(component_claims)
         )
+        if set(component_applications) != set(component_proposal.application_ids):
+            open_questions.append(
+                "Excluded applications without application-specific support: "
+                f"{component_proposal.name}."
+            )
+        if component_proposal.application_ids and not component_applications:
+            continue
         component_confidence = _support_confidence(
             set(component_evidence),
             set(component_claims),
         )
         if component_applications and any(
-            not _coverage_complete(tool_id, coverage)
-            for tool_id in component_applications
+            not _coverage_complete(tool_id, coverage) for tool_id in component_applications
         ):
             component_confidence = Confidence.LOW
         component_id = _identifier(
@@ -255,9 +291,7 @@ def _validated_architecture(
             component_proposal.key,
             component_proposal.name,
         )
-        key_to_id[
-            f"{component_proposal.track}:{component_proposal.key}"
-        ] = component_id
+        key_to_id[f"{component_proposal.track}:{component_proposal.key}"] = component_id
         components.append(
             ArchitectureComponent(
                 component_id=component_id,
@@ -277,7 +311,7 @@ def _validated_architecture(
                 confidence=component_confidence,
             )
         )
-    components = _ensure_cluster_components(components, clusters)
+    components.extend(_discovered_components(themes))
     key_to_id.update({component.component_id: component.component_id for component in components})
     relations: list[ArchitectureRelation] = []
     component_ids = {component.component_id for component in components}
@@ -376,6 +410,14 @@ def _validated_mappings(
                 for component in components
                 if component.track == "vendor_neutral" and cluster_id in component.cluster_ids
             ][:1]
+        target_ids = sorted(
+            set(target_ids)
+            | {
+                component.component_id
+                for component in components
+                if tool_id in component.application_ids
+            }
+        )
         disposition: Disposition = proposed.disposition if proposed else "investigate"
         if not _coverage_complete(tool_id, coverage) or profile is None:
             disposition = "investigate"
@@ -424,10 +466,9 @@ def _fallback_architecture(
     *,
     all_tool_ids: list[str],
     approved_services: list[str],
+    themes: list[PortfolioTheme],
 ) -> TargetArchitecture:
-    components = _ensure_cluster_components([], clusters)
-    approved = {value.casefold(): value for value in approved_services}
-    components.extend(_supported_microsoft_components(profiles, approved))
+    components = _discovered_components(themes)
     profile_by_app = {profile.tool_inventory_id: profile for profile in profiles}
     cluster_by_app = {
         tool_id: cluster for cluster in clusters for tool_id in cluster.application_ids
@@ -454,8 +495,9 @@ def _fallback_architecture(
         target_ids = [
             component.component_id
             for component in components
-            if cluster and cluster.cluster_id in component.cluster_ids
-        ][:1]
+            if (cluster and cluster.cluster_id in component.cluster_ids)
+            or tool_id in component.application_ids
+        ]
         mappings.append(
             ApplicationTargetMapping(
                 mapping_id=_identifier("mapping", tool_id),
@@ -476,8 +518,10 @@ def _fallback_architecture(
         )
     return TargetArchitecture(
         summary=(
-            "A conservative modular baseline generated from validated semantic clusters. "
-            "The model-proposed architecture was unavailable and requires review."
+            "Candidate boundaries discovered from shared external data, matching implementations "
+            "and repeated observations. An application can map to several components; "
+            "applications without supported overlap are left ungrouped. Platform selection "
+            "requires further design or the optional architecture model."
         ),
         components=components,
         mappings=mappings,
@@ -489,94 +533,22 @@ def _fallback_architecture(
     )
 
 
-def _supported_microsoft_components(
-    profiles: list[SemanticApplicationProfile], approved: dict[str, str]
-) -> list[ArchitectureComponent]:
-    candidates = [
-        (
-            "workflow",
-            "Workflow orchestration",
-            "Power Automate",
-            {"workflow", "automation_trigger"},
-        ),
-        ("documents", "Document management", "SharePoint Online", {"document process"}),
-        ("reporting", "Analytics and reporting", "Power BI", {"reporting and analytics"}),
-        ("data", "Managed application data", "Dataverse", {"data_domain", "data_entity"}),
-        ("experience", "Application experience", "Power Apps", {"transactional workflow"}),
-        ("identity", "Identity and access", "Microsoft Entra ID", {"primary_user"}),
-        ("delivery", "Source and delivery automation", "Azure DevOps", {"modernization_blocker"}),
+def _discovered_components(themes: list[PortfolioTheme]) -> list[ArchitectureComponent]:
+    return [
+        ArchitectureComponent(
+            component_id=_identifier("component", "discovered", theme.theme_id),
+            track="vendor_neutral",
+            name=theme.title,
+            component_type="discovered_boundary",
+            description=theme.proposed_solution
+            + " Alternatives: "
+            + "; ".join(theme.alternative_options),
+            application_ids=theme.affected_tool_ids,
+            evidence_ids=sorted({loc.evidence_id for loc in theme.locations}),
+            confidence=theme.confidence,
+        )
+        for theme in themes
     ]
-    output: list[ArchitectureComponent] = []
-    for key, name, service, signals in candidates:
-        canonical_service = approved.get(service.casefold())
-        if not canonical_service:
-            continue
-        supported_profiles = [
-            profile
-            for profile in profiles
-            if profile.primary_archetype in signals
-            or any(finding.category in signals for finding in profile.findings)
-        ]
-        evidence = sorted(
-            {
-                evidence_id
-                for profile in supported_profiles
-                for evidence_id in profile.evidence_ids
-            }
-        )
-        claims = sorted(
-            {claim_id for profile in supported_profiles for claim_id in profile.claim_ids}
-        )
-        if not evidence and not claims:
-            continue
-        output.append(
-            ArchitectureComponent(
-                component_id=_identifier("component", "microsoft", key),
-                track="microsoft",
-                name=name,
-                component_type="shared_platform_service",
-                description=f"Candidate implementation using {canonical_service}",
-                platform_service=canonical_service,
-                application_ids=sorted(
-                    profile.tool_inventory_id for profile in supported_profiles
-                ),
-                evidence_ids=evidence,
-                claim_ids=claims,
-                confidence=_support_confidence(set(evidence), set(claims)),
-            )
-        )
-    return output
-
-
-def _ensure_cluster_components(
-    components: list[ArchitectureComponent], clusters: list[PortfolioCluster]
-) -> list[ArchitectureComponent]:
-    output = list(components)
-    covered = {
-        cluster_id
-        for component in output
-        if component.track == "vendor_neutral"
-        for cluster_id in component.cluster_ids
-    }
-    for cluster in clusters:
-        if cluster.cluster_id in covered:
-            continue
-        if not cluster.evidence_ids:
-            continue
-        output.append(
-            ArchitectureComponent(
-                component_id=_identifier("component", "vendor_neutral", cluster.cluster_id),
-                track="vendor_neutral",
-                name=f"{cluster.label} module",
-                component_type="domain_module",
-                description=cluster.rationale,
-                application_ids=cluster.application_ids,
-                cluster_ids=[cluster.cluster_id],
-                evidence_ids=cluster.evidence_ids,
-                confidence=cluster.confidence,
-            )
-        )
-    return output
 
 
 def _coverage_complete(tool_id: str, coverage: list[AnalysisCoverage]) -> bool:

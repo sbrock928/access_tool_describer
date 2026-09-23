@@ -7,6 +7,7 @@ from collections import defaultdict
 from typing import Literal
 
 from portfolio_analyzer.models import (
+    ApplicationRole,
     BehaviorFact,
     Datasource,
     SemanticApplicationIR,
@@ -124,6 +125,7 @@ def build_behavior_facts(
             return
         facts[key] = BehaviorFact(
             action=action,
+            artifact_hash=source.artifact_hash,
             description=description,
             object_type=source.object_type,
             object_name=source.object_name,
@@ -388,6 +390,63 @@ def build_behavior_facts(
 def _arguments(value: str) -> list[str]:
     """Split Access action arguments without splitting commas inside VBA literals."""
     return [part.strip() for part in re.split(r",(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)", value)]
+
+
+def assess_roles(ir: SemanticApplicationIR) -> list[ApplicationRole]:
+    """Evaluate roles independently, without treating reads inside writes as analytics.
+
+    An action query called only by a form is interactive evidence. A standalone
+    action query is a batch candidate, but does not prove unattended scheduling.
+    """
+    facts = ir.behavior_facts
+    entry = [f for f in facts if f.action == "entry"]
+    entry_objects = {(f.artifact_hash, f.object_type, f.object_name) for f in entry}
+    write_objects = {(f.artifact_hash, f.object_type, f.object_name)
+                     for f in facts if f.action == "write"}
+    form_queries = {
+        (f.artifact_hash, t.casefold()) for f in facts
+        if f.object_type == "form" and f.action == "run_query" for t in f.targets
+    }
+    nonform_queries = {
+        (f.artifact_hash, t.casefold()) for f in facts
+        if f.object_type != "form" and f.action == "run_query" for t in f.targets
+    }
+    entry_sources = {(f.artifact_hash, t.casefold()) for f in entry for t in f.targets}
+    reporting = [
+        f for f in facts if f.action == "report" or (
+            f.action == "read"
+            and (f.artifact_hash, f.object_type, f.object_name) not in entry_objects | write_objects
+            and not (f.object_type == "query"
+                     and (f.artifact_hash, f.object_name.casefold()) in entry_sources)
+        )
+    ]
+    batch = [
+        f for f in facts
+        if f.action in {"write", "batch", "dynamic_sql"}
+        and f.object_type not in {"form", "report"}
+        and not (
+            f.object_type == "query" and (f.artifact_hash, f.object_name.casefold()) in form_queries
+            and (f.artifact_hash, f.object_name.casefold()) not in nonform_queries
+        )
+    ]
+    integrations = [f for f in facts if f.action in _INTEGRATIONS | {"transfer"}]
+    groups = [
+        ("transactional workflow", "Interactive entry or update behavior is present", entry),
+        ("reporting and analytics", "Reports or independent read/query behavior are present",
+         reporting),
+        ("batch automation", "Action queries or processing code are present; scheduling and "
+         "unattended execution require confirmation", batch),
+        ("integration", "Transfer or external interaction behavior is present", integrations),
+    ]
+    return [
+        ApplicationRole(
+            role=role,
+            rationale=(reason + ": "
+                       + "; ".join(dict.fromkeys(f.description for f in support))[:600]),
+            evidence_ids=sorted({ref for f in support for ref in f.evidence_ids}),
+        )
+        for role, reason, support in groups if support
+    ]
 
 
 def classify_behavior(ir: SemanticApplicationIR) -> tuple[str, str, list[str], list[str]]:

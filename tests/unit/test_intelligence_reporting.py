@@ -6,6 +6,7 @@ from openpyxl import load_workbook
 
 from portfolio_analyzer.models import (
     AnalysisCoverage,
+    ApplicationRole,
     ApplicationTargetMapping,
     ArchitectureComponent,
     ArchitectureRelation,
@@ -50,6 +51,8 @@ def _state() -> SemanticPortfolioState:
         summary="Tracks customer requests.",
         business_purpose="Request operations",
         primary_archetype="transactional workflow",
+        roles=[ApplicationRole(role="transactional workflow",
+                               rationale="Form supports entry", evidence_ids=["ev-1"])],
         proposed_disposition="replatform",
         confidence=Confidence.HIGH,
         findings=[finding],

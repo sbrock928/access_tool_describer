@@ -34,6 +34,13 @@ from portfolio_analyzer.naming import euc_directory_name
 from portfolio_analyzer.persistence.database import create_session_factory
 from portfolio_analyzer.persistence.repository import save_inventory_and_artifact
 from portfolio_analyzer.portfolio.recommendations import build_recommendations
+from portfolio_analyzer.portfolio.themes import (
+    THEME_HEADERS,
+    THEME_LOCATION_HEADERS,
+    build_portfolio_themes,
+    theme_location_rows,
+    theme_rows,
+)
 from portfolio_analyzer.reporting.coverage import build_analysis_coverage
 from portfolio_analyzer.reporting.intelligence import (
     write_architecture_mermaid,
@@ -1165,6 +1172,10 @@ def report(
             )
     produced: list[Path] = []
     workbook_path = settings.reports_dir / "Portfolio_Analysis.xlsx"
+    themes = build_portfolio_themes(
+        semantic_state, recommendations, evidence, coverage, artifacts=artifacts,
+        datasources=datasources,
+    )
     write_workbook(
         workbook_path,
         inventory,
@@ -1174,6 +1185,7 @@ def report(
         dependencies,
         capabilities,
         recommendations=recommendations,
+        themes=themes,
         coverage=coverage,
         semantic=semantic_state,
         semantic_status=semantic_status,
@@ -1187,6 +1199,7 @@ def report(
         artifacts,
         capabilities,
         recommendations=recommendations,
+        themes=themes,
         evidence=evidence,
         datasources=datasources,
         dependencies=dependencies,
@@ -1203,6 +1216,7 @@ def report(
         semantic_state,
         semantic_status=semantic_status,
         dependencies=dependencies,
+        themes=themes,
     )
     produced.append(html_path)
     write_csv(
@@ -1418,6 +1432,14 @@ def report(
             "recommendations.csv",
         )
     )
+    for filename, headers, rows in (
+        ("portfolio_themes.csv", THEME_HEADERS, theme_rows(themes, application_names)),
+        ("theme_locations.csv", THEME_LOCATION_HEADERS,
+         theme_location_rows(themes, application_names)),
+    ):
+        theme_path = settings.reports_dir / filename
+        write_csv(theme_path, rows, headers=headers)
+        produced.append(theme_path)
     if semantic_state is not None:
         produced.extend(
             write_semantic_datasets(

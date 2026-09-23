@@ -334,3 +334,133 @@ def test_segmented_form_code_retains_metadata_and_all_citations() -> None:
 def test_aggregate_ir_is_not_a_second_independent_confidence_source() -> None:
     state = describe([TABLE, READ])
     assert state.applications[0].confidence == Confidence.MEDIUM
+
+
+@pytest.mark.parametrize(
+    ("objects", "expected"),
+    [
+        ([TABLE, REPORT, obj("query", "Refresh", "UPDATE Sales SET Amount = 0")],
+         {"reporting and analytics", "batch automation"}),
+        ([TABLE, FORM, REPORT, EXPORT,
+          obj("query", "Refresh", "UPDATE Sales SET Amount = 0")],
+         {"transactional workflow", "reporting and analytics", "batch automation", "integration"}),
+        ([TABLE, obj("query", "Append", "INSERT INTO Sales SELECT * FROM Archive")],
+         {"batch automation"}),
+        ([TABLE, FORM, EXPORT], {"transactional workflow", "integration"}),
+        ([obj("linked_table", "Sales")], set()),
+        ([TABLE, obj("form", "OnlyEntry", 'Begin Form\nRecordSource = "Sales"\n'
+                     'AllowEdits = -1\nEnd\nCodeBehindForm\nSub Run()\n'
+                     'DoCmd.OpenQuery "Refresh"\nEnd Sub'),
+          obj("query", "Refresh", "UPDATE Sales SET Amount = 0")],
+         {"transactional workflow"}),
+    ],
+)
+def test_independent_roles_preserve_overlap_without_inventing_roles(
+    objects: list[ExtractedObject], expected: set[str],
+) -> None:
+    state = describe(objects)
+    assert {r.role for r in state.applications[0].roles} == expected
+    assert all(r.evidence_ids for r in state.applications[0].roles)
+    assert _citation_validity(state) == 1.0
+    # Roles describe this singleton; they cannot create a shared modernization group.
+    assert state.architecture.mappings[0].target_component_ids == []
+    assert state.discovered_themes == []
+
+
+def test_themes_locate_shared_objects_and_qualify_incomplete_evidence() -> None:
+    from test_discovery import discovered_portfolio
+
+    from portfolio_analyzer.portfolio.themes import build_portfolio_themes
+
+    state, _ = discovered_portfolio(warning=True)
+    themes = build_portfolio_themes(state)
+    assert len(themes) == 2
+    assert all(t.confidence == Confidence.LOW and "Provisional" in t.coverage_note for t in themes)
+    assert any(loc.object_name == "Refresh1" for t in themes for loc in t.locations)
+    assert any(loc.object_name == "ReadClaims" for t in themes for loc in t.locations)
+    source_ids = {s.source_id for s in state.sources}
+    assert all(loc.evidence_id in source_ids for t in themes for loc in t.locations)
+
+
+def test_role_review_accepts_overlapping_labels_without_legacy_bucket() -> None:
+    from portfolio_analyzer.semantic.pipeline import evaluate_gold_set
+
+    state = describe([TABLE, REPORT, obj("query", "Refresh", "UPDATE Sales SET Amount = 0")])
+    inventory = [InventoryRecord(tool_inventory_id="1", tool_name="Example",
+                                 inventory_filename="app.accdb", filepath=Path("app.accdb"))]
+    rows = [{"euc_name": "Example", "expected_roles": "reporting and analytics|batch automation",
+             "expected_business_capabilities": "(none)"}]
+    result = evaluate_gold_set(rows, inventory, state)
+    assert result["passed"]
+    assert result["role_macro_f1"] == 1.0
+    rows[0]["expected_roles"] = "reporting and analytics"
+    assert not evaluate_gold_set(rows, inventory, state)["passed"]
+
+
+def test_entry_bound_query_is_not_independent_analytics() -> None:
+    form = obj("form", "Entry", 'Begin Form\nRecordSource = "qrySales"\nAllowEdits = -1\nEnd')
+    state = describe([TABLE, READ, form])
+    assert {r.role for r in state.applications[0].roles} == {"transactional workflow"}
+
+
+def test_themes_and_overlapping_roles_are_consistent_across_reports(tmp_path: Path) -> None:
+    import csv
+    import json
+    import re
+
+    from openpyxl import load_workbook
+    from test_discovery import discovered_portfolio
+
+    from portfolio_analyzer.portfolio.themes import (
+        THEME_HEADERS,
+        THEME_LOCATION_HEADERS,
+        build_portfolio_themes,
+        theme_location_rows,
+        theme_rows,
+    )
+    from portfolio_analyzer.reporting.intelligence import (
+        write_intelligence_html,
+        write_semantic_datasets,
+    )
+    from portfolio_analyzer.reporting.writers import write_csv, write_executive_pdf, write_workbook
+
+    state, inventory = discovered_portfolio()
+    themes = build_portfolio_themes(state)
+    names = {i.tool_inventory_id: i.tool_name for i in inventory}
+    html_path = tmp_path / "Portfolio_Intelligence.html"
+    write_intelligence_html(
+        html_path, inventory, [], state, semantic_status="current", themes=themes,
+    )
+    html = html_path.read_text()
+    payload = re.search(r'<script id="portfolio-data" type="application/json">(.*?)</script>', html)
+    assert payload
+    data = json.loads(payload[1])
+    assert {r["role"] for r in data["applications"][0]["roles"]} == {
+        "reporting and analytics", "batch automation",
+    }
+    assert {t["title"] for t in data["themes"]} == {t.title for t in themes}
+    xlsx = tmp_path / "Portfolio_Analysis.xlsx"
+    write_workbook(xlsx, inventory, [], [], [], [], [], semantic=state, themes=themes)
+    workbook = load_workbook(xlsx)
+    assert workbook["Portfolio Themes"].max_row == 3
+    locations = list(workbook["Theme Locations"].values)
+    assert any("Refresh1" in row for row in locations)
+    assert any("ReadClaims" in row for row in locations)
+    app_rows = list(workbook["Application Portfolio"].values)
+    roles_column = app_rows[0].index("Supported Roles")
+    assert "batch automation" in app_rows[1][roles_column]
+    assert "reporting and analytics" in app_rows[1][roles_column]
+    write_semantic_datasets(tmp_path, state, names)
+    with (tmp_path / "semantic_applications.csv").open() as handle:
+        row = next(csv.DictReader(handle))
+    assert row["supported_roles"] == app_rows[1][roles_column]
+    for filename, headers, rows in (
+        ("portfolio_themes.csv", THEME_HEADERS, theme_rows(themes, names)),
+        ("theme_locations.csv", THEME_LOCATION_HEADERS, theme_location_rows(themes, names)),
+    ):
+        write_csv(tmp_path / filename, rows, headers=headers)
+        with (tmp_path / filename).open() as handle:
+            assert list(csv.DictReader(handle)) == rows
+    write_executive_pdf(tmp_path / "Portfolio_Analysis.pdf", inventory, [], [],
+                        semantic=state, themes=themes)
+    assert (tmp_path / "Portfolio_Analysis.pdf").read_bytes().startswith(b"%PDF")

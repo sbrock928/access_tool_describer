@@ -348,3 +348,30 @@ use quick mode for production acceptance. Review the existing stratified gold se
 enter `(none)` in `expected_business_capabilities` to explicitly confirm that no business capability
 is established. An empty cell continues to mean unreviewed. This permits evaluating conservative
 behavior profiles without inventing business capabilities to satisfy the gold-set gate.
+
+
+## Independent roles and portfolio redesign
+
+Profiles now persist `roles`, each with a rationale and evidence references. The same deterministic
+assessments apply to the default and optional model paths; model limits and defaults are unchanged.
+Semantic analysis/schema v10, IR v3 and prompt v9 invalidate older cached profiles. Rerun `semantic`
+and then `report --semantic-mode require` against saved extraction snapshots to refresh profiles,
+similarity clusters, themes and component mappings. Re-extraction is only needed for missing metadata.
+
+New gold-set templates append optional `expected_roles`. Use pipe- or semicolon-separated labels,
+for example `reporting and analytics|batch automation`, or `(none)` after reviewing an app with no
+supported roles. Reviewed roles can replace `expected_primary_archetype`; leave the latter blank
+when evaluating overlap instead of the legacy category. Existing CSV files remain accepted and
+are never overwritten. `semantic-check` reports role macro-F1 and the number of apps with reviewed
+roles, and requires at least 0.80 on supplied role labels. Existing capability, citation and coverage
+gates still apply. When both legacy categories and roles are supplied, both are evaluated.
+
+
+Portfolio themes are now discovered from observed overlap, not predefined role solutions. The
+semantic state persists `discovered_themes`, and default target components are built from the same
+groups. Shared external identities, complete matching definitions and repeated extraction labels
+supply transparent grouping features. The default remains offline and deterministic; it does not
+claim to infer arbitrary business domains. Optional architecture model generation can interpret
+these groups and propose broader alternatives with application-specific evidence. Neither path
+requires users to author a taxonomy or solution dictionary. Regenerate semantic state and reports
+after upgrading; earlier architecture/theme caches are invalidated by the version change.

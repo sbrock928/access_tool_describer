@@ -1307,6 +1307,7 @@ def test_optional_model_receives_behavior_but_cannot_override_observed_role() ->
                 assert ir["inventory_object_type_counts"] == {"form": 1, "query": 1}
                 assert ir["object_type_counts"] == {"query": 1}
                 assert ir["indexes"]["behaviors"]["items"]
+                assert "transactional workflow" in {r["role"] for r in ir["supported_roles"]}
                 result["a"] = "integration utility"
             return result
 
@@ -1318,5 +1319,6 @@ def test_optional_model_receives_behavior_but_cannot_override_observed_role() ->
     assert len(provider.calls) == len(inventory)
     assert all(p.primary_archetype == "transactional workflow" for p in state.applications)
     assert all(p.purpose_provenance == "local_model_proposal" for p in state.applications)
+    assert all("transactional workflow" in {r.role for r in p.roles} for p in state.applications)
     assert all(p.classification_evidence_ids for p in state.applications)
     assert all(ir.model_input_characters <= 12000 for ir in state.application_irs)

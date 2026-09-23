@@ -26,6 +26,7 @@ GOLD_SET_HEADERS = [
     "expected_business_capabilities",
     "expected_disposition",
     "reviewer_notes",
+    "expected_roles",
 ]
 
 
@@ -137,7 +138,7 @@ def read_gold_set(path: Path) -> list[dict[str, str]]:
         return []
     with path.open(newline="", encoding="utf-8-sig") as source:
         reader = csv.DictReader(source)
-        missing = set(GOLD_SET_HEADERS) - set(reader.fieldnames or [])
+        missing = (set(GOLD_SET_HEADERS) - {"expected_roles"}) - set(reader.fieldnames or [])
         if missing:
             raise ValueError(f"Gold-set CSV is missing columns: {', '.join(sorted(missing))}")
         return [{key: (value or "").strip() for key, value in row.items()} for row in reader]

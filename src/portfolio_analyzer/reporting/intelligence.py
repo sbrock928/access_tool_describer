@@ -17,8 +17,10 @@ from portfolio_analyzer.models import (
     AnalysisCoverage,
     Dependency,
     InventoryRecord,
+    PortfolioTheme,
     SemanticPortfolioState,
 )
+from portfolio_analyzer.portfolio.themes import build_portfolio_themes
 from portfolio_analyzer.reporting.writers import write_csv
 
 
@@ -46,6 +48,8 @@ def write_semantic_datasets(
                     "summary": profile.summary,
                     "business_purpose": profile.business_purpose,
                     "primary_archetype": profile.primary_archetype,
+                    "supported_roles": " | ".join(r.role for r in profile.roles),
+                    "role_assessments": json.dumps([r.model_dump() for r in profile.roles]),
                     "proposed_disposition": profile.proposed_disposition,
                     "confidence": profile.confidence.value,
                     "status": profile.status,
@@ -114,6 +118,8 @@ def write_semantic_datasets(
                 "secondary_capabilities",
                 "classification_rationale",
                 "classification_evidence_ids",
+                "supported_roles",
+                "role_assessments",
             ],
         )
     )
@@ -493,8 +499,10 @@ def write_intelligence_html(
     *,
     semantic_status: str,
     dependencies: list[Dependency] | None = None,
+    themes: list[PortfolioTheme] | None = None,
 ) -> None:
     names = {item.tool_inventory_id: item.tool_name for item in inventory}
+    themes = themes if themes is not None else build_portfolio_themes(state, coverage=coverage)
     profiles = state.applications if state else []
     mappings = state.architecture.mappings if state else []
     mapping_by_id = {item.tool_inventory_id: item for item in mappings}
@@ -529,7 +537,7 @@ def write_intelligence_html(
             if item.analysis_status == "complete" and item.extraction_status == "complete"
         }
     )
-    archetypes = Counter(item.primary_archetype for item in profiles)
+    archetypes = Counter(r.role for item in profiles for r in item.roles)
     waves = Counter(item.wave for item in mappings)
     application_rows = []
     for tool_id in unique_ids:
@@ -552,6 +560,7 @@ def write_intelligence_html(
                 if profile
                 else [],
                 "archetype": profile.primary_archetype if profile else "unknown",
+                "roles": [r.model_dump(mode="json") for r in profile.roles] if profile else [],
                 "confidence": profile.confidence.value if profile else "low",
                 "disposition": mapping.disposition if mapping else "investigate",
                 "wave": mapping.wave if mapping else 0,
@@ -575,6 +584,7 @@ def write_intelligence_html(
         )
     data = {
         "semantic_status": semantic_status,
+        "themes": [theme.model_dump(mode="json") for theme in themes],
         "applications": application_rows,
         "clusters": [item.model_dump(mode="json") for item in state.clusters] if state else [],
         "edges": [item.model_dump(mode="json") for item in state.similarity_edges] if state else [],
@@ -596,7 +606,7 @@ def write_intelligence_html(
         semantic_status=semantic_status,
         archetype_bars=_bars(archetypes),
         wave_bars=_bars({f"Wave {key}": value for key, value in sorted(waves.items())}),
-        architecture_html=_architecture_cards(state),
+        architecture_html=_architecture_cards(state, names),
         cluster_svg=_cluster_svg(state, names),
         dependency_svg=_dependency_svg(dependencies or [], names),
     )
@@ -674,7 +684,7 @@ def _bars(values: Counter[str] | dict[str, int]) -> str:
     )
 
 
-def _architecture_cards(state: SemanticPortfolioState | None) -> str:
+def _architecture_cards(state: SemanticPortfolioState | None, names: dict[str, str]) -> str:
     if state is None:
         return '<p class="muted">Run semantic analysis to generate target architecture.</p>'
     sections = []
@@ -689,13 +699,19 @@ def _architecture_cards(state: SemanticPortfolioState | None) -> str:
             service = (
                 f"<small>{escape(item.platform_service)}</small>" if item.platform_service else ""
             )
+            affected = " · ".join(
+                f'<button class="link" data-id="{escape(app_id, quote=True)}">'
+                f'{escape(names.get(app_id, app_id))}</button>'
+                for app_id in item.application_ids
+            )
             cards.append(
                 '<article class="component"><span class="tag">{}</span><h3>{}</h3>{}'
-                "<p>{}</p><small>{} confidence · {}</small></article>".format(
+                "<p>{}</p><p><strong>Affected applications:</strong> {}</p><small>{} confidence · {}</small></article>".format(
                     escape(item.component_type.replace("_", " ")),
                     escape(item.name),
                     service,
                     escape(item.description),
+                    affected,
                     escape(item.confidence.value),
                     escape(item.review_status),
                 )
@@ -820,11 +836,12 @@ input[type=search]{{width:100%;max-width:520px;padding:11px;border:1px solid #ae
 .cluster-map,.dependency-map{{width:100%;height:auto;background:white;border:1px solid var(--line);border-radius:7px}}.edge{{stroke:#adc1ca;stroke-width:1.2}}.app-node circle{{fill:var(--blue);cursor:pointer}}.app-node text{{font-size:10px;text-anchor:middle;fill:var(--ink)}}.cluster-label,.dependency-heading{{font-weight:700;fill:var(--navy)}}.dependency-node rect{{fill:#edf5f7;stroke:#9bb5c1}}.dependency-node.app-node rect{{fill:#dcecf2;cursor:pointer;stroke:var(--blue)}}.dependency-node.target rect{{fill:#f7f4e9;stroke:#c7b776}}.dependency-node text{{font-size:12px;text-anchor:start;fill:var(--ink)}}
 @media(max-width:700px){{th:nth-child(3),td:nth-child(3),th:nth-child(5),td:nth-child(5){{display:none}}}}
 </style></head><body><header><h1>Access Portfolio Intelligence</h1><p>Evidence-grounded semantic analysis and proposed target architecture</p></header>
-<nav>{"".join(f'<button data-tab="{tab}" class="{"active" if tab == "overview" else ""}">{label}</button>' for tab, label in (("overview", "Overview"), ("portfolio", "Application portfolio"), ("clusters", "Consolidation map"), ("dependencies", "Dependency map"), ("architecture", "Target architecture"), ("roadmap", "Migration roadmap")))}</nav>
+<nav>{"".join(f'<button data-tab="{tab}" class="{"active" if tab == "overview" else ""}">{label}</button>' for tab, label in (("overview", "Overview"), ("portfolio", "Application portfolio"), ("themes", "Themes & solutions"), ("clusters", "Consolidation map"), ("dependencies", "Dependency map"), ("architecture", "Target architecture"), ("roadmap", "Migration roadmap")))}</nav>
 <main><section id="overview" class="active"><h2>Portfolio overview</h2><div class="status"><strong>Semantic status:</strong> {escape(semantic_status)}</div>
 <div class="cards"><div class="card"><span>Applications</span><strong>{inventory_count}</strong></div><div class="card"><span>Analysis complete</span><strong>{complete_count}</strong></div><div class="card"><span>Semantic profiles</span><strong>{profile_count}</strong></div><div class="card"><span>Capability clusters</span><strong>{cluster_count}</strong></div></div>
-<div class="grid2"><div class="panel"><h3>Application archetypes</h3>{archetype_bars}</div><div class="panel"><h3>Proposed migration waves</h3>{wave_bars}</div></div></section>
-<section id="portfolio"><h2>Application portfolio</h2><input id="search" type="search" placeholder="Search name, purpose, archetype, disposition, or summary" aria-label="Search applications"><div class="panel" style="overflow:auto"><table><thead><tr><th>EUC name</th><th>Observed behavior</th><th>Archetype</th><th>Disposition</th><th>Wave</th><th>Confidence</th></tr></thead><tbody id="apps"></tbody></table></div></section>
+<div class="grid2"><div class="panel"><h3>Supported application roles</h3><p class="muted">Roles overlap. One application can contribute to several counts.</p>{archetype_bars}</div><div class="panel"><h3>Proposed migration waves</h3>{wave_bars}</div></div></section>
+<section id="portfolio"><h2>Application portfolio</h2><input id="search" type="search" placeholder="Search name, purpose, roles, disposition, or summary" aria-label="Search applications"><label for="role-filter">Role: </label><select id="role-filter"><option value="">All roles</option></select><div class="panel" style="overflow:auto"><table><thead><tr><th>EUC name</th><th>Observed behavior</th><th>Supported roles</th><th>Disposition</th><th>Wave</th><th>Confidence</th></tr></thead><tbody id="apps"></tbody></table></div></section>
+<section id="themes"><h2>Discovered groups and design options</h2><p class="status">Applications can participate in several themes. Groups emerge from shared evidence. Names and roles alone do not create a group; applications without supported overlap remain ungrouped.</p><input id="theme-search" type="search" aria-label="Search themes" placeholder="Search solutions, applications, objects or dependencies"><div id="theme-list"></div></section>
 <section id="clusters"><h2>Consolidation map</h2><p class="muted">Lines show qualified semantic similarity. Select an application node to open its evidence-grounded profile.</p>{cluster_svg}</section>
 <section id="dependencies"><h2>Observed dependency map</h2><p class="muted">Edges come from deterministic extraction. Select an application node to open its evidence-grounded profile.</p>{dependency_svg}</section>
 <section id="architecture"><h2>Proposed target architecture</h2><p class="status">All components remain proposals until reviewed. The Microsoft track is limited to the approved service catalog.</p>{architecture_html}</section>
@@ -833,12 +850,19 @@ input[type=search]{{width:100%;max-width:520px;padding:11px;border:1px solid #ae
 <script id="portfolio-data" type="application/json">{safe_json}</script><script>
 const D=JSON.parse(document.getElementById('portfolio-data').textContent);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
 const apps=document.getElementById('apps'),drawer=document.getElementById('drawer'),detail=document.getElementById('detail');
-function rows(q=''){{q=q.toLowerCase();apps.innerHTML=D.applications.filter(a=>Object.values(a).join(' ').toLowerCase().includes(q)).map(a=>`<tr><td><button class="link" data-id="${{esc(a.id)}}">${{esc(a.name)}}</button></td><td>${{esc(a.observed_behavior.slice(0,3).join("; ")||a.summary)}}</td><td>${{esc(a.archetype)}}</td><td>${{esc(a.disposition)}}</td><td>${{a.wave}}</td><td><span class="pill ${{esc(a.confidence)}}">${{esc(a.confidence)}}</span></td></tr>`).join('')}}
-function openApp(id){{const a=D.applications.find(x=>x.id===id);if(!a)return;const c=a.semantic_coverage;const ir=a.application_ir;const method=a.generation_method==='local_model'?'Local model':'Deterministic rules';detail.innerHTML=`<h2>${{esc(a.name)}}</h2><p>${{esc(a.summary)}}</p><dl><dt>Business purpose</dt><dd>${{esc(a.purpose)}} · ${{esc(a.purpose_provenance.replaceAll("_"," "))}}${{a.purpose_claim_ids.length?" · claims "+esc(a.purpose_claim_ids.join(", ")):""}}</dd><dt>Archetype</dt><dd>${{esc(a.archetype)}} · Deterministic behavior rules</dd><dt>Why this classification</dt><dd>${{esc(a.classification_rationale)}}<br><small>${{esc(a.classification_evidence_ids.join(", "))}}</small></dd><dt>Known inputs</dt><dd>${{esc(a.inputs.join(", "))||"Not established"}}</dd><dt>Known outputs / write targets</dt><dd>${{esc(a.outputs.join(", "))||"Not established"}}</dd><dt>Secondary capabilities</dt><dd>${{esc(a.secondary_capabilities.join("; "))||"None established"}}</dd><dt>Proposed disposition</dt><dd>${{esc(a.disposition)}} · Wave ${{a.wave}}</dd><dt>Profile synthesis</dt><dd>${{method}}</dd><dt>Deterministic code coverage</dt><dd>${{c?(c.complete_code_coverage?'Complete':'Sampled')+' · '+c.code_objects_inspected+'/'+c.code_objects_available+' objects · '+c.code_segments_inspected+'/'+c.code_segments_available+' segments':'Unavailable'}}</dd><dt>Model input</dt><dd>${{a.generation_method==='local_model'&&ir?'One deterministic application IR · '+ir.model_input_characters+' characters · '+esc(ir.ir_id):'None'}}</dd></dl><h3>Observed behavior</h3><p class="muted">Static definitions and code; these are not proof of execution or an inferred execution order.</p>${{(ir?.behavior_facts||[]).map(f=>`<div class="finding"><strong>${{esc(f.description)}}</strong><p>${{esc(f.object_type)}}: ${{esc(f.object_name)}} · ${{esc(f.datasource_scope.replaceAll("_"," "))}}</p><small>Evidence ${{esc(f.evidence_ids.join(", "))}}</small></div>`).join('')||'<p class="muted">No behavior established.</p>'}}<h3>Observed sources</h3>${{a.observed_sources.map(s=>`<div class="finding"><strong>${{esc(s.object)}}</strong><p>${{esc(s.excerpt)}}</p>${{s.ui_properties!=="{{}}"?`<p>Root UI properties: ${{esc(s.ui_properties)}}</p>`:""}}<small>Observed source · ${{esc(s.source_id)}}</small></div>`).join('')||'<p class="muted">No bounded observed source available.</p>'}}<h3>Owner claims</h3>${{a.owner_claims.map(c=>`<div class="finding"><strong>${{esc(c.field.replaceAll('_',' '))}}</strong><p>${{esc(c.value)}}</p><small>Owner claim · ${{esc(c.claim_id)}} · source ${{esc(c.source)}}</small></div>`).join('')||'<p class="muted">No owner context supplied.</p>'}}<h3>Semantic proposals</h3>${{a.findings.map(f=>`<div class="finding"><strong>${{esc(f.category.replaceAll('_',' '))}}: ${{esc(f.label)}}</strong><p>${{esc(f.description)}}</p><small>${{method}} proposal · ${{esc(f.confidence)}} confidence · ${{esc(f.review_status)}} · evidence ${{esc(f.evidence_ids.join(', '))}}${{f.claim_ids.length?' · claims '+esc(f.claim_ids.join(', ')):''}}</small></div>`).join('')||'<p class="muted">No grounded semantic findings.</p>'}}<h3>Open questions</h3><ul>${{a.open_questions.map(x=>`<li>${{esc(x)}}</li>`).join('')||'<li>None recorded</li>'}}</ul>`;drawer.classList.add('open')}}
+function rows(q=''){{q=q.toLowerCase();apps.innerHTML=D.applications.filter(a=>JSON.stringify(a).toLowerCase().includes(q)&&(!document.getElementById("role-filter").value||a.roles.some(r=>r.role===document.getElementById("role-filter").value))).map(a=>`<tr><td><button class="link" data-id="${{esc(a.id)}}">${{esc(a.name)}}</button></td><td>${{esc(a.observed_behavior.slice(0,3).join("; ")||a.summary)}}</td><td>${{a.roles.map(r=>`<span class="pill">${{esc(r.role)}}</span>`).join(" ")||"Not established"}}</td><td>${{esc(a.disposition)}}</td><td>${{a.wave}}</td><td><span class="pill ${{esc(a.confidence)}}">${{esc(a.confidence)}}</span></td></tr>`).join('')}}
+function openApp(id){{const a=D.applications.find(x=>x.id===id);if(!a)return;const c=a.semantic_coverage;const ir=a.application_ir;const method=a.generation_method==='local_model'?'Local model':'Deterministic rules';detail.innerHTML=`<h2>${{esc(a.name)}}</h2><p>${{esc(a.summary)}}</p><dl><dt>Business purpose</dt><dd>${{esc(a.purpose)}} · ${{esc(a.purpose_provenance.replaceAll("_"," "))}}${{a.purpose_claim_ids.length?" · claims "+esc(a.purpose_claim_ids.join(", ")):""}}</dd><dt>Supported roles</dt><dd>${{a.roles.map(r=>`<p><strong>${{esc(r.role)}}</strong>: ${{esc(r.rationale)}}<br><small>${{esc(r.evidence_ids.join(", "))}}</small></p>`).join("")||"Not established"}}</dd><dt>Legacy summary category</dt><dd>${{esc(a.archetype)}} · Retained for compatibility</dd><dt>Why this classification</dt><dd>${{esc(a.classification_rationale)}}<br><small>${{esc(a.classification_evidence_ids.join(", "))}}</small></dd><dt>Known inputs</dt><dd>${{esc(a.inputs.join(", "))||"Not established"}}</dd><dt>Known outputs / write targets</dt><dd>${{esc(a.outputs.join(", "))||"Not established"}}</dd><dt>Secondary capabilities</dt><dd>${{esc(a.secondary_capabilities.join("; "))||"None established"}}</dd><dt>Proposed disposition</dt><dd>${{esc(a.disposition)}} · Wave ${{a.wave}}</dd><dt>Profile synthesis</dt><dd>${{method}}</dd><dt>Deterministic code coverage</dt><dd>${{c?(c.complete_code_coverage?'Complete':'Sampled')+' · '+c.code_objects_inspected+'/'+c.code_objects_available+' objects · '+c.code_segments_inspected+'/'+c.code_segments_available+' segments':'Unavailable'}}</dd><dt>Model input</dt><dd>${{a.generation_method==='local_model'&&ir?'One deterministic application IR · '+ir.model_input_characters+' characters · '+esc(ir.ir_id):'None'}}</dd></dl><h3>Modernization themes</h3>${{themeCards(D.themes.filter(t=>t.affected_tool_ids.includes(id)),id)}}<h3>Proposed target components</h3>${{(D.architecture.components||[]).filter(c=>c.application_ids.includes(id)&&c.review_status!=="rejected").map(c=>`<div class="finding"><strong>${{esc(c.name)}}</strong><p>${{esc(c.description)}}</p><small>${{esc(c.track)}} · ${{esc(c.platform_service||"Logical boundary")}}</small></div>`).join("")||"No supported target proposed"}}<h3>Observed behavior</h3><p class="muted">Static definitions and code; these are not proof of execution or an inferred execution order.</p>${{(ir?.behavior_facts||[]).map(f=>`<div class="finding"><strong>${{esc(f.description)}}</strong><p>${{esc(f.object_type)}}: ${{esc(f.object_name)}} · ${{esc(f.datasource_scope.replaceAll("_"," "))}}</p><small>Evidence ${{esc(f.evidence_ids.join(", "))}}</small></div>`).join('')||'<p class="muted">No behavior established.</p>'}}<h3>Observed sources</h3>${{a.observed_sources.map(s=>`<div class="finding"><strong>${{esc(s.object)}}</strong><p>${{esc(s.excerpt)}}</p>${{s.ui_properties!=="{{}}"?`<p>Root UI properties: ${{esc(s.ui_properties)}}</p>`:""}}<small>Observed source · ${{esc(s.source_id)}}</small></div>`).join('')||'<p class="muted">No bounded observed source available.</p>'}}<h3>Owner claims</h3>${{a.owner_claims.map(c=>`<div class="finding"><strong>${{esc(c.field.replaceAll('_',' '))}}</strong><p>${{esc(c.value)}}</p><small>Owner claim · ${{esc(c.claim_id)}} · source ${{esc(c.source)}}</small></div>`).join('')||'<p class="muted">No owner context supplied.</p>'}}<h3>Semantic proposals</h3>${{a.findings.map(f=>`<div class="finding"><strong>${{esc(f.category.replaceAll('_',' '))}}: ${{esc(f.label)}}</strong><p>${{esc(f.description)}}</p><small>${{method}} proposal · ${{esc(f.confidence)}} confidence · ${{esc(f.review_status)}} · evidence ${{esc(f.evidence_ids.join(', '))}}${{f.claim_ids.length?' · claims '+esc(f.claim_ids.join(', ')):''}}</small></div>`).join('')||'<p class="muted">No grounded semantic findings.</p>'}}<h3>Open questions</h3><ul>${{a.open_questions.map(x=>`<li>${{esc(x)}}</li>`).join('')||'<li>None recorded</li>'}}</ul>`;drawer.classList.add('open')}}
+
+function appLink(id){{return `<button class="link" data-id="${{esc(id)}}">${{esc(D.names[id]||id)}}</button>`}}
+function themeCards(themes,appId=null){{return themes.map(t=>`<article class="panel" style="margin-bottom:14px"><span class="tag">${{esc(t.category)}} · ${{esc(t.confidence)}} confidence</span><h3>${{esc(t.title)}}</h3><p><strong>Observed pattern:</strong> ${{esc(t.observed_pattern)}}</p><p><strong>Proposed solution:</strong> ${{esc(t.proposed_solution)}}</p><p><strong>Affected applications (${{t.affected_tool_ids.length}}):</strong> ${{t.affected_tool_ids.map(appLink).join(" · ")}}</p><p><strong>Other options:</strong></p><ul>${{t.alternative_options.map(x=>`<li>${{esc(x)}}</li>`).join("")||"<li>None recorded</li>"}}</ul><p><strong>Why grouped:</strong> ${{esc(t.grouping_basis.join("; "))}}</p><p><strong>Next steps:</strong></p><ol>${{t.next_steps.map(x=>`<li>${{esc(x)}}</li>`).join("")}}</ol><p><strong>Validate with owners:</strong></p><ul>${{t.validation_questions.map(x=>`<li>${{esc(x)}}</li>`).join("")}}</ul><p class="muted">${{esc(t.coverage_note)}}</p><details><summary>Where this occurs · ${{t.locations.filter(l=>!appId||l.tool_inventory_id===appId).length}} evidence references</summary><div style="overflow:auto"><table><thead><tr><th>Application</th><th>Object / location</th><th>Observation</th></tr></thead><tbody>${{t.locations.filter(l=>!appId||l.tool_inventory_id===appId).map(l=>`<tr><td>${{appLink(l.tool_inventory_id)}}</td><td>${{esc(l.object_type)}}: ${{esc(l.object_name)}}<br>${{esc(l.location)}}<br><small>Artifact: ${{esc(l.artifact)}}<br>${{esc(l.evidence_id)}}</small></td><td>${{esc(l.observation)}}</td></tr>`).join("")}}</tbody></table></div></details></article>`).join("")||'<p class="muted">No shared evidence group was established for this selection. Applications are left ungrouped when overlap is insufficient.</p>'}}
+function renderThemes(q=''){{document.getElementById('theme-list').innerHTML=themeCards(D.themes.filter(t=>(JSON.stringify(t)+' '+t.affected_tool_ids.map(id=>D.names[id]).join(' ')).toLowerCase().includes(q.toLowerCase())))}}
+renderThemes();document.getElementById('theme-search').addEventListener('input',e=>renderThemes(e.target.value));
+const roleFilter=document.getElementById('role-filter');[...new Set(D.applications.flatMap(a=>a.roles.map(r=>r.role)))].sort().forEach(r=>{{const o=document.createElement('option');o.value=r;o.textContent=r;roleFilter.appendChild(o)}});roleFilter.addEventListener('change',()=>rows(document.getElementById('search').value));
+
 rows();document.getElementById('search').addEventListener('input',e=>rows(e.target.value));document.addEventListener('click',e=>{{const id=e.target.closest('[data-id]')?.dataset.id||e.target.closest('[data-app-id]')?.dataset.appId;if(id)openApp(id)}});document.getElementById('close').onclick=()=>drawer.classList.remove('open');
 document.addEventListener('keydown',e=>{{if(e.key==='Escape')drawer.classList.remove('open')}});
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{{document.querySelectorAll('nav button,main section').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById(b.dataset.tab).classList.add('active')}});
-const waves=D.architecture.migration_waves||[];document.getElementById('waves').innerHTML=waves.map(w=>`<article class="component"><span class="tag">Wave ${{w.wave}}</span><h3>${{esc(w.name)}}</h3><p>${{esc(w.purpose)}}</p><strong>${{w.application_ids.length}} applications</strong><p><small>${{esc(w.prerequisites.join(' · ')||'No recorded prerequisites')}}</small></p></article>`).join('')||'<p class="muted">No semantic roadmap available.</p>';
+const waves=D.architecture.migration_waves||[];document.getElementById('waves').innerHTML=waves.map(w=>`<article class="component"><span class="tag">Wave ${{w.wave}}</span><h3>${{esc(w.name)}}</h3><p>${{esc(w.purpose)}}</p><strong>${{w.application_ids.length}} applications</strong><p>${{w.application_ids.map(appLink).join(" · ")}}</p><p><small>${{esc(w.prerequisites.join(' · ')||'No recorded prerequisites')}}</small></p></article>`).join('')||'<p class="muted">No semantic roadmap available.</p>';
 </script></body></html>"""
 
 

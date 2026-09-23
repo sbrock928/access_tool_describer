@@ -21,6 +21,7 @@ from portfolio_analyzer.models import (
     ExtractedApplication,
     InventoryRecord,
     PortfolioCluster,
+    PortfolioTheme,
     SemanticApplicationIR,
     SemanticApplicationProfile,
     SemanticCoverage,
@@ -34,8 +35,10 @@ from portfolio_analyzer.models import (
 )
 from portfolio_analyzer.parsing.sql import classify_sql
 from portfolio_analyzer.parsing.vba import analyze_vba, extract_procedures
+from portfolio_analyzer.portfolio.discovery import discover_themes
 from portfolio_analyzer.semantic.architecture import synthesize_architecture
 from portfolio_analyzer.semantic.behavior import (
+    assess_roles,
     behavior_details,
     build_behavior_facts,
     classify_behavior,
@@ -457,6 +460,9 @@ def run_semantic_pipeline(
         notify("Starting target architecture model synthesis")
     else:
         notify("Starting deterministic target architecture synthesis")
+    discovered_themes = discover_themes(
+        profiles, sources, application_ir_map.values(), evidence, datasources, coverage, artifacts,
+    )
     architecture, architecture_error = synthesize_architecture(
         provider,
         profiles,
@@ -468,6 +474,7 @@ def run_semantic_pipeline(
         approved_services=settings.microsoft.approved_services,
         max_output_tokens=settings.execution.architecture_output_tokens,
         use_model=settings.microsoft.model_generation,
+        themes=discovered_themes,
     )
     if architecture_error:
         errors["architecture"] = architecture_error
@@ -495,6 +502,7 @@ def run_semantic_pipeline(
         similarity_edges=edges,
         clusters=clusters,
         architecture=architecture,
+        discovered_themes=discovered_themes,
     )
     notify("Completed semantic pipeline")
     return state
@@ -516,6 +524,7 @@ def _semantic_state(
     similarity_edges: list[SimilarityEdge] | None = None,
     clusters: list[PortfolioCluster] | None = None,
     architecture: TargetArchitecture | None = None,
+    discovered_themes: list[PortfolioTheme] | None = None,
 ) -> SemanticPortfolioState:
     portfolio_fingerprint = _portfolio_fingerprint(
         profiles,
@@ -560,6 +569,7 @@ def _semantic_state(
         similarity_edges=similarity_edges or [],
         clusters=clusters or [],
         architecture=architecture or TargetArchitecture(),
+        discovered_themes=discovered_themes or [],
         errors=errors,
     )
 
@@ -813,6 +823,7 @@ def evaluate_gold_set(
             row.get(field, "").strip()
             for field in (
                 "expected_primary_archetype",
+                "expected_roles",
                 "expected_business_capabilities",
                 "expected_disposition",
             )
@@ -821,13 +832,25 @@ def evaluate_gold_set(
     archetype_total = archetype_matches = 0
     disposition_total = disposition_matches = 0
     capability_scores: list[float] = []
+    role_scores: list[float] = []
+    role_reviewed_ids: set[str] = set()
+    classification_reviewed_ids: set[str] = set()
     for row in rows:
         tool_id = ids_by_name.get(row.get("euc_name", "").casefold())
         profile = profiles.get(tool_id or "")
         if profile is None:
             continue
+        role_review = row.get("expected_roles", "").strip()
+        if role_review and tool_id is not None:
+            expected_roles = (
+                set() if role_review.casefold() == "(none)" else _split_labels(role_review)
+            )
+            role_scores.append(_set_f1(expected_roles, {r.role for r in profile.roles}))
+            role_reviewed_ids.add(tool_id)
+            classification_reviewed_ids.add(tool_id)
         expected_archetype = row.get("expected_primary_archetype", "").casefold()
         if expected_archetype:
+            classification_reviewed_ids.add(profile.tool_inventory_id)
             archetype_total += 1
             archetype_matches += profile.primary_archetype.casefold() == expected_archetype
         expected_disposition = row.get("expected_disposition", "").casefold()
@@ -848,10 +871,11 @@ def evaluate_gold_set(
     ready = bool(
         expected_size
         and len(reviewed_names) >= expected_size
-        and archetype_total >= expected_size
+        and len(classification_reviewed_ids) >= expected_size
         and len(capability_scores) >= expected_size
     )
     archetype_accuracy = archetype_matches / archetype_total if archetype_total else None
+    role_macro_f1 = sum(role_scores) / len(role_scores) if role_scores else None
     disposition_accuracy = disposition_matches / disposition_total if disposition_total else None
     capability_macro_f1 = (
         sum(capability_scores) / len(capability_scores) if capability_scores else None
@@ -875,11 +899,14 @@ def evaluate_gold_set(
         and unsupported_high_confidence == 0
         and (archetype_accuracy is None or archetype_accuracy >= 0.80)
         and (capability_macro_f1 is None or capability_macro_f1 >= 0.75)
+        and (role_macro_f1 is None or role_macro_f1 >= 0.80)
     )
     return {
         "ready": ready,
         "passed": passed,
         "archetype_accuracy": archetype_accuracy,
+        "role_macro_f1": role_macro_f1,
+        "role_reviewed_applications": len(role_reviewed_ids),
         "disposition_accuracy": disposition_accuracy,
         "capability_macro_f1": capability_macro_f1,
         "schema_validity": schema_validity,
@@ -1125,6 +1152,7 @@ def _profile_application(
         profile.confidence = Confidence.LOW
     if archetype == "unknown":
         profile.confidence = Confidence.LOW
+    profile.roles = assess_roles(application_ir)
     profile.primary_archetype = archetype
     profile.classification_rationale = rationale
     profile.classification_evidence_ids = rationale_refs
@@ -1345,6 +1373,7 @@ def _deterministic_application_profile(
         classification_evidence_ids=rationale_refs,
         business_purpose=business_purpose,
         primary_archetype=archetype,
+        roles=assess_roles(application_ir),
         proposed_disposition=disposition,
         confidence=confidence,
         generation_method="deterministic",
@@ -1604,6 +1633,11 @@ def _bounded_profile_payload(
             "object_type_counts": application_ir.object_type_counts,
             "inventory_object_type_counts": application_ir.inventory_object_type_counts,
             "behavior_counts": dict(Counter(f.action for f in application_ir.behavior_facts)),
+            "supported_roles": [
+                {"role": r.role, "rationale": r.rationale[:240],
+                 "evidence_ids": r.evidence_ids[:3], "evidence_count": len(r.evidence_ids)}
+                for r in assess_roles(application_ir)
+            ],
             "sql_operations": application_ir.sql_operations,
             "technical_signal_occurrences": sum(application_ir.technical_signals.values()),
             "observed_inference_occurrences": sum(
@@ -2068,7 +2102,14 @@ def _citation_validity(state: SemanticPortfolioState) -> float:
         references.extend(ref in allowed_evidence for ref in ir.inventory_source_ids)
         for fact in ir.behavior_facts:
             references.extend(ref in allowed_evidence for ref in fact.evidence_ids)
+    for theme in state.discovered_themes:
+        references.extend(loc.evidence_id in allowed_evidence for loc in theme.locations)
+        references.append(set(theme.affected_tool_ids) == {
+            loc.tool_inventory_id for loc in theme.locations
+        })
     for profile in state.applications:
+        for role in profile.roles:
+            references.extend(ref in allowed_evidence for ref in role.evidence_ids)
         references.extend(ref in allowed_evidence for ref in profile.classification_evidence_ids)
         references.extend(ref in allowed_claims for ref in profile.purpose_claim_ids)
         references.extend(item in allowed_evidence for item in profile.evidence_ids)

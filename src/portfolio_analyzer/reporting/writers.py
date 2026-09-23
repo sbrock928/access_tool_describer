@@ -32,10 +32,18 @@ from portfolio_analyzer.models import (
     Dependency,
     Evidence,
     InventoryRecord,
+    PortfolioTheme,
     Recommendation,
     ReviewDecision,
     SemanticPortfolioState,
     StagedArtifact,
+)
+from portfolio_analyzer.portfolio.themes import (
+    THEME_HEADERS,
+    THEME_LOCATION_HEADERS,
+    build_portfolio_themes,
+    theme_location_rows,
+    theme_rows,
 )
 from portfolio_analyzer.semantic.review import REVIEW_HEADERS
 
@@ -70,6 +78,7 @@ def write_workbook(
     capabilities: list[CapabilityFinding],
     *,
     recommendations: list[Recommendation] | None = None,
+    themes: list[PortfolioTheme] | None = None,
     coverage: list[AnalysisCoverage] | None = None,
     semantic: SemanticPortfolioState | None = None,
     semantic_status: str = "not run",
@@ -79,6 +88,9 @@ def write_workbook(
     coverage = coverage or []
     review_decisions = review_decisions or {}
     application_names = {item.tool_inventory_id: item.tool_name for item in inventory}
+    themes = themes if themes is not None else build_portfolio_themes(
+        semantic, recommendations, evidence, coverage, artifacts=artifacts, datasources=datasources,
+    )
     workbook = Workbook()
     workbook.remove(workbook.active)
     analyzed = (
@@ -114,6 +126,14 @@ def write_workbook(
         semantic_status=semantic_status,
         review_decisions=review_decisions,
     )
+    for title, headers, rows in (
+        ("Portfolio Themes", THEME_HEADERS, theme_rows(themes, application_names)),
+        ("Theme Locations", THEME_LOCATION_HEADERS, theme_location_rows(themes, application_names)),
+    ):
+        _sheet(workbook, title, [
+            [h.replace("_", " ").title() for h in headers],
+            *[[row[h] for h in headers] for row in rows],
+        ])
     if coverage:
         _sheet(
             workbook,
@@ -421,9 +441,9 @@ def _portfolio_summary_sheet(
 
     archetypes: Counter[str] = Counter()
     if semantic:
-        sheet["D18"] = "Application archetype"
+        sheet["D18"] = "Supported roles (overlapping)"
         sheet["E18"] = "Applications"
-        archetypes = Counter(item.primary_archetype for item in semantic.applications)
+        archetypes = Counter(role.role for item in semantic.applications for role in item.roles)
         for row_index, (label, count) in enumerate(
             sorted(archetypes.items(), key=lambda item: (-item[1], item[0])), start=19
         ):
@@ -441,7 +461,7 @@ def _portfolio_summary_sheet(
     )
     _summary_bar_chart(
         sheet,
-        "Application archetypes",
+        "Supported roles (overlapping)",
         dict(archetypes) if semantic else {},
         start_column=26,
         anchor="M5",
@@ -566,7 +586,7 @@ def _semantic_workbook_sheets(
                 "Deterministic Code Coverage",
                 "Inspected Code Segments",
                 "Business Purpose",
-                "Application Archetype",
+                "Supported Roles",
                 "Proposed Disposition",
                 "Migration Wave",
                 "Semantic Confidence",
@@ -581,6 +601,8 @@ def _semantic_workbook_sheets(
                 "Secondary Capabilities",
                 "Classification Rationale",
                 "Classification Evidence IDs",
+                "Legacy Summary Category",
+                "Role Rationale and Evidence",
             ],
             *[
                 _application_portfolio_row(
@@ -830,7 +852,8 @@ def _application_portfolio_row(
             else "0/0"
         ),
         getattr(semantic_profile, "business_purpose", "Unknown"),
-        getattr(semantic_profile, "primary_archetype", "unknown"),
+        " | ".join(r.role for r in getattr(semantic_profile, "roles", []))
+        or "Not established",
         getattr(target_mapping, "disposition", "investigate"),
         getattr(target_mapping, "wave", 0),
         getattr(getattr(semantic_profile, "confidence", None), "value", "low"),
@@ -845,6 +868,9 @@ def _application_portfolio_row(
         " | ".join(getattr(semantic_profile, "secondary_capabilities", [])),
         getattr(semantic_profile, "classification_rationale", ""),
         " | ".join(getattr(semantic_profile, "classification_evidence_ids", [])),
+        getattr(semantic_profile, "primary_archetype", "unknown"),
+        " | ".join(f"{r.role}: {r.rationale} [{', '.join(r.evidence_ids)}]"
+                   for r in getattr(semantic_profile, "roles", [])),
     ]
 
 
@@ -1091,6 +1117,7 @@ def write_executive_pdf(
     capabilities: list[CapabilityFinding],
     *,
     recommendations: list[Recommendation] | None = None,
+    themes: list[PortfolioTheme] | None = None,
     evidence: list[Evidence] | None = None,
     datasources: list[Datasource] | None = None,
     dependencies: list[Dependency] | None = None,
@@ -1106,6 +1133,9 @@ def write_executive_pdf(
     dependencies = dependencies or []
     coverage = coverage or []
     application_names = {item.tool_inventory_id: item.tool_name for item in inventory}
+    themes = themes if themes is not None else build_portfolio_themes(
+        semantic, recommendations, evidence, coverage, artifacts=artifacts, datasources=datasources,
+    )
     successful = sum(a.status.value == "staged" and a.is_primary for a in artifacts)
     failed = sum(a.status.value == "failed" and a.is_primary for a in artifacts)
     styles = getSampleStyleSheet()
@@ -1234,7 +1264,32 @@ def write_executive_pdf(
     if datasources or dependencies:
         story.append(PageBreak())
         story.extend(_dependency_section(datasources, dependencies, styles))
-    if recommendations:
+    if themes:
+        story.append(PageBreak())
+        story.append(Paragraph("Discovered groups and design options", styles["Heading1"]))
+        story.append(Paragraph(
+            "Applications may participate in several discovered groups. Shared evidence identifies "
+            "options for comparison, not an automatic consolidation decision. Object locations, "
+            "evidence "
+            "references and validation questions are in the workbook and HTML report.",
+            styles["ReportBody"],
+        ))
+        for theme in themes:
+            story.append(Paragraph(escape(theme.title), styles["Heading2"]))
+            story.append(Paragraph(escape(theme.proposed_solution), styles["ReportBody"]))
+            if theme.alternative_options:
+                story.append(Paragraph(
+                    "<b>Alternative:</b> " + escape(theme.alternative_options[0]),
+                    styles["ReportBody"],
+                ))
+            names = ", ".join(application_names.get(i, i) for i in theme.affected_tool_ids)
+            story.append(Paragraph(
+                "<b>Affected applications:</b> " + escape(names[:600])
+                + ("… (full list in workbook)" if len(names) > 600 else ""),
+                styles["ReportBody"],
+            ))
+            story.append(Paragraph(escape(theme.coverage_note), styles["ReportBody"]))
+    if recommendations and not themes:
         story.append(PageBreak())
         story.extend(_recommendation_section(recommendations, application_names, styles))
     story.append(PageBreak())
@@ -1397,7 +1452,7 @@ def _semantic_portfolio_section(
         )
         return content
 
-    archetypes = Counter(item.primary_archetype for item in semantic.applications)
+    archetypes = Counter(role.role for item in semantic.applications for role in item.roles)
     confidence = Counter(item.confidence.value for item in semantic.applications)
     content.extend(
         [
@@ -1412,9 +1467,9 @@ def _semantic_portfolio_section(
                 [4.65 * inch, 1.45 * inch],
             ),
             Spacer(1, 0.16 * inch),
-            Paragraph("Application archetypes", styles["Heading2"]),
+            Paragraph("Supported roles (overlapping)", styles["Heading2"]),
             _table(
-                [["Archetype", "Applications"]]
+                [["Role (counts overlap)", "Applications"]]
                 + [[name, str(count)] for name, count in archetypes.most_common()],
                 [4.65 * inch, 1.45 * inch],
             ),
@@ -1442,7 +1497,8 @@ def _semantic_portfolio_section(
                     + [
                         [
                             application_names.get(p.tool_inventory_id, p.tool_name),
-                            f"{p.primary_archetype}: {p.summary}",
+                            f"{', '.join(r.role for r in p.roles) or 'Role not established'}: "
+                            f"{p.summary}",
                         ]
                         for p in examples
                     ],

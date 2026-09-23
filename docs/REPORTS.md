@@ -9,7 +9,7 @@ The embedded content-security policy disables all network sources.
 
 `Portfolio_Analysis.xlsx` retains the original detailed sheets and adds a dashboard, Application
 Portfolio, Target Architecture, App-Target Crosswalk, Migration Roadmap, Semantic Findings, Review
-Queue, and Method & Provenance. The dashboard charts coverage, archetypes, clusters, dependency
+Queue, and Method & Provenance. The dashboard charts coverage, overlapping roles, clusters, dependency
 hotspots, and migration waves. Review Queue decisions are constrained to `Accept`, `Edit`, or
 `Reject`.
 
@@ -60,3 +60,35 @@ The Application Behavior and Behavior Sources sheets, and matching `application_
 `behavior_sources.csv` datasets, connect behavior facts to redacted source excerpts and root UI
 properties. `semantic_applications.csv` appends the new profile fields; `semantic_application_irs.csv`
 appends full inventory counts/names, source IDs, and behavior counts. Existing columns remain intact.
+
+
+## Overlapping roles and discovered groups
+
+Roles remain independent descriptors in the overview, role filter and application portfolio. They
+are not modernization groups. **Themes & solutions** discovers groups from the portfolio itself:
+
+- matching complete query/VBA definitions, preserving identifiers and literal values;
+- the same confirmed external datasource identity (platform, server, database and schema);
+- repeated extracted observations, including labels never previously encountered by the tool.
+
+No role-to-solution catalogue or fixed number of groups is used. A group needs evidence from at
+least two applications. Features with the same supporting application set are combined. Groups
+can overlap: A/B sharing one pattern and B/C sharing another do not automatically become A/B/C.
+Names, roles, local table names, and incomplete connection identities alone cannot create groups.
+An absence of groups means insufficient shared evidence, not an absence of modernization work.
+
+Each group shows the actual shared patterns, affected applications, cited objects, comparison
+options and validation questions. The options address the observed relationship (code reuse,
+shared data contracts or repeated implementation signals). They remain conservative design
+candidates; repeated technology alone does not establish common business requirements.
+
+Excel's **Portfolio Themes** and **Theme Locations** sheets and `portfolio_themes.csv` /
+`theme_locations.csv` export the same groups. Theme exports include `grouping_basis`,
+`alternative_options` and `generation_method`. The PDF summarizes a leading option and an
+alternative. Full evidence remains in HTML, Excel and CSV.
+
+Default architecture components come from the discovered groups. The optional architecture model
+receives these groups and can propose different names and designs, subject to evidence validation
+and the approved platform-service list. It does not use a role-to-product lookup table. Model
+proposals are shown separately from deterministic discoveries; every included application needs
+its own supporting references. Existing model defaults and generation limits remain unchanged.
