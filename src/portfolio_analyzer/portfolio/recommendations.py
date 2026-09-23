@@ -1,33 +1,42 @@
-"""Conservative architecture recommendations derived from observed repetition."""
+"""Modernization opportunities discovered from repeated static observations."""
 
 from __future__ import annotations
 
-from collections import defaultdict
-
-from portfolio_analyzer.models import (
-    CapabilityFinding,
-    Confidence,
-    Datasource,
-    Evidence,
-    Recommendation,
-)
-
-MIN_SHARED_LIBRARY_CONSUMERS = 2
-MIN_SERVICE_CONSUMERS = 3
+from portfolio_analyzer.models import CapabilityFinding, Datasource, Evidence, Recommendation
+from portfolio_analyzer.portfolio.discovery import discover_themes
 
 
 def build_recommendations(
-    capabilities: list[CapabilityFinding], datasources: list[Datasource]
+    capabilities: list[CapabilityFinding],
+    datasources: list[Datasource],
 ) -> list[Recommendation]:
-    """Recommend boundaries only after repeatable, static evidence crosses thresholds."""
-    recommendations: list[Recommendation] = []
-    by_capability: dict[str, list[CapabilityFinding]] = defaultdict(list)
-    for finding in capabilities:
-        by_capability[finding.capability].append(finding)
-
-    recommendations.extend(_capability_recommendations(by_capability))
-    recommendations.extend(_datasource_recommendations(datasources))
-    return sorted(recommendations, key=lambda item: (-len(item.affected_tool_ids), item.title))
+    observations = {
+        e.evidence_id: e if e.inference else e.model_copy(update={"inference": finding.capability})
+        for finding in capabilities
+        for e in finding.evidence
+        if e.tool_inventory_id == finding.tool_inventory_id
+    }
+    observations.update((e.evidence_id, e) for source in datasources for e in source.evidence)
+    themes = discover_themes(evidence=observations.values(), datasources=datasources)
+    return [
+        Recommendation(
+            category="discovered_evidence",
+            title=theme.title,
+            rationale=theme.observed_pattern
+            + " "
+            + theme.proposed_solution
+            + " Alternatives: "
+            + "; ".join(theme.alternative_options),
+            affected_tool_ids=theme.affected_tool_ids,
+            confidence=theme.confidence,
+            evidence=[
+                observations[ref]
+                for ref in sorted({loc.evidence_id for loc in theme.locations})
+                if ref in observations
+            ],
+        )
+        for theme in themes
+    ]
 
 
 def modernization_risks(evidence: list[Evidence]) -> list[tuple[str, list[str], str]]:
@@ -65,100 +74,3 @@ def modernization_risks(evidence: list[Evidence]) -> list[tuple[str, list[str], 
         if tools:
             results.append((inference, tools, implication))
     return results
-
-
-def _capability_recommendations(
-    by_capability: dict[str, list[CapabilityFinding]],
-) -> list[Recommendation]:
-    rules = {
-        "Outlook automation": (
-            MIN_SERVICE_CONSUMERS,
-            "microservice/api",
-            "Notification delivery service candidate",
-            " ".join(
-                (
-                    "Independent applications implement Outlook-based delivery.",
-                    (
-                        "A shared service may centralize channel handling, retry, audit logging, "
-                        "and credentials."
-                    ),
-                    "Validate ownership and delivery requirements before implementation.",
-                )
-            ),
-        ),
-        "Excel automation": (
-            MIN_SHARED_LIBRARY_CONSUMERS,
-            "shared_library",
-            "Spreadsheet output library candidate",
-            " ".join(
-                (
-                    "Multiple applications automate Excel.",
-                    (
-                        "A shared library is the lowest-overhead first boundary for templates "
-                        "and generation."
-                    ),
-                    "It is not automatically a service.",
-                )
-            ),
-        ),
-        "Configuration loading": (
-            MIN_SHARED_LIBRARY_CONSUMERS,
-            "platform_capability",
-            "Shared configuration capability candidate",
-            " ".join(
-                (
-                    "Repeated configuration loading warrants a governed convention or library.",
-                    "It should include secret handling and environment-specific settings.",
-                )
-            ),
-        ),
-    }
-    output: list[Recommendation] = []
-    for capability, (minimum, category, title, rationale) in rules.items():
-        findings = by_capability.get(capability, [])
-        tools = sorted({item.tool_inventory_id for item in findings})
-        if len(tools) >= minimum:
-            output.append(
-                Recommendation(
-                    category=category,
-                    title=title,
-                    rationale=rationale,
-                    affected_tool_ids=tools,
-                    confidence=Confidence.MEDIUM,
-                    evidence=[fact for finding in findings for fact in finding.evidence],
-                )
-            )
-    return output
-
-
-def _datasource_recommendations(datasources: list[Datasource]) -> list[Recommendation]:
-    grouped: dict[tuple[str, str | None, str | None], list[Datasource]] = defaultdict(list)
-    for source in datasources:
-        if source.platform != "Unknown" and (source.server or source.database):
-            grouped[(source.platform, source.server, source.database)].append(source)
-    output: list[Recommendation] = []
-    for (platform, server, database), sources in grouped.items():
-        tools = sorted({item.tool_inventory_id for item in sources})
-        if len(tools) < MIN_SERVICE_CONSUMERS:
-            continue
-        target = " / ".join(value for value in (platform, server, database) if value)
-        output.append(
-            Recommendation(
-                category="shared_data_access",
-                title=f"Shared data-access review: {target}",
-                rationale=" ".join(
-                    (
-                        "Several applications depend on the same datasource.",
-                        (
-                            "Evaluate whether contracts, access controls, and ownership "
-                            "justify an API."
-                        ),
-                        "Do not introduce one solely because access is repeated.",
-                    )
-                ),
-                affected_tool_ids=tools,
-                confidence=Confidence.MEDIUM,
-                evidence=[fact for source in sources for fact in source.evidence],
-            )
-        )
-    return output

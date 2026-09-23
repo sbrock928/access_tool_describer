@@ -9,10 +9,11 @@ import platform
 import subprocess
 import time
 from collections.abc import Callable
+from datetime import datetime
 from functools import partial
 from multiprocessing.process import BaseProcess
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import typer
 
@@ -33,15 +34,89 @@ from portfolio_analyzer.naming import euc_directory_name
 from portfolio_analyzer.persistence.database import create_session_factory
 from portfolio_analyzer.persistence.repository import save_inventory_and_artifact
 from portfolio_analyzer.portfolio.recommendations import build_recommendations
+from portfolio_analyzer.portfolio.themes import (
+    THEME_HEADERS,
+    THEME_LOCATION_HEADERS,
+    build_portfolio_themes,
+    theme_location_rows,
+    theme_rows,
+)
 from portfolio_analyzer.reporting.coverage import build_analysis_coverage
+from portfolio_analyzer.reporting.intelligence import (
+    write_architecture_mermaid,
+    write_intelligence_html,
+    write_report_manifest,
+    write_semantic_datasets,
+)
 from portfolio_analyzer.reporting.writers import write_csv, write_executive_pdf, write_workbook
+from portfolio_analyzer.semantic.config import (
+    QUICK_MODE_MAX_OBJECTS,
+    load_semantic_settings,
+    quick_mode_settings,
+    select_model_preset,
+    write_semantic_settings_template,
+)
+from portfolio_analyzer.semantic.context import (
+    initialize_context_file,
+    initialize_gold_set,
+    load_claims,
+    read_gold_set,
+)
+from portfolio_analyzer.semantic.model_store import acquire_approved_model, approved_model
+from portfolio_analyzer.semantic.pipeline import (
+    evaluate_gold_set,
+    preflight_semantic_provider,
+    run_semantic_pipeline,
+    semantic_state_is_current,
+)
+from portfolio_analyzer.semantic.provider import LocalTransformersProvider, SemanticProviderError
+from portfolio_analyzer.semantic.review import apply_review_decisions, import_review_workbook
+from portfolio_analyzer.semantic.state import (
+    read_review_decisions,
+    read_semantic_state,
+    write_review_decisions,
+    write_semantic_state,
+)
 from portfolio_analyzer.staging.copying import (
     ArtifactStager,
     migrate_legacy_application_directories,
 )
+from portfolio_analyzer.versions import STATIC_ANALYSIS_VERSION
 
 app = typer.Typer(no_args_is_help=True, help="Static, evidence-driven Access portfolio analysis.")
-STATIC_ANALYSIS_VERSION = "static-analysis-v3"
+
+
+def _format_duration(seconds: float) -> str:
+    """Format an elapsed duration for compact, sortable console progress."""
+    total_milliseconds = max(0, round(seconds * 1000))
+    total_seconds, milliseconds = divmod(total_milliseconds, 1000)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds_part = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds_part:02d}.{milliseconds:03d}"
+
+
+def _semantic_progress_reporter(
+    *,
+    output: Callable[[str], None] = typer.echo,
+    clock: Callable[[], float] = time.perf_counter,
+    wall_clock: Callable[[], datetime] | None = None,
+) -> Callable[[str], None]:
+    """Create a semantic progress callback with step and total elapsed times."""
+    started_at = clock()
+    previous_at = started_at
+    current_datetime = wall_clock or (lambda: datetime.now().astimezone())
+
+    def report(message: str) -> None:
+        nonlocal previous_at
+        now = clock()
+        output(
+            f"[{current_datetime().isoformat(timespec='seconds')}] "
+            f"[+{_format_duration(now - previous_at)} step | "
+            f"+{_format_duration(now - started_at)} total] {message}"
+        )
+        previous_at = now
+
+    return report
 
 
 def _settings(workspace: Path) -> AnalyzerSettings:
@@ -64,6 +139,26 @@ def _analysis_state_path(settings: AnalyzerSettings) -> Path:
 
 def _extraction_state_path(settings: AnalyzerSettings) -> Path:
     return settings.extracted_dir / "extraction_state.json"
+
+
+def _semantic_config_path(settings: AnalyzerSettings) -> Path:
+    return settings.semantic_dir / "semantic.toml"
+
+
+def _semantic_state_path(settings: AnalyzerSettings) -> Path:
+    return settings.semantic_dir / "semantic_state.json"
+
+
+def _semantic_context_path(settings: AnalyzerSettings) -> Path:
+    return settings.semantic_dir / "business_context.csv"
+
+
+def _semantic_gold_path(settings: AnalyzerSettings) -> Path:
+    return settings.semantic_dir / "gold_set.csv"
+
+
+def _review_decisions_path(settings: AnalyzerSettings) -> Path:
+    return settings.semantic_dir / "review_decisions.json"
 
 
 def _read_json(path: Path) -> Any:
@@ -247,6 +342,66 @@ def _inventory_names(settings: AnalyzerSettings) -> dict[str, str]:
         return {}
     inventory, _ = _read_state(state_path)
     return {item.tool_inventory_id: item.tool_name for item in inventory}
+
+
+def _current_analysis_results(
+    settings: AnalyzerSettings, artifacts: list[StagedArtifact]
+) -> list[dict[str, Any]]:
+    analysis_path = _analysis_state_path(settings)
+    state = _read_json(analysis_path) if analysis_path.exists() else {}
+    current_artifacts = {
+        (item.tool_inventory_id, item.sha256) for item in artifacts if item.is_primary
+    }
+    return [
+        result
+        for result in state.get("applications", [])
+        if result.get("analysis_version") == STATIC_ANALYSIS_VERSION
+        and (result.get("tool_inventory_id"), result.get("sha256")) in current_artifacts
+    ]
+
+
+def _normalized_analysis_results(
+    analysis_results: list[dict[str, Any]],
+) -> tuple[list[Evidence], list[Datasource], list[Dependency]]:
+    evidence = [
+        Evidence.model_validate(value)
+        for result in analysis_results
+        for value in result.get("evidence", [])
+    ]
+    datasources = [
+        Datasource.model_validate(value)
+        for result in analysis_results
+        for value in result.get("datasources", [])
+    ]
+    dependencies = [
+        Dependency.model_validate(value)
+        for result in analysis_results
+        for value in result.get("dependencies", [])
+    ]
+    return evidence, datasources, dependencies
+
+
+def _current_extractions(
+    settings: AnalyzerSettings,
+    artifacts: list[StagedArtifact],
+    *,
+    tool_id: str | None = None,
+) -> list[tuple[str, ExtractedApplication]]:
+    extraction_state, _ = _load_extraction_state(settings)
+    current = {
+        (item.tool_inventory_id, item.sha256)
+        for item in artifacts
+        if item.is_primary and item.sha256
+    }
+    output: list[tuple[str, ExtractedApplication]] = []
+    for result in extraction_state.get("applications", []):
+        key = (result.get("tool_inventory_id"), result.get("sha256"))
+        if key not in current or not _has_extraction(result):
+            continue
+        if tool_id is not None and result.get("tool_inventory_id") != tool_id:
+            continue
+        output.append((str(result["sha256"]), _load_extracted_application(settings, result)))
+    return output
 
 
 def _euc_name(tool_inventory_id: str, names: dict[str, str]) -> str:
@@ -620,41 +775,330 @@ def analyze_tool(
     analyze(workspace=workspace, force=force, tool_id=tool_id)
 
 
+@app.command("semantic-init")
+def semantic_init(workspace: Path = typer.Option(...)) -> None:
+    """Create local semantic configuration, owner-context, and gold-set templates."""
+    settings = _settings(workspace)
+    state_path = settings.analysis_dir / "staging_state.json"
+    inventory: list[InventoryRecord] = []
+    artifacts: list[StagedArtifact] = []
+    if state_path.exists():
+        inventory, artifacts = _read_state(state_path)
+    analysis_results = _current_analysis_results(settings, artifacts)
+    evidence, _, _ = _normalized_analysis_results(analysis_results)
+    capabilities = discover_capabilities(evidence)
+    extraction_path = _extraction_state_path(settings)
+    extraction_state = _read_json(extraction_path) if extraction_path.exists() else {}
+    coverage = build_analysis_coverage(
+        inventory,
+        artifacts,
+        extraction_state,
+        {"applications": analysis_results},
+        capabilities,
+    )
+    created = [
+        (
+            _semantic_config_path(settings),
+            write_semantic_settings_template(_semantic_config_path(settings)),
+        ),
+        (
+            _semantic_context_path(settings),
+            initialize_context_file(_semantic_context_path(settings), inventory),
+        ),
+        (
+            _semantic_gold_path(settings),
+            initialize_gold_set(_semantic_gold_path(settings), inventory, coverage, size=20),
+        ),
+    ]
+    for path, was_created in created:
+        typer.echo(f"{'Created' if was_created else 'Preserved'}: {path}")
+    typer.echo(
+        "Deterministic profiles and architecture are enabled by default; no model download or "
+        "ML dependencies are required."
+    )
+    typer.echo(
+        "Only if you explicitly enable model generation: install semantic dependencies, run "
+        "'semantic-model-download', then run inference offline."
+    )
+
+
+@app.command("semantic-model-select")
+def semantic_model_select(
+    workspace: Path = typer.Option(...), model: str = typer.Option(...),
+) -> None:
+    """Select qwen (1.5B CPU) or granite; enable local profiles with a 768-token budget."""
+    path = _semantic_config_path(_settings(workspace))
+    if not path.exists():
+        raise typer.BadParameter("No semantic configuration found. Run 'semantic-init' first.")
+    try:
+        selected = select_model_preset(path, model)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(f"Selected {selected.model.repo_id}; enabled local model profiles on CPU.")
+    typer.echo(
+        "Profile output budget: 768 tokens. Download the selected model, then rerun semantic."
+    )
+
+
+@app.command("semantic-model-download")
+def semantic_model_download(workspace: Path = typer.Option(...)) -> None:
+    """Acquire the allowlisted model at its immutable Hugging Face revision."""
+    settings = _settings(workspace)
+    config_path = _semantic_config_path(settings)
+    if not config_path.exists():
+        raise typer.BadParameter("No semantic configuration found. Run 'semantic-init' first.")
+    semantic_settings = load_semantic_settings(config_path)
+    typer.echo(
+        f"Downloading approved model {semantic_settings.model.repo_id}"
+        f"@{semantic_settings.model.revision} "
+        f"to {semantic_settings.model.local_path}"
+    )
+    try:
+        manifest = acquire_approved_model(
+            semantic_settings.model.local_path,
+            approved_model(semantic_settings.model.repo_id, semantic_settings.model.revision),
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise typer.BadParameter(f"Approved model acquisition failed: {exc}") from exc
+    typer.echo(
+        json.dumps(
+            {
+                "repo_id": manifest.repo_id,
+                "revision": manifest.revision,
+                "license": manifest.license,
+                "architecture": manifest.architecture,
+                "files": len(manifest.files),
+                "manifest_sha256": manifest.manifest_sha256,
+            },
+            indent=2,
+        )
+    )
+
+
+@app.command("semantic-check")
+def semantic_check(workspace: Path = typer.Option(...)) -> None:
+    """Verify the active synthesis mode, citations, and gold-set quality offline."""
+    settings = _settings(workspace)
+    config_path = _semantic_config_path(settings)
+    if not config_path.exists():
+        raise typer.BadParameter("No semantic configuration found. Run 'semantic-init' first.")
+    semantic_settings = load_semantic_settings(config_path)
+    try:
+        state = read_semantic_state(_semantic_state_path(settings))
+    except ValueError as exc:
+        raise typer.BadParameter(f"Semantic state is incompatible; rerun semantic: {exc}") from exc
+    if state is not None and state.metadata.run_mode == "quick":
+        typer.echo(
+            json.dumps(
+                {
+                    "gold_set": {
+                        "ready": False,
+                        "passed": False,
+                        "reason": (
+                            "Quick semantic results are test-only and cannot pass production "
+                            "acceptance. Rerun semantic without --quick."
+                        ),
+                    }
+                },
+                indent=2,
+            )
+        )
+        raise typer.Exit(code=1)
+    model_enabled = (
+        semantic_settings.profile.model_generation
+        or semantic_settings.microsoft.model_generation
+    )
+    if model_enabled:
+        try:
+            provider = LocalTransformersProvider(semantic_settings)
+            result = preflight_semantic_provider(semantic_settings, provider)
+        except (OSError, SemanticProviderError, ValueError) as exc:
+            raise typer.BadParameter(f"Offline semantic preflight failed: {exc}") from exc
+    else:
+        result = {
+            "ready": True,
+            "mode": "deterministic",
+            "model_inference": False,
+            "structured_output": "not-applicable",
+        }
+    state_path = settings.analysis_dir / "staging_state.json"
+    inventory, _ = _read_state(state_path) if state_path.exists() else ([], [])
+    gold_result = evaluate_gold_set(read_gold_set(_semantic_gold_path(settings)), inventory, state)
+    typer.echo(json.dumps({"provider": result, "gold_set": gold_result}, indent=2))
+    if not gold_result.get("passed"):
+        raise typer.Exit(code=1)
+
+
+@app.command("semantic")
+def semantic_analysis(
+    workspace: Path = typer.Option(...),
+    tool_id: str | None = typer.Option(None, help="Refresh one tool inventory ID."),
+    force: bool = typer.Option(False, help="Refresh compatible cached semantic results."),
+    quick: bool = typer.Option(
+        False,
+        "--quick",
+        help=(
+            "TEST ONLY: sample five representative code-bearing objects per application with "
+            "smaller bounds."
+        ),
+    ),
+) -> None:
+    """Run resumable deterministic analysis, with an optional approved local model."""
+    settings = _settings(workspace)
+    config_path = _semantic_config_path(settings)
+    if not config_path.exists():
+        raise typer.BadParameter("No semantic configuration found. Run 'semantic-init' first.")
+    configured_settings = load_semantic_settings(config_path)
+    semantic_settings = quick_mode_settings(configured_settings) if quick else configured_settings
+    run_mode: Literal["production", "quick"] = "quick" if quick else "production"
+    object_limit = QUICK_MODE_MAX_OBJECTS if quick else None
+    progress = _semantic_progress_reporter()
+    progress(f"Starting {run_mode} semantic analysis")
+    if quick:
+        progress(
+            "TEST ONLY quick semantic mode: at most five representative code-bearing objects per "
+            "application; results cannot pass semantic-check or --semantic-mode require."
+        )
+    model_enabled = (
+        semantic_settings.profile.model_generation
+        or semantic_settings.microsoft.model_generation
+    )
+    provider: LocalTransformersProvider | None = None
+    if model_enabled:
+        progress("Starting approved model directory verification")
+        try:
+            provider = LocalTransformersProvider(semantic_settings)
+        except (OSError, ValueError) as exc:
+            progress(f"Failed approved model directory verification: {exc}")
+            raise typer.BadParameter(f"Approved local model verification failed: {exc}") from exc
+        progress("Completed approved model directory verification")
+    else:
+        progress("Local model inference disabled; no model load or verification is required")
+    progress("Starting semantic input preparation")
+    staging_path = settings.analysis_dir / "staging_state.json"
+    if not staging_path.exists():
+        raise typer.BadParameter("No staging state found. Run 'stage' first.")
+    inventory, artifacts = _read_state(staging_path)
+    if tool_id is not None and tool_id not in {item.tool_inventory_id for item in inventory}:
+        raise typer.BadParameter(f"Unknown tool inventory ID: {tool_id}")
+    analysis_results = _current_analysis_results(settings, artifacts)
+    evidence, datasources, _ = _normalized_analysis_results(analysis_results)
+    capabilities = discover_capabilities(evidence)
+    extraction_state, _ = _load_extraction_state(settings)
+    coverage = build_analysis_coverage(
+        inventory,
+        artifacts,
+        extraction_state,
+        {"applications": analysis_results},
+        capabilities,
+    )
+    claims = load_claims(
+        _semantic_context_path(settings),
+        inventory,
+        include_inventory_description=semantic_settings.policy.include_inventory_description,
+    )
+    extracted = _current_extractions(settings, artifacts)
+    if not extracted:
+        raise typer.BadParameter("No current extraction snapshots are available.")
+    progress(
+        f"Completed semantic input preparation: {len(inventory)} inventory rows, "
+        f"{len(extracted)} extraction snapshots"
+    )
+    progress("Starting prior semantic checkpoint load")
+    try:
+        prior_state = read_semantic_state(_semantic_state_path(settings))
+    except ValueError as exc:
+        progress(f"Prior semantic state is incompatible and will be replaced: {exc}")
+        prior_state = None
+    if prior_state is None:
+        progress("Completed prior semantic checkpoint load: no compatible checkpoint found")
+    else:
+        progress(
+            "Completed prior semantic checkpoint load: "
+            f"{len(prior_state.applications)} application profiles found"
+        )
+    try:
+        state = run_semantic_pipeline(
+            semantic_settings,
+            provider,
+            inventory,
+            artifacts,
+            extracted,
+            evidence,
+            datasources,
+            coverage,
+            claims,
+            prior_state=prior_state,
+            tool_id=tool_id,
+            force=force,
+            progress=progress,
+            checkpoint=partial(write_semantic_state, _semantic_state_path(settings)),
+            run_mode=run_mode,
+            max_objects_per_application=object_limit,
+        )
+    except (SemanticProviderError, ValueError) as exc:
+        progress(f"Semantic analysis stopped safely: {exc}")
+        raise typer.BadParameter(f"Semantic analysis stopped safely: {exc}") from exc
+    decisions = read_review_decisions(_review_decisions_path(settings))
+    if decisions and not quick:
+        state = apply_review_decisions(state, decisions)
+        progress(f"Applied {len(decisions)} retained review decisions")
+    elif decisions and quick:
+        progress("TEST ONLY quick mode does not apply retained production review decisions.")
+    progress("Writing final semantic state")
+    write_semantic_state(_semantic_state_path(settings), state)
+    mode_label = "TEST-ONLY quick" if quick else "production"
+    progress(
+        f"{mode_label} semantic state written to {_semantic_state_path(settings)} "
+        f"({len(state.applications)} profiles, {len(state.errors)} isolated errors)."
+    )
+
+
+@app.command("import-review")
+def import_review(
+    workspace: Path = typer.Option(...),
+    workbook: Path = typer.Option(..., exists=True, readable=True),
+) -> None:
+    """Import Accept, Edit, or Reject decisions from the workbook Review Queue."""
+    settings = _settings(workspace)
+    state = read_semantic_state(_semantic_state_path(settings))
+    if state is None:
+        raise typer.BadParameter("No semantic state found. Run 'semantic' first.")
+    if state.metadata.run_mode != "production":
+        raise typer.BadParameter(
+            "Review decisions cannot be imported into TEST-ONLY quick semantic results. "
+            "Rerun semantic without --quick first."
+        )
+    imported = import_review_workbook(workbook)
+    decisions = read_review_decisions(_review_decisions_path(settings))
+    decisions.update(imported)
+    updated = apply_review_decisions(state, decisions)
+    write_review_decisions(_review_decisions_path(settings), decisions)
+    write_semantic_state(_semantic_state_path(settings), updated)
+    typer.echo(f"Imported {len(imported)} review decisions; {len(decisions)} retained in total.")
+
+
 @app.command()
-def report(workspace: Path = typer.Option(...)) -> None:
-    """Create evidence, coverage, dependency, and modernization reports."""
+def report(
+    workspace: Path = typer.Option(...),
+    semantic_mode: str = typer.Option(
+        "auto",
+        "--semantic-mode",
+        help="Semantic reporting policy: auto, require, or off.",
+    ),
+) -> None:
+    """Create deterministic reports and compatible semantic intelligence when available."""
+    semantic_mode = semantic_mode.casefold().strip()
+    if semantic_mode not in {"auto", "require", "off"}:
+        raise typer.BadParameter("--semantic-mode must be auto, require, or off")
     settings = _settings(workspace)
     state_path = settings.analysis_dir / "staging_state.json"
     if not state_path.exists():
         raise typer.BadParameter("No staging state found. Run 'stage' first.")
     inventory, artifacts = _read_state(state_path)
     application_names = {item.tool_inventory_id: item.tool_name for item in inventory}
-    analysis_path = _analysis_state_path(settings)
-    state = _read_json(analysis_path) if analysis_path.exists() else {}
-    current_artifacts = {
-        (item.tool_inventory_id, item.sha256) for item in artifacts if item.is_primary
-    }
-    analysis_results = [
-        result
-        for result in state.get("applications", [])
-        if result.get("analysis_version") == STATIC_ANALYSIS_VERSION
-        and (result.get("tool_inventory_id"), result.get("sha256")) in current_artifacts
-    ]
-    evidence = [
-        Evidence.model_validate(value)
-        for result in analysis_results
-        for value in result.get("evidence", [])
-    ]
-    datasources = [
-        Datasource.model_validate(value)
-        for result in analysis_results
-        for value in result.get("datasources", [])
-    ]
-    dependencies = [
-        Dependency.model_validate(value)
-        for result in analysis_results
-        for value in result.get("dependencies", [])
-    ]
+    analysis_results = _current_analysis_results(settings, artifacts)
+    evidence, datasources, dependencies = _normalized_analysis_results(analysis_results)
     capabilities = discover_capabilities(evidence)
     recommendations = build_recommendations(capabilities, datasources)
     extraction_path = _extraction_state_path(settings)
@@ -666,8 +1110,97 @@ def report(workspace: Path = typer.Option(...)) -> None:
         {"applications": analysis_results},
         capabilities,
     )
+    semantic_state = None
+    semantic_partial = False
+    semantic_status = "disabled by --semantic-mode off"
+    decisions = read_review_decisions(_review_decisions_path(settings))
+    if semantic_mode != "off":
+        config_path = _semantic_config_path(settings)
+        state_error: str | None = None
+        try:
+            state = read_semantic_state(_semantic_state_path(settings))
+        except ValueError as exc:
+            state = None
+            state_error = str(exc)
+        if not config_path.exists():
+            semantic_status = "not configured; run semantic-init"
+        elif state_error is not None:
+            semantic_status = f"incompatible semantic state; rerun semantic analysis: {state_error}"
+        elif state is None:
+            semantic_status = "not run; deterministic report only"
+        else:
+            try:
+                semantic_settings = load_semantic_settings(config_path)
+                claims = load_claims(
+                    _semantic_context_path(settings),
+                    inventory,
+                    include_inventory_description=(
+                        semantic_settings.policy.include_inventory_description
+                    ),
+                )
+                if semantic_state_is_current(
+                    state,
+                    semantic_settings,
+                    inventory,
+                    artifacts,
+                    claims,
+                ):
+                    semantic_state = (
+                        state
+                        if state.metadata.run_mode == "quick"
+                        else apply_review_decisions(state, decisions)
+                    )
+                    failed_profiles = sum(
+                        item.status == "failed" for item in semantic_state.applications
+                    )
+                    partial_profiles = sum(
+                        item.status == "partial" for item in semantic_state.applications
+                    )
+                    profile_total = len(semantic_state.applications)
+                    application_total = len(set(application_names))
+                    complete_ids = {
+                        item.tool_inventory_id
+                        for item in semantic_state.applications
+                        if item.status == "complete"
+                    }
+                    semantic_partial = (
+                        len(complete_ids) != application_total
+                        or profile_total != application_total
+                        or failed_profiles > 0
+                        or partial_profiles > 0
+                        or bool(semantic_state.errors)
+                    )
+                    semantic_status = (
+                        f"current: {len(complete_ids)}/{application_total} complete profiles; "
+                        f"{partial_profiles} partial; {failed_profiles} failed; "
+                        f"{len(semantic_state.errors)} recorded errors"
+                    )
+                    if semantic_state.metadata.run_mode == "quick":
+                        semantic_status = f"TEST ONLY — QUICK MODE; {semantic_status}"
+                else:
+                    semantic_status = (
+                        "stale or incompatible with current artifacts, context, versions, "
+                        "parameters, or model checksums"
+                    )
+            except (OSError, ValueError) as exc:
+                semantic_status = f"unavailable: {exc}"
+        test_only = bool(
+            semantic_state is not None and semantic_state.metadata.run_mode != "production"
+        )
+        if semantic_mode == "require" and (
+            semantic_state is None or semantic_partial or test_only
+        ):
+            raise typer.BadParameter(
+                f"Complete current semantic results are required but unavailable: {semantic_status}"
+            )
+    produced: list[Path] = []
+    workbook_path = settings.reports_dir / "Portfolio_Analysis.xlsx"
+    themes = build_portfolio_themes(
+        semantic_state, recommendations, evidence, coverage, artifacts=artifacts,
+        datasources=datasources,
+    )
     write_workbook(
-        settings.reports_dir / "Portfolio_Analysis.xlsx",
+        workbook_path,
         inventory,
         artifacts,
         evidence,
@@ -675,19 +1208,42 @@ def report(workspace: Path = typer.Option(...)) -> None:
         dependencies,
         capabilities,
         recommendations=recommendations,
+        themes=themes,
         coverage=coverage,
+        semantic=semantic_state,
+        semantic_status=semantic_status,
+        review_decisions=decisions,
     )
+    produced.append(workbook_path)
+    pdf_path = settings.reports_dir / "Portfolio_Analysis.pdf"
     write_executive_pdf(
-        settings.reports_dir / "Portfolio_Analysis.pdf",
+        pdf_path,
         inventory,
         artifacts,
         capabilities,
         recommendations=recommendations,
+        themes=themes,
         evidence=evidence,
         datasources=datasources,
         dependencies=dependencies,
         coverage=coverage,
+        semantic=semantic_state,
+        semantic_status=semantic_status,
     )
+    produced.append(pdf_path)
+    html_path = settings.reports_dir / "Portfolio_Intelligence.html"
+    write_intelligence_html(
+        html_path,
+        inventory,
+        coverage,
+        semantic_state,
+        semantic_status=semantic_status,
+        dependencies=dependencies,
+        datasources=datasources,
+        artifacts=artifacts,
+        themes=themes,
+    )
+    produced.append(html_path)
     write_csv(
         settings.reports_dir / "applications.csv",
         [
@@ -888,16 +1444,63 @@ def report(workspace: Path = typer.Option(...)) -> None:
             "rationale",
         ],
     )
+    produced.extend(
+        settings.reports_dir / name
+        for name in (
+            "applications.csv",
+            "artifacts.csv",
+            "analysis_coverage.csv",
+            "evidence.csv",
+            "datasources.csv",
+            "dependencies.csv",
+            "capabilities.csv",
+            "recommendations.csv",
+        )
+    )
+    for filename, headers, rows in (
+        ("portfolio_themes.csv", THEME_HEADERS, theme_rows(themes, application_names)),
+        ("theme_locations.csv", THEME_LOCATION_HEADERS,
+         theme_location_rows(themes, application_names)),
+    ):
+        theme_path = settings.reports_dir / filename
+        write_csv(theme_path, rows, headers=headers)
+        produced.append(theme_path)
+    if semantic_state is not None:
+        produced.extend(
+            write_semantic_datasets(
+                settings.reports_dir,
+                semantic_state,
+                application_names,
+            )
+        )
+        mermaid_path = settings.reports_dir / "Target_Architecture.md"
+        write_architecture_mermaid(mermaid_path, semantic_state)
+        produced.append(mermaid_path)
+    manifest_path = settings.reports_dir / "report_manifest.json"
+    write_report_manifest(
+        manifest_path,
+        produced,
+        semantic_state,
+        semantic_status=semantic_status,
+    )
     typer.echo(f"Reports written to {settings.reports_dir}")
+    typer.echo(f"Semantic coverage: {semantic_status}")
 
 
 @app.command()
 def run(
     inventory: Path = typer.Option(..., exists=True, readable=True),
     workspace: Path = typer.Option(...),
+    with_semantic: bool = typer.Option(
+        False,
+        "--semantic",
+        help="Run local semantic analysis before reporting.",
+    ),
 ) -> None:
     """Stage, extract locally on Windows, analyze saved snapshots, then produce reports."""
     stage(inventory=inventory, workspace=workspace)
     extract(workspace=workspace, force=False, tool_id=None, timeout_seconds=300)
     analyze(workspace=workspace, force=False, tool_id=None)
-    report(workspace=workspace)
+    if with_semantic:
+        semantic_analysis(workspace=workspace, tool_id=None, force=False)
+    report(workspace=workspace, semantic_mode="require" if with_semantic else "auto")
