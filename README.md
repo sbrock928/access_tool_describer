@@ -80,7 +80,8 @@ For a faster end-to-end smoke test, use `portfolio-analyzer semantic --workspace
 per application and includes every code segment of each selected object. Normal mode covers all
 modules, queries, macros, and form/report code-behind deterministically, reduces those facts to one
 bounded application IR, and makes exactly one profile-generation call per application. Cluster
-labels are deterministic; target architecture is the only optional portfolio-level generation.
+labels and target architecture are deterministic by default. An optional portfolio-level
+architecture generation can be explicitly enabled in `semantic.toml`.
 Quick-mode state and reports are marked `TEST ONLY`; `semantic-check`, `--semantic-mode require`,
 and review import reject quick results. Each application is checkpointed so an interrupted run can
 resume without regenerating completed profiles. Both modes print wall-clock timestamps plus

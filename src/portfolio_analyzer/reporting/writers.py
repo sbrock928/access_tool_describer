@@ -924,6 +924,10 @@ def _method_sheet(
                     f"{metadata.inference_library} {metadata.inference_library_version}",
                 ],
                 ["Similarity version", metadata.deterministic_similarity_version],
+                [
+                    "Architecture synthesis",
+                    "Local model" if metadata.architecture_model_generation else "Deterministic",
+                ],
                 ["Generated at", metadata.generated_at.isoformat()],
                 ["Semantic errors", len(semantic.errors)],
                 ["Deterministic application IRs", len(semantic.application_irs)],

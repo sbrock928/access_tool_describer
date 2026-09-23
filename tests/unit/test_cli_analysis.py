@@ -82,11 +82,15 @@ def test_semantic_init_is_non_destructive_and_uses_approved_local_model(tmp_path
     assert 'revision = "707f574c62054322f6b5b04b6d075f0a8f05e0f0"' in contents
     assert "base_url" not in contents
     assert "embedding" not in contents
-    assert "profile_output_tokens = 512" in contents
+    assert "profile_output_tokens = 256" in contents
+    assert "max_profile_characters = 12000" in contents
     assert "architecture_output_tokens = 768" in contents
     assert "batch_output_tokens" not in contents
     assert "cluster_output_tokens" not in contents
     assert 'device = "cpu"' in contents
+    assert "cpu_threads = 4" in contents
+    assert "cpu_interop_threads = 1" in contents
+    assert "model_generation = false" in contents
 
     config.write_text(contents + "\n# operator note\n", encoding="utf-8")
     second = runner.invoke(app, ["semantic-init", "--workspace", str(workspace)])

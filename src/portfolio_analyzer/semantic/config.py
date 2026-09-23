@@ -33,11 +33,13 @@ class SemanticExecutionSettings(BaseModel):
     context_tokens: int = Field(default=8192, ge=2048, le=32768)
     max_output_tokens: int = Field(default=3072, ge=512, le=8192)
     max_object_characters: int = Field(default=6000, ge=500, le=20000)
-    max_profile_characters: int = Field(default=24000, ge=2000, le=100000)
-    profile_output_tokens: int = Field(default=512, ge=256, le=4096)
+    max_profile_characters: int = Field(default=12000, ge=2000, le=100000)
+    profile_output_tokens: int = Field(default=256, ge=128, le=4096)
     architecture_output_tokens: int = Field(default=768, ge=512, le=4096)
     temperature: float = Field(default=0.0, ge=0.0, le=1.0)
     device: str = "cpu"
+    cpu_threads: int = Field(default=4, ge=1, le=128)
+    cpu_interop_threads: int = Field(default=1, ge=1, le=16)
 
     @field_validator("device")
     @classmethod
@@ -94,6 +96,7 @@ class ClusteringSettings(BaseModel):
 
 
 class MicrosoftArchitectureSettings(BaseModel):
+    model_generation: bool = False
     approved_services: list[str] = Field(
         default_factory=lambda: [
             "Microsoft Entra ID",
@@ -124,7 +127,7 @@ def quick_mode_settings(settings: SemanticSettings) -> SemanticSettings:
             "max_output_tokens": min(settings.execution.max_output_tokens, 768),
             "max_object_characters": min(settings.execution.max_object_characters, 1000),
             "max_profile_characters": min(settings.execution.max_profile_characters, 6000),
-            "profile_output_tokens": min(settings.execution.profile_output_tokens, 512),
+            "profile_output_tokens": min(settings.execution.profile_output_tokens, 256),
             "architecture_output_tokens": min(
                 settings.execution.architecture_output_tokens, 512
             ),
@@ -158,11 +161,13 @@ local_path = "models/{APPROVED_MODEL.local_identifier}"
 context_tokens = 8192
 max_output_tokens = 3072
 max_object_characters = 6000
-max_profile_characters = 24000
-profile_output_tokens = 512
+max_profile_characters = 12000
+profile_output_tokens = 256
 architecture_output_tokens = 768
 temperature = 0.0
 device = "cpu"
+cpu_threads = 4
+cpu_interop_threads = 1
 
 [policy]
 retain_raw_prompts = false
@@ -182,6 +187,7 @@ object_composition_weight = 0.08
 archetype_weight = 0.04
 
 [microsoft]
+model_generation = false
 approved_services = [
   "Microsoft Entra ID",
   "Microsoft Teams",

@@ -102,10 +102,17 @@ deterministic similarity weights/thresholds, redaction policy, and approved Micr
 The repository and revision are validated against the compiled allowlist.
 
 Existing `semantic.toml` files do not need to be regenerated. Legacy batch and cluster-generation
-keys are ignored because schema v5 no longer makes those calls. The generated execution profile is
-optimized for a four-core CPU: `device = "cpu"`, a 24,000-character application IR prompt bound,
-and small task-specific generation ceilings. GPU-equipped installations can explicitly change
-`device` to `auto` or `cuda` after validating the environment.
+keys are ignored because schema v6 no longer makes those calls. The generated execution profile is
+optimized for a four-core CPU: `device = "cpu"`, a 12,000-character application IR prompt bound,
+four intra-op threads, one inter-op thread, and small task-specific generation ceilings. The
+provider explicitly enables the generation key/value cache and greedy single-beam decoding.
+GPU-equipped installations can change `device` to `auto` or `cuda` after validating the
+environment.
+
+Older configurations that specify larger profile prompt or output limits are automatically capped
+at 12,000 characters and 256 output tokens; effective values are recorded in semantic provenance.
+Set `[microsoft] model_generation = true` only when the optional model-authored architecture is
+worth the additional portfolio-level generation time.
 
 During an explicitly approved connected acquisition window, run:
 
@@ -169,9 +176,12 @@ bounded fairly across categories and explicitly record included and omitted item
 index entries still contribute to aggregate totals and the IR fingerprint.
 
 The local model receives the derived IR, not hundreds of raw per-object prompts, and is called once
-per application with a 512-token profile ceiling. Cluster names and rationales are derived
-deterministically from grounded profile features and require no model call. Architecture synthesis
-uses at most one 768-token portfolio-level call and has a conservative deterministic fallback.
+per application with a compact citation-keyed schema and a 256-token profile ceiling. Narrative
+summaries and finding descriptions are assembled deterministically from that structured response.
+Cluster names and rationales are derived deterministically from grounded profile features and
+require no model call. Architecture synthesis is also deterministic by default. Setting
+`microsoft.model_generation = true` enables at most one 768-token portfolio-level architecture call
+with a conservative deterministic fallback.
 Reports and semantic state distinguish deterministic inspection coverage from the bounded IR sent
 to the model.
 
@@ -230,8 +240,8 @@ portfolio-analyzer semantic --workspace .\workspace --force
 The CLI writes an atomic `in_progress` semantic checkpoint after every newly processed application.
 Restarting the same command reuses compatible completed profiles and retries only failed or stale
 applications. Normal and quick runs print timestamped start/completion events for model loading,
-deterministic IR construction, the single application synthesis call, checkpoints, deterministic
-clustering, architecture synthesis, and final state writing. Every line includes elapsed time for
+deterministic IR construction, the single compact application synthesis call, checkpoints,
+deterministic clustering, architecture synthesis, and final state writing. Every line includes elapsed time for
 the preceding step and total run. `--force` deliberately regenerates the selected application's IR
 and profile.
 
@@ -248,7 +258,8 @@ portfolio-analyzer report --workspace .\workspace --semantic-mode auto
 Quick mode retains the approved Granite model and all integrity/offline controls. For each
 application it deterministically selects at most five code-bearing objects, round-robin across
 available object types, and inspects every segment of each selected object. It caps execution at a
-4,096-token context, 768 global output tokens, 512 profile and architecture output tokens, 1,000
+4,096-token context, 768 global output tokens, 256 profile tokens, 512 optional architecture
+tokens, 1,000
 characters per segment, and 6,000 application-IR prompt characters. It records
 `run_mode = quick`, the object limit, effective generation settings, checkpoint status, and sampled
 coverage in semantic provenance.
@@ -272,7 +283,7 @@ settings, run mode and object-selection limit, deterministic similarity
 version/weights/thresholds, and approved service catalog.
 Compatible application profiles are reused. The model is loaded once per run.
 
-Schema v5 records source segments, deterministic application IRs, deterministic inspection
+Schema v6 records source segments, deterministic application IRs, deterministic inspection
 coverage, bounded model-input counts and hashes, production versus quick mode, checkpoint
 completion, and the object-selection limit. Older
 non-endpoint state may be readable but is cache-incompatible and is refreshed; v1 endpoint and

@@ -89,6 +89,7 @@ def synthesize_architecture(
     all_tool_ids: list[str],
     approved_services: list[str],
     max_output_tokens: int | None = None,
+    use_model: bool = True,
 ) -> tuple[TargetArchitecture, str | None]:
     allowed_evidence = {
         evidence_id for profile in profiles for evidence_id in profile.evidence_ids
@@ -129,6 +130,19 @@ def synthesize_architecture(
             "citations": "Use only supplied evidence_ids and claim_ids.",
         },
     }
+    if not use_model:
+        return (
+            _fallback_architecture(
+                profiles,
+                clusters,
+                coverage,
+                datasources,
+                claims,
+                all_tool_ids=all_tool_ids,
+                approved_services=approved_services,
+            ),
+            None,
+        )
     try:
         raw = provider.complete_json(
             system=(

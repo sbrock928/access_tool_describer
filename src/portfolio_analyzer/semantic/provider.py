@@ -6,6 +6,7 @@ import importlib
 import importlib.metadata
 import json
 import os
+from contextlib import suppress
 from typing import Any, Protocol
 
 from portfolio_analyzer.semantic.config import SemanticSettings
@@ -36,6 +37,9 @@ class LocalTransformersProvider:
 
     def __init__(self, settings: SemanticSettings) -> None:
         self.settings = settings
+        if settings.execution.device == "cpu":
+            os.environ.setdefault("OMP_NUM_THREADS", str(settings.execution.cpu_threads))
+            os.environ.setdefault("MKL_NUM_THREADS", str(settings.execution.cpu_threads))
         self.verified: VerifiedModel = verify_model_directory(settings.model.local_path)
         self._tokenizer: Any = None
         self._model: Any = None
@@ -96,6 +100,8 @@ class LocalTransformersProvider:
                 "max_new_tokens": output_limit,
                 "do_sample": self.settings.execution.temperature > 0,
                 "pad_token_id": self._tokenizer.eos_token_id,
+                "num_beams": 1,
+                "use_cache": True,
             }
             if self.settings.execution.temperature > 0:
                 generation["temperature"] = self.settings.execution.temperature
@@ -175,6 +181,14 @@ class LocalTransformersProvider:
             ) from exc
         local_path = str(self.verified.directory)
         try:
+            device = _select_device(self.settings.execution.device, torch)
+            if device == "cpu":
+                torch.set_num_threads(self.settings.execution.cpu_threads)
+                # PyTorch permits this only before parallel work starts in the process.
+                with suppress(RuntimeError):
+                    torch.set_num_interop_threads(
+                        self.settings.execution.cpu_interop_threads
+                    )
             tokenizer = auto_tokenizer.from_pretrained(
                 local_path,
                 local_files_only=True,
@@ -187,7 +201,6 @@ class LocalTransformersProvider:
                 use_safetensors=True,
                 dtype="auto",
             )
-            device = _select_device(self.settings.execution.device, torch)
             model.to(device)
             model.eval()
         except Exception as exc:

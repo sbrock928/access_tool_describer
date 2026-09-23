@@ -416,6 +416,7 @@ class SemanticRunMetadata(BaseModel):
     generation_parameters: dict[str, object] = Field(default_factory=dict)
     clustering_parameters: dict[str, object] = Field(default_factory=dict)
     approved_services: list[str] = Field(default_factory=list)
+    architecture_model_generation: bool = False
     context_hash: str = ""
     generated_at: datetime
     input_fingerprint: str

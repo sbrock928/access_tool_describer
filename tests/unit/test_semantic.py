@@ -92,35 +92,31 @@ class FakeProvider:
         self.calls.append(schema_name)
         self.output_limits.append((schema_name, max_output_tokens, require_full_input))
         payload = json.loads(user.split("\n", 1)[1].rsplit("\n", 1)[0])
+        evidence_refs = list(payload.get("allowed_evidence_refs", {}))
+        claim_refs = list(payload.get("allowed_claim_refs", {}))
         evidence_ids = payload.get("allowed_evidence_ids", [])
-        claim_ids = payload.get("allowed_claim_ids", [])
         if schema_name == "semantic_application_profile":
             if self.malformed_profile:
                 return {"summary": "missing required fields"}
             return {
-                "summary": "Tracks requests and produces operational reporting.",
-                "business_purpose": "Request operations",
-                "primary_archetype": "transactional workflow",
-                "proposed_disposition": "retire candidate",
-                "findings": [
+                "p": "Request operations",
+                "a": "transactional workflow",
+                "d": "retire candidate",
+                "f": [
                     {
-                        "category": "business_capability",
-                        "label": "Request management",
-                        "description": "Evidence-backed workflow.",
-                        "evidence_ids": evidence_ids[:2],
-                        "claim_ids": claim_ids[:1],
+                        "c": "business_capability",
+                        "l": "Request management",
+                        "e": evidence_refs[:2],
+                        "o": claim_refs[:1],
                     },
                     {
-                        "category": "business_capability",
-                        "label": "Hallucinated capability",
-                        "description": "Must be discarded.",
-                        "evidence_ids": ["unknown-evidence"],
-                        "claim_ids": [],
+                        "c": "business_capability",
+                        "l": "Hallucinated capability",
+                        "e": ["E999"],
+                        "o": [],
                     },
                 ],
-                "open_questions": ["Confirm business owner."],
-                "evidence_ids": evidence_ids[:2],
-                "claim_ids": claim_ids[:1],
+                "q": ["Confirm business owner."],
             }
         if schema_name == "portfolio_cluster":
             return {
@@ -128,7 +124,7 @@ class FakeProvider:
                 "rationale": "Related request workflows.",
                 "shared_capabilities": ["Request management"],
                 "shared_data_domains": ["Customer"],
-                "evidence_ids": evidence_ids[:2],
+                "evidence_ids": [],
             }
         if schema_name == "target_architecture":
             application_ids = [item["id"] for item in payload["applications"]]
@@ -448,6 +444,10 @@ def test_provider_loads_only_local_safetensors(
     fake_torch = SimpleNamespace(
         cuda=SimpleNamespace(is_available=lambda: False),
         backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False)),
+        set_num_threads=lambda value: calls.setdefault("cpu_threads", {"value": value}),
+        set_num_interop_threads=lambda value: calls.setdefault(
+            "cpu_interop_threads", {"value": value}
+        ),
     )
     fake_transformers = SimpleNamespace(
         AutoTokenizer=TokenizerLoader,
@@ -484,6 +484,8 @@ def test_provider_loads_only_local_safetensors(
     assert calls["ModelLoader"]["local_files_only"] is True
     assert calls["ModelLoader"]["trust_remote_code"] is False
     assert calls["ModelLoader"]["use_safetensors"] is True
+    assert calls["cpu_threads"]["value"] == 4
+    assert calls["cpu_interop_threads"]["value"] == 1
     assert os.environ["HF_HUB_OFFLINE"] == "1"
     assert os.environ["TRANSFORMERS_OFFLINE"] == "1"
 
@@ -561,9 +563,8 @@ def test_pipeline_drops_unknown_citations_and_enforces_disposition_gates() -> No
     assert not any(
         item.platform_service == "Azure Functions" for item in state.architecture.components
     )
-    assert any("Hosting decision required" in item for item in state.architecture.open_questions)
     assert provider.calls.count("semantic_application_profile") == 2
-    assert provider.calls.count("target_architecture") == 1
+    assert provider.calls.count("target_architecture") == 0
     assert "semantic_batch_summary" not in provider.calls
     assert "semantic_batch_rollup" not in provider.calls
     assert "portfolio_cluster" not in provider.calls
@@ -575,13 +576,70 @@ def test_pipeline_drops_unknown_citations_and_enforces_disposition_gates() -> No
     assert len(state.application_irs) == 2
     assert all(item.source_ids for item in state.application_irs)
     limits = {schema_name: limit for schema_name, limit, _required in provider.output_limits}
-    assert limits["semantic_application_profile"] == 512
-    assert limits["target_architecture"] == 768
+    assert limits["semantic_application_profile"] == 256
     assert all(
         required
         for schema_name, _limit, required in provider.output_limits
         if schema_name == "semantic_application_profile"
     )
+
+
+def test_architecture_model_generation_is_explicitly_opt_in() -> None:
+    inventory, artifacts, extracted, evidence, coverage = _portfolio()
+    base = _settings()
+    settings = base.model_copy(
+        update={
+            "microsoft": base.microsoft.model_copy(update={"model_generation": True})
+        }
+    )
+    provider = FakeProvider()
+
+    state = run_semantic_pipeline(
+        settings,
+        provider,
+        inventory[:1],
+        artifacts[:1],
+        extracted[:1],
+        [item for item in evidence if item.tool_inventory_id == "1"],
+        [],
+        coverage[:1],
+        [],
+    )
+
+    assert provider.calls.count("target_architecture") == 1
+    assert state.metadata.architecture_model_generation is True
+
+
+def test_existing_cpu_config_is_capped_to_compact_profile_output() -> None:
+    inventory, artifacts, extracted, evidence, coverage = _portfolio()
+    base = _settings()
+    settings = base.model_copy(
+        update={
+            "execution": base.execution.model_copy(update={"profile_output_tokens": 512})
+        }
+    )
+    provider = FakeProvider()
+
+    state = run_semantic_pipeline(
+        settings,
+        provider,
+        inventory[:1],
+        artifacts[:1],
+        extracted[:1],
+        [item for item in evidence if item.tool_inventory_id == "1"],
+        [],
+        coverage[:1],
+        [],
+    )
+
+    profile_limits = [
+        limit
+        for schema_name, limit, _required in provider.output_limits
+        if schema_name == "semantic_application_profile"
+    ]
+    assert profile_limits == [256]
+    assert state.metadata.generation_parameters["effective_profile_output_tokens"] == 256
+    assert state.metadata.generation_parameters["effective_profile_characters"] == 12000
 
 
 def test_semantic_sources_cover_complete_modules_and_only_code_behind_ui_objects() -> None:
@@ -674,7 +732,7 @@ def test_six_hundred_code_objects_still_use_one_profile_generation() -> None:
     assert state.application_irs[0].code_segment_count == 600
     assert "work000" in state.application_irs[0].identifier_terms
     assert "Form000" in state.application_irs[0].string_literals
-    assert state.application_irs[0].model_input_characters <= 24000
+    assert state.application_irs[0].model_input_characters <= 12000
     assert state.application_irs[0].model_input_omitted_counts["code_objects"] > 0
     assert state.applications[0].semantic_coverage is not None
     assert state.applications[0].semantic_coverage.complete_code_coverage is True
