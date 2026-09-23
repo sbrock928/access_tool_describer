@@ -282,7 +282,7 @@ def test_semantic_reports_are_offline_traceable_and_reviewable(tmp_path: Path) -
     assert "Observed sources" in html
     assert "Deterministic code coverage" in html
     assert "Owner claims" in html
-    assert "AI proposals" in html
+    assert "Semantic proposals" in html
     assert "unknown-evidence" not in html
 
     outputs = write_semantic_datasets(tmp_path, state, {"1": "Request Tracker"})

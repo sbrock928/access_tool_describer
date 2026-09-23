@@ -1,8 +1,9 @@
 # Local Semantic Analysis
 
 The semantic subsystem is optional. Deterministic extraction and static analysis remain the source
-of truth and work without ML dependencies. The model interprets bounded static evidence; its
-outputs remain evidence-gated, reviewable proposals.
+of truth and work without ML dependencies. Application profiles, similarity, clustering, and target
+architecture are also deterministic by default. The optional model-backed profile path interprets
+bounded static evidence; its outputs remain evidence-gated, reviewable proposals.
 
 ## Architecture
 
@@ -11,17 +12,18 @@ verified staged Access copies
   -> metadata/static extraction
   -> deterministic SQL/VBA/dependency/capability analysis
   -> procedure-aware, redacted code segments
-  -> one deterministic, bounded application IR
-  -> one approved local instruct model
-  -> one schema-validated profile generation per application
+  -> one deterministic application IR
+  -> deterministic evidence-cited application profile (default)
+     OR one schema-validated approved-model call per application (explicit opt-in)
   -> deterministic weighted similarity and clustering
-  -> at most one evidence-gated portfolio architecture generation
+  -> deterministic target architecture (default)
+     OR at most one evidence-gated model architecture call (explicit opt-in)
   -> review and reporting
 ```
 
 There is no embedding model, persisted neural vector, vector database, model server, hosted-model
-adapter, API-key configuration, HTTP inference, telemetry, or network fallback. The model is loaded
-once per semantic process and reused across applications.
+adapter, API-key configuration, HTTP inference, telemetry, or network fallback. When either model
+option is enabled, the model is loaded once per semantic process and reused across applications.
 
 ## Approved model and selection
 
@@ -101,8 +103,9 @@ contains the approved repository and immutable revision plus the local path, gen
 deterministic similarity weights/thresholds, redaction policy, and approved Microsoft service list.
 The repository and revision are validated against the compiled allowlist.
 
-Existing `semantic.toml` files do not need to be regenerated. Legacy batch and cluster-generation
-keys are ignored because schema v6 no longer makes those calls. The generated execution profile is
+Existing `semantic.toml` files do not need to be regenerated. A missing `[profile]` section inherits
+the safe, fast default `model_generation = false`. Legacy batch and cluster-generation keys are
+ignored because schema v7 no longer makes those calls. The optional model execution profile is
 optimized for a four-core CPU: `device = "cpu"`, a 12,000-character application IR prompt bound,
 four intra-op threads, one inter-op thread, and small task-specific generation ceilings. The
 provider explicitly enables the generation key/value cache and greedy single-beam decoding.
@@ -111,10 +114,14 @@ environment.
 
 Older configurations that specify larger profile prompt or output limits are automatically capped
 at 12,000 characters and 256 output tokens; effective values are recorded in semantic provenance.
+Set `[profile] model_generation = true` only when model-authored profiles justify the substantial
+CPU inference time. This changes the default from zero model calls to one call per application.
 Set `[microsoft] model_generation = true` only when the optional model-authored architecture is
 worth the additional portfolio-level generation time.
 
-During an explicitly approved connected acquisition window, run:
+Model acquisition is unnecessary for the default deterministic path. If either model option is
+enabled, install the semantic extras and, during an explicitly approved connected acquisition
+window, run:
 
 ```powershell
 portfolio-analyzer semantic-model-download --workspace .\workspace
@@ -146,7 +153,8 @@ portfolio-analyzer semantic-check --workspace .\workspace
 portfolio-analyzer report --workspace .\workspace --semantic-mode auto
 ```
 
-Before inference, the analyzer verifies manifest identity, revision, inventory, sizes, all file
+In deterministic mode these commands neither verify nor load model weights. When model generation
+is enabled, the analyzer first verifies manifest identity, revision, inventory, sizes, all file
 hashes, model configuration, and safetensors index references. Missing, incomplete, modified, or
 unexpected files stop inference. The analyzer never repairs or redownloads a model.
 
@@ -175,15 +183,19 @@ The IR stores every inspected source ID and complete aggregate counts. Its promp
 bounded fairly across categories and explicitly record included and omitted item counts; omitted
 index entries still contribute to aggregate totals and the IR fingerprint.
 
-The local model receives the derived IR, not hundreds of raw per-object prompts, and is called once
-per application with a compact citation-keyed schema and a 256-token profile ceiling. Narrative
-summaries and finding descriptions are assembled deterministically from that structured response.
+By default the analyzer derives a conservative profile directly from cited application-IR facts,
+observed evidence, and owner claims. It records `generation_method = deterministic`, uses no model
+input, and defaults uncertain disposition decisions to `investigate`. When
+`profile.model_generation = true`, the local model receives the derived IR—not hundreds of raw
+per-object prompts—and is called once per application with a compact citation-keyed schema and a
+256-token profile ceiling. Narrative summaries and finding descriptions are assembled
+deterministically from that structured response.
 Cluster names and rationales are derived deterministically from grounded profile features and
 require no model call. Architecture synthesis is also deterministic by default. Setting
 `microsoft.model_generation = true` enables at most one 768-token portfolio-level architecture call
 with a conservative deterministic fallback.
-Reports and semantic state distinguish deterministic inspection coverage from the bounded IR sent
-to the model.
+Reports and semantic state distinguish deterministic inspection coverage, synthesis method, and
+whether a bounded IR was sent to the model.
 
 The provider requests one JSON object matching a supplied Pydantic JSON Schema. Returned text is
 parsed only with `json.loads` and then validated by the task-specific Pydantic model. There is no
@@ -216,8 +228,10 @@ breakdown. There is no opaque embedding score.
 
 ## Preflight and gold-set acceptance
 
-`semantic-check` verifies the local model, loads it offline, tests schema-shaped JSON and evidence-ID
-preservation, then evaluates reviewed gold data. The gold set requires the stratified 20-application
+`semantic-check` verifies the active mode, then evaluates reviewed gold data. In deterministic mode
+it performs no model preflight. When either model option is enabled, it verifies and loads the model
+offline and tests schema-shaped JSON and evidence-ID preservation. The gold set requires the
+stratified 20-application
 sample, or the full portfolio when smaller, and checks:
 
 - 100% schema validity for reviewed applications;
@@ -239,15 +253,15 @@ portfolio-analyzer semantic --workspace .\workspace --force
 
 The CLI writes an atomic `in_progress` semantic checkpoint after every newly processed application.
 Restarting the same command reuses compatible completed profiles and retries only failed or stale
-applications. Normal and quick runs print timestamped start/completion events for model loading,
-deterministic IR construction, the single compact application synthesis call, checkpoints,
+applications. Normal and quick runs print timestamped start/completion events for optional model
+loading, deterministic IR construction, application synthesis, checkpoints,
 deterministic clustering, architecture synthesis, and final state writing. Every line includes elapsed time for
 the preceding step and total run. `--force` deliberately regenerates the selected application's IR
 and profile.
 
 ### Quick test mode
 
-Use quick mode for an end-to-end smoke test of local inference, schemas, evidence gating,
+Use quick mode for an end-to-end smoke test of IR construction, profile synthesis, evidence gating,
 clustering, architecture fallback, and reporting:
 
 ```powershell
@@ -255,8 +269,8 @@ portfolio-analyzer semantic --workspace .\workspace --quick
 portfolio-analyzer report --workspace .\workspace --semantic-mode auto
 ```
 
-Quick mode retains the approved Granite model and all integrity/offline controls. For each
-application it deterministically selects at most five code-bearing objects, round-robin across
+For each application quick mode deterministically selects at most five code-bearing objects,
+round-robin across
 available object types, and inspects every segment of each selected object. It caps execution at a
 4,096-token context, 768 global output tokens, 256 profile tokens, 512 optional architecture
 tokens, 1,000
@@ -278,14 +292,16 @@ portfolio-analyzer report --workspace .\workspace --semantic-mode require
 
 Atomic semantic state and each application IR/profile are fingerprinted by staged artifact hashes,
 source-segment hashes, evidence, datasources, claims, static,
-semantic, prompt and schema versions, model manifest hash, inference-library version, generation
-settings, run mode and object-selection limit, deterministic similarity
+semantic, prompt and schema versions, synthesis mode, generation settings, run mode and
+object-selection limit, deterministic similarity
 version/weights/thresholds, and approved service catalog.
-Compatible application profiles are reused. The model is loaded once per run.
+Model-enabled runs additionally include the model manifest and inference-library versions.
+Compatible application profiles are reused. Deterministic mode never loads a model; model-enabled
+mode loads it once per run.
 
-Schema v6 records source segments, deterministic application IRs, deterministic inspection
-coverage, bounded model-input counts and hashes, production versus quick mode, checkpoint
-completion, and the object-selection limit. Older
+Schema v7 records profile synthesis method, source segments, deterministic application IRs,
+deterministic inspection coverage, bounded model-input counts and hashes, production versus quick
+mode, checkpoint completion, and the object-selection limit. Older
 non-endpoint state may be readable but is cache-incompatible and is refreshed; v1 endpoint and
 embedding state remains invalid. Deterministic extraction and analysis remain intact.
 

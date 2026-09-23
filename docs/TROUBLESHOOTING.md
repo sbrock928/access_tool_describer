@@ -2,17 +2,19 @@
 
 ## Semantic analysis appears idle or is too slow
 
-Production semantic analysis no longer makes one model call per Access object. It covers all
-modules, queries, macros, and form/report code-behind using procedure-aware segments packed into
-bounded batches; tables, links, references, and UI layout remain deterministically inventoried.
-The CLI prints timestamped start/completion events with both `step` and `total` elapsed time and
-writes an atomic checkpoint after each batch and application. The elapsed `step` value on a
-`Completed semantic batch` line is that batch's generation time. If the matching completion line
-has not appeared, that model call is still active; CPU/GPU activity can provide a second
-confirmation. For a bounded smoke test, run `portfolio-analyzer
-semantic --workspace .\workspace --quick`; the resulting state and reports are test-only and cannot
-pass production acceptance. Restart an interrupted command with the same mode and settings to reuse
-its compatible batch and application checkpoints.
+The default production configuration makes zero model calls. It covers all modules, queries,
+macros, and form/report code-behind, constructs one deterministic application IR, and derives an
+evidence-cited profile locally. On typical hardware, the first application should no longer pause
+for minutes at `Starting application profile synthesis`. The CLI prints timestamped completion
+events with both `step` and `total` elapsed time and writes an atomic checkpoint after every
+application. Restart an interrupted command with the same mode and settings to reuse compatible
+application checkpoints.
+
+If the console says `Starting approved local model load` or `Starting application profile
+synthesis` without the word `deterministic`, model generation is enabled. Set both `[profile]
+model_generation = false` and `[microsoft] model_generation = false` to restore the fast path. A
+bounded smoke test is also available with `portfolio-analyzer semantic --workspace .\workspace
+--quick`; its state and reports are test-only and cannot pass production acceptance.
 
 - A staging error means the tool is intentionally not analyzed. Fix source accessibility and rerun staging.
 - `WindowsAccessExtractor` on macOS/Linux is expected to fail safely; use extracted fixtures for cross-platform development.
@@ -25,12 +27,12 @@ its compatible batch and application checkpoints.
   A staged tool's `extracted/<INVENTORY_ID>/_extraction_progress.txt` also records the most recent
   checkpoint, so a timeout identifies the operation that blocked.
 - A missing `model_manifest.json`, checksum mismatch, unexpected file, wrong revision, or remote-code
-  declaration intentionally stops semantic inference. Quarantine the model directory and rerun
+  declaration intentionally stops explicitly enabled model inference. Quarantine the model directory and rerun
   `semantic-model-download` during an approved connected acquisition window; analysis never repairs
   model files or connects automatically.
 - `semantic-check` can report a healthy local model but still exit unsuccessfully when the gold set
   is incomplete or below its quality thresholds. Complete `semantic/gold_set.csv`, run `semantic`,
   and rerun the check.
 - Legacy semantic state containing chat/embedding endpoints or persisted vectors is incompatible
-  with schema v4. Deterministic analysis remains valid; rerun `semantic` to replace only semantic
+  with schema v7. Deterministic analysis remains valid; rerun `semantic` to replace only semantic
   state.

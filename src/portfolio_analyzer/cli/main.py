@@ -805,12 +805,12 @@ def semantic_init(workspace: Path = typer.Option(...)) -> None:
     for path, was_created in created:
         typer.echo(f"{'Created' if was_created else 'Preserved'}: {path}")
     typer.echo(
-        "The approved model is not downloaded automatically. Install semantic dependencies, "
-        "then run 'portfolio-analyzer semantic-model-download --workspace ...'."
+        "Deterministic profiles and architecture are enabled by default; no model download or "
+        "ML dependencies are required."
     )
     typer.echo(
-        "Only that explicit acquisition command can contact Hugging Face; semantic analysis "
-        "loads the verified local files directly in offline mode."
+        "Only if you explicitly enable model generation: install semantic dependencies, run "
+        "'semantic-model-download', then run inference offline."
     )
 
 
@@ -847,7 +847,7 @@ def semantic_model_download(workspace: Path = typer.Option(...)) -> None:
 
 @app.command("semantic-check")
 def semantic_check(workspace: Path = typer.Option(...)) -> None:
-    """Verify the local model, structured output, citations, and gold-set quality offline."""
+    """Verify the active synthesis mode, citations, and gold-set quality offline."""
     settings = _settings(workspace)
     config_path = _semantic_config_path(settings)
     if not config_path.exists():
@@ -874,11 +874,23 @@ def semantic_check(workspace: Path = typer.Option(...)) -> None:
             )
         )
         raise typer.Exit(code=1)
-    try:
-        provider = LocalTransformersProvider(semantic_settings)
-        result = preflight_semantic_provider(semantic_settings, provider)
-    except (OSError, SemanticProviderError, ValueError) as exc:
-        raise typer.BadParameter(f"Offline semantic preflight failed: {exc}") from exc
+    model_enabled = (
+        semantic_settings.profile.model_generation
+        or semantic_settings.microsoft.model_generation
+    )
+    if model_enabled:
+        try:
+            provider = LocalTransformersProvider(semantic_settings)
+            result = preflight_semantic_provider(semantic_settings, provider)
+        except (OSError, SemanticProviderError, ValueError) as exc:
+            raise typer.BadParameter(f"Offline semantic preflight failed: {exc}") from exc
+    else:
+        result = {
+            "ready": True,
+            "mode": "deterministic",
+            "model_inference": False,
+            "structured_output": "not-applicable",
+        }
     state_path = settings.analysis_dir / "staging_state.json"
     inventory, _ = _read_state(state_path) if state_path.exists() else ([], [])
     gold_result = evaluate_gold_set(read_gold_set(_semantic_gold_path(settings)), inventory, state)
@@ -901,7 +913,7 @@ def semantic_analysis(
         ),
     ),
 ) -> None:
-    """Run resumable semantic analysis with the approved in-process model, fully offline."""
+    """Run resumable deterministic analysis, with an optional approved local model."""
     settings = _settings(workspace)
     config_path = _semantic_config_path(settings)
     if not config_path.exists():
@@ -917,13 +929,21 @@ def semantic_analysis(
             "TEST ONLY quick semantic mode: at most five representative code-bearing objects per "
             "application; results cannot pass semantic-check or --semantic-mode require."
         )
-    progress("Starting approved model directory verification")
-    try:
-        provider = LocalTransformersProvider(semantic_settings)
-    except (OSError, ValueError) as exc:
-        progress(f"Failed approved model directory verification: {exc}")
-        raise typer.BadParameter(f"Approved local model verification failed: {exc}") from exc
-    progress("Completed approved model directory verification")
+    model_enabled = (
+        semantic_settings.profile.model_generation
+        or semantic_settings.microsoft.model_generation
+    )
+    provider: LocalTransformersProvider | None = None
+    if model_enabled:
+        progress("Starting approved model directory verification")
+        try:
+            provider = LocalTransformersProvider(semantic_settings)
+        except (OSError, ValueError) as exc:
+            progress(f"Failed approved model directory verification: {exc}")
+            raise typer.BadParameter(f"Approved local model verification failed: {exc}") from exc
+        progress("Completed approved model directory verification")
+    else:
+        progress("Local model inference disabled; no model load or verification is required")
     progress("Starting semantic input preparation")
     staging_path = settings.analysis_dir / "staging_state.json"
     if not staging_path.exists():

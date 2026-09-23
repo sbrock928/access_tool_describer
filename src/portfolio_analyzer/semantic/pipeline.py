@@ -216,7 +216,7 @@ _CODE_TOKEN_STOPWORDS = frozenset(
 
 def run_semantic_pipeline(
     settings: SemanticSettings,
-    provider: SemanticProvider,
+    provider: SemanticProvider | None,
     inventory: list[InventoryRecord],
     artifacts: list[StagedArtifact],
     extracted: list[tuple[str, ExtractedApplication]],
@@ -235,10 +235,16 @@ def run_semantic_pipeline(
 ) -> SemanticPortfolioState:
     notify = progress or (lambda _message: None)
     _validate_model_configuration(settings)
-    notify("Starting approved local model load and health check")
-    health = provider.health()
-    provenance = _validated_provenance(health)
-    notify(f"Approved local model loaded on {health.get('device', 'unknown device')}")
+    if _model_generation_enabled(settings):
+        if provider is None:
+            raise ValueError("Local model generation is enabled but no provider is available")
+        notify("Starting approved local model load and health check")
+        health = provider.health()
+        provenance = _validated_provenance(health)
+        notify(f"Approved local model loaded on {health.get('device', 'unknown device')}")
+    else:
+        provenance = _deterministic_provenance()
+        notify("Local model inference disabled; using deterministic synthesis")
     if prior_state is not None and not _profile_cache_is_compatible(
         prior_state,
         settings,
@@ -388,6 +394,9 @@ def run_semantic_pipeline(
                 primary_archetype="unknown",
                 proposed_disposition="investigate",
                 confidence=Confidence.LOW,
+                generation_method=(
+                    "local_model" if settings.profile.model_generation else "deterministic"
+                ),
                 application_ir_id=application_ir.ir_id if application_ir else None,
                 semantic_coverage=_semantic_coverage(application_sources, selected_sources),
                 open_questions=["Resolve the semantic analysis failure."],
@@ -533,6 +542,7 @@ def _semantic_state(
             generation_parameters=_generation_parameters(settings),
             clustering_parameters=settings.clustering.model_dump(mode="json"),
             approved_services=settings.microsoft.approved_services,
+            profile_model_generation=settings.profile.model_generation,
             architecture_model_generation=settings.microsoft.model_generation,
             context_hash=_claims_hash(claims),
             generated_at=datetime.now(UTC),
@@ -889,21 +899,32 @@ def semantic_state_is_current(
     effective_settings = (
         quick_mode_settings(settings) if state.metadata.run_mode == "quick" else settings
     )
-    verified = verify_model_directory(settings.model.local_path)
+    if _model_generation_enabled(effective_settings):
+        verified = verify_model_directory(settings.model.local_path)
+        provenance = {
+            "model_repo_id": verified.manifest.repo_id,
+            "model_revision": verified.manifest.revision,
+            "model_manifest_sha256": verified.manifest.manifest_sha256,
+            "model_architecture": verified.manifest.architecture,
+        }
+    else:
+        provenance = _deterministic_provenance()
     if (
         state.metadata.semantic_version != SEMANTIC_ANALYSIS_VERSION
         or state.metadata.semantic_schema_version != SEMANTIC_SCHEMA_VERSION
         or state.metadata.prompt_version != SEMANTIC_PROMPT_VERSION
         or state.metadata.static_analysis_version != STATIC_ANALYSIS_VERSION
         or state.metadata.deterministic_similarity_version != DETERMINISTIC_SIMILARITY_VERSION
-        or state.metadata.model_repo_id != verified.manifest.repo_id
-        or state.metadata.model_revision != verified.manifest.revision
-        or state.metadata.model_manifest_sha256 != verified.manifest.manifest_sha256
-        or state.metadata.model_architecture != verified.manifest.architecture
+        or state.metadata.model_repo_id != provenance["model_repo_id"]
+        or state.metadata.model_revision != provenance["model_revision"]
+        or state.metadata.model_manifest_sha256 != provenance["model_manifest_sha256"]
+        or state.metadata.model_architecture != provenance["model_architecture"]
         or state.metadata.generation_parameters != _generation_parameters(effective_settings)
         or state.metadata.clustering_parameters
         != effective_settings.clustering.model_dump(mode="json")
         or state.metadata.approved_services != effective_settings.microsoft.approved_services
+        or state.metadata.profile_model_generation
+        != effective_settings.profile.model_generation
         or state.metadata.architecture_model_generation
         != effective_settings.microsoft.model_generation
         or (
@@ -931,7 +952,7 @@ def semantic_state_is_current(
 
 
 def _profile_application(
-    provider: SemanticProvider,
+    provider: SemanticProvider | None,
     record: InventoryRecord,
     all_sources: list[SemanticSource],
     selected_sources: list[SemanticSource],
@@ -948,6 +969,24 @@ def _profile_application(
 ) -> tuple[SemanticApplicationProfile, SemanticApplicationIR]:
     notify = progress or (lambda _message: None)
     semantic_coverage = _semantic_coverage(all_sources, selected_sources)
+    if not settings.profile.model_generation:
+        notify(f"Starting deterministic application profile synthesis: {record.tool_name}")
+        profile = _deterministic_application_profile(
+            record,
+            selected_sources,
+            application_ir,
+            evidence,
+            claims,
+            coverage,
+            artifact_hashes,
+            fingerprint,
+            semantic_coverage,
+            provenance,
+        )
+        notify(f"Completed deterministic application profile synthesis: {record.tool_name}")
+        return profile, application_ir
+    if provider is None:
+        raise ValueError("Profile model generation is enabled but no provider is available")
     payload, evidence_refs, claim_refs, application_ir = _bounded_profile_payload(
         record,
         application_ir,
@@ -1042,6 +1081,7 @@ def _profile_application(
         primary_archetype=profile_response.primary_archetype,
         proposed_disposition=disposition,
         confidence=confidence,
+        generation_method="local_model",
         findings=findings,
         application_ir_id=application_ir.ir_id,
         semantic_coverage=semantic_coverage,
@@ -1057,6 +1097,292 @@ def _profile_application(
         status="complete" if confidence != Confidence.LOW else "partial",
     )
     return profile, application_ir
+
+
+_PROFILE_TERM_STOPWORDS = _CODE_TOKEN_STOPWORDS | frozenset(
+    {
+        "application",
+        "button",
+        "click",
+        "close",
+        "command",
+        "control",
+        "data",
+        "detail",
+        "entry",
+        "field",
+        "form",
+        "main",
+        "module",
+        "open",
+        "query",
+        "queue",
+        "record",
+        "report",
+        "save",
+        "table",
+        "tool",
+        "value",
+    }
+)
+
+
+def _deterministic_application_profile(
+    record: InventoryRecord,
+    selected_sources: list[SemanticSource],
+    application_ir: SemanticApplicationIR,
+    evidence: list[Evidence],
+    claims: list[Claim],
+    coverage: list[AnalysisCoverage],
+    artifact_hashes: list[str],
+    fingerprint: str,
+    semantic_coverage: SemanticCoverage,
+    provenance: dict[str, str],
+) -> SemanticApplicationProfile:
+    semantic_coverage = semantic_coverage.model_copy(update={"model_input_kind": "none"})
+    findings: list[SemanticFinding] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add_finding(
+        category: str,
+        label: str,
+        *,
+        evidence_ids: list[str],
+        claim_ids: list[str] | None = None,
+    ) -> None:
+        cleaned = _clean_generated(label, 160)
+        key = (category, cleaned.casefold())
+        if not cleaned or key in seen or len(findings) >= 24:
+            return
+        seen.add(key)
+        cited_claims = sorted(set(claim_ids or []))
+        cited_evidence = sorted(set(evidence_ids))
+        findings.append(
+            SemanticFinding(
+                tool_inventory_id=record.tool_inventory_id,
+                category=category,
+                label=cleaned,
+                description=_finding_description(category, cleaned),
+                confidence=_derive_confidence(
+                    cited_evidence,
+                    cited_claims,
+                    coverage,
+                    evidence=evidence,
+                    sources=selected_sources,
+                    application_ir_ids={application_ir.ir_id},
+                ),
+                evidence_ids=cited_evidence,
+                claim_ids=cited_claims,
+            )
+        )
+
+    domain_terms = _deterministic_domain_terms(application_ir)
+    for term in domain_terms[:3]:
+        add_finding(
+            "business_capability",
+            f"{term.title()} management",
+            evidence_ids=[application_ir.ir_id],
+        )
+    for referenced_object in application_ir.referenced_objects[:5]:
+        add_finding(
+            "data_entity",
+            _humanize_identifier(referenced_object),
+            evidence_ids=[application_ir.ir_id],
+        )
+    for item in sorted(evidence, key=lambda value: value.evidence_id):
+        inference = _clean_generated(item.inference or item.rule_id or "", 160)
+        if inference:
+            add_finding(
+                _deterministic_finding_category(inference),
+                inference,
+                evidence_ids=[item.evidence_id],
+            )
+    for signal in sorted(application_ir.technical_signals, key=str.casefold):
+        add_finding(
+            _deterministic_finding_category(signal),
+            signal,
+            evidence_ids=[application_ir.ir_id],
+        )
+    for signature in application_ir.datasource_signatures[:4]:
+        add_finding(
+            "integration",
+            f"External datasource: {signature}",
+            evidence_ids=[application_ir.ir_id],
+        )
+
+    purpose_claim = next(
+        (
+            claim
+            for claim in claims
+            if claim.field.casefold() in {"business_purpose", "inventory_description"}
+            and claim.value.strip()
+        ),
+        None,
+    )
+    if purpose_claim:
+        business_purpose = _clean_generated(purpose_claim.value, 800)
+        purpose_claim_ids = [purpose_claim.claim_id]
+    elif domain_terms:
+        business_purpose = (
+            f"Supports {', '.join(domain_terms[:3])} management and related data workflows"
+        )
+        purpose_claim_ids = []
+    else:
+        business_purpose = "Purpose requires owner confirmation"
+        purpose_claim_ids = []
+
+    disposition = "retire candidate" if _has_retirement_claim(claims) else "investigate"
+    disposition_claim_ids = [
+        claim.claim_id for claim in claims if claim.field == "lifecycle_intent"
+    ] if disposition == "retire candidate" else []
+    profile_claims = sorted(
+        set(purpose_claim_ids)
+        | set(disposition_claim_ids)
+        | {item for finding in findings for item in finding.claim_ids}
+    )
+    profile_evidence = sorted(
+        {application_ir.ir_id}
+        | {item for finding in findings for item in finding.evidence_ids}
+    )
+    confidence = _derive_confidence(
+        profile_evidence,
+        profile_claims,
+        coverage,
+        evidence=evidence,
+        sources=selected_sources,
+        application_ir_ids={application_ir.ir_id},
+    )
+    open_questions: list[str] = []
+    if purpose_claim is None:
+        open_questions.append("Confirm the business purpose and accountable owner.")
+    if not _coverage_is_complete(coverage):
+        open_questions.append("Resolve static extraction or analysis coverage warnings.")
+    if not semantic_coverage.complete_code_coverage:
+        open_questions.append(
+            "Deterministic semantic coverage is sampled; rerun in production mode for complete "
+            "code-bearing coverage."
+        )
+    archetype = _deterministic_archetype(application_ir, evidence)
+    return SemanticApplicationProfile(
+        tool_inventory_id=record.tool_inventory_id,
+        tool_name=record.tool_name,
+        summary=_profile_summary(business_purpose, archetype, findings),
+        business_purpose=business_purpose,
+        primary_archetype=archetype,
+        proposed_disposition=disposition,
+        confidence=confidence,
+        generation_method="deterministic",
+        findings=findings,
+        application_ir_id=application_ir.ir_id,
+        semantic_coverage=semantic_coverage,
+        open_questions=open_questions,
+        evidence_ids=profile_evidence,
+        claim_ids=profile_claims,
+        artifact_hashes=sorted(artifact_hashes),
+        input_fingerprint=fingerprint,
+        semantic_version=SEMANTIC_ANALYSIS_VERSION,
+        model_repo_id=provenance["model_repo_id"],
+        model_revision=provenance["model_revision"],
+        model_manifest_sha256=provenance["model_manifest_sha256"],
+        status="complete" if confidence != Confidence.LOW else "partial",
+    )
+
+
+def _deterministic_domain_terms(application_ir: SemanticApplicationIR) -> list[str]:
+    counts: Counter[str] = Counter()
+    names = [
+        name
+        for values in application_ir.object_names_by_type.values()
+        for name in values
+    ] + application_ir.referenced_objects + application_ir.procedure_names
+    for name in names:
+        counts.update(_business_tokens(name))
+    for token, count in application_ir.identifier_terms.items():
+        normalized = _normalize_business_token(token)
+        if normalized and normalized not in _PROFILE_TERM_STOPWORDS:
+            counts[normalized] += min(count, 3)
+    return [
+        token
+        for token, _count in sorted(
+            counts.items(), key=lambda item: (-item[1], item[0])
+        )[:8]
+    ]
+
+
+def _business_tokens(value: str) -> list[str]:
+    words = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", value)
+    words = re.sub(r"(?i)^(?:tbl|qry|frm|rpt|mod)[_\s-]*", "", words)
+    output: list[str] = []
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9]+", words):
+        normalized = _normalize_business_token(token)
+        if normalized and normalized not in _PROFILE_TERM_STOPWORDS:
+            output.append(normalized)
+    return output
+
+
+def _normalize_business_token(value: str) -> str:
+    token = value.casefold()
+    if token.endswith("id") and len(token) > 5:
+        token = token[:-2]
+    if token.endswith("ies") and len(token) > 5:
+        token = f"{token[:-3]}y"
+    elif token.endswith("s") and not token.endswith("ss") and len(token) > 4:
+        token = token[:-1]
+    return token if len(token) >= 4 else ""
+
+
+def _humanize_identifier(value: str) -> str:
+    words = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", value)
+    words = re.sub(r"[_-]+", " ", words)
+    return _clean_generated(words, 160)
+
+
+def _deterministic_finding_category(label: str) -> str:
+    normalized = label.casefold()
+    if any(value in normalized for value in ("http", "excel", "outlook", "shell", "file")):
+        return "integration"
+    if any(value in normalized for value in ("error", "broken", "deprecated", "suppressed")):
+        return "modernization_blocker"
+    if any(value in normalized for value in ("insert", "update", "delete", "write", "entry")):
+        return "workflow"
+    if any(value in normalized for value in ("query", "sql", "read", "report")):
+        return "technical_capability"
+    return "technical_capability"
+
+
+def _deterministic_archetype(
+    application_ir: SemanticApplicationIR, evidence: list[Evidence]
+) -> str:
+    counts = application_ir.object_type_counts
+    signals = " ".join(
+        [*application_ir.technical_signals, *(item.inference or "" for item in evidence)]
+    ).casefold()
+    operations = {key.casefold() for key, value in application_ir.sql_operations.items() if value}
+    has_integration = any(
+        value in signals for value in ("http", "excel", "outlook", "shell", "filesystem")
+    ) or bool(application_ir.datasource_signatures)
+    has_write = bool(operations & {"insert", "update", "delete", "make_table", "append"})
+    has_entry = "data entry" in signals or any(
+        "entry" in name.casefold() or "edit" in name.casefold() or "save" in name.casefold()
+        for names in application_ir.object_names_by_type.values()
+        for name in names
+    )
+    has_form = bool(counts.get("form")) or any(
+        item.object_type.casefold() == "form" for item in evidence
+    )
+    if has_integration and not has_form:
+        return "integration utility"
+    if counts.get("macro") and not has_form:
+        return "batch automation"
+    if has_form and (has_write or has_entry):
+        return "transactional workflow"
+    if counts.get("report") or (counts.get("query") and not has_form):
+        return "reporting and analytics"
+    if has_integration:
+        return "mixed application"
+    if has_form:
+        return "transactional workflow"
+    return "unknown"
 
 
 def _build_application_ir(
@@ -1499,6 +1825,7 @@ def _application_fingerprint(
         "schema_version": SEMANTIC_SCHEMA_VERSION,
         "model_manifest_sha256": provenance["model_manifest_sha256"],
         "inference_library_version": provenance["inference_library_version"],
+        "profile_model_generation": settings.profile.model_generation,
         "generation": _generation_parameters(settings),
         "run_mode": run_mode,
         "max_objects_per_application": max_objects_per_application,
@@ -1523,6 +1850,7 @@ def _portfolio_fingerprint(
         "similarity_version": DETERMINISTIC_SIMILARITY_VERSION,
         "clustering": settings.clustering.model_dump(mode="json"),
         "services": settings.microsoft.approved_services,
+        "profile_model_generation": settings.profile.model_generation,
         "architecture_model_generation": settings.microsoft.model_generation,
         "run_mode": run_mode,
         "max_objects_per_application": max_objects_per_application,
@@ -1545,15 +1873,21 @@ def _claims_hash(claims: list[Claim]) -> str:
 
 
 def _generation_parameters(settings: SemanticSettings) -> dict[str, object]:
-    parameters = settings.execution.model_dump(mode="json")
-    parameters["effective_profile_output_tokens"] = min(
-        settings.execution.profile_output_tokens,
-        _COMPACT_PROFILE_OUTPUT_CAP,
-    )
-    parameters["effective_profile_characters"] = min(
-        settings.execution.max_profile_characters,
-        _COMPACT_PROFILE_CHARACTER_CAP,
-    )
+    parameters: dict[str, object] = {
+        "max_object_characters": settings.execution.max_object_characters,
+        "profile_model_generation": settings.profile.model_generation,
+        "architecture_model_generation": settings.microsoft.model_generation,
+    }
+    if _model_generation_enabled(settings):
+        parameters.update(settings.execution.model_dump(mode="json"))
+        parameters["effective_profile_output_tokens"] = min(
+            settings.execution.profile_output_tokens,
+            _COMPACT_PROFILE_OUTPUT_CAP,
+        )
+        parameters["effective_profile_characters"] = min(
+            settings.execution.max_profile_characters,
+            _COMPACT_PROFILE_CHARACTER_CAP,
+        )
     return parameters
 
 
@@ -1754,6 +2088,23 @@ def _validate_model_configuration(settings: SemanticSettings) -> None:
         raise ValueError("semantic model revision must be a 40-character commit SHA")
 
 
+def _model_generation_enabled(settings: SemanticSettings) -> bool:
+    return settings.profile.model_generation or settings.microsoft.model_generation
+
+
+def _deterministic_provenance() -> dict[str, str]:
+    return {
+        "model_repo_id": "not-used",
+        "model_revision": "not-used",
+        "model_manifest_sha256": "not-used",
+        "local_model_identifier": "not-used",
+        "model_architecture": "not-used",
+        "model_license": "not-used",
+        "inference_library": "not-used",
+        "inference_library_version": "not-used",
+    }
+
+
 def _validated_provenance(health: dict[str, str | bool | None]) -> dict[str, str]:
     required = (
         "model_repo_id",
@@ -1795,5 +2146,7 @@ def _profile_cache_is_compatible(
         and metadata.model_manifest_sha256 == provenance["model_manifest_sha256"]
         and metadata.inference_library == provenance["inference_library"]
         and metadata.inference_library_version == provenance["inference_library_version"]
+        and metadata.profile_model_generation == settings.profile.model_generation
+        and metadata.architecture_model_generation == settings.microsoft.model_generation
         and metadata.generation_parameters == _generation_parameters(settings)
     )

@@ -79,7 +79,7 @@ class _ArchitectureProposal(BaseModel):
 
 
 def synthesize_architecture(
-    provider: SemanticProvider,
+    provider: SemanticProvider | None,
     profiles: list[SemanticApplicationProfile],
     clusters: list[PortfolioCluster],
     coverage: list[AnalysisCoverage],
@@ -142,6 +142,19 @@ def synthesize_architecture(
                 approved_services=approved_services,
             ),
             None,
+        )
+    if provider is None:
+        return (
+            _fallback_architecture(
+                profiles,
+                clusters,
+                coverage,
+                datasources,
+                claims,
+                all_tool_ids=all_tool_ids,
+                approved_services=approved_services,
+            ),
+            "Architecture model generation is enabled but no provider is available",
         )
     try:
         raw = provider.complete_json(

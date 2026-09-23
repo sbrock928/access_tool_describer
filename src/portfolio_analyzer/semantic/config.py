@@ -62,6 +62,10 @@ class SemanticPolicySettings(BaseModel):
     include_inventory_description: bool = True
 
 
+class SemanticProfileSettings(BaseModel):
+    model_generation: bool = False
+
+
 class ClusteringSettings(BaseModel):
     strong_similarity: float = Field(default=0.62, ge=0.0, le=1.0)
     corroborated_similarity: float = Field(default=0.28, ge=0.0, le=1.0)
@@ -115,6 +119,7 @@ class SemanticSettings(BaseModel):
     model: LocalModelSettings = Field(default_factory=LocalModelSettings)
     execution: SemanticExecutionSettings = Field(default_factory=SemanticExecutionSettings)
     policy: SemanticPolicySettings = Field(default_factory=SemanticPolicySettings)
+    profile: SemanticProfileSettings = Field(default_factory=SemanticProfileSettings)
     clustering: ClusteringSettings = Field(default_factory=ClusteringSettings)
     microsoft: MicrosoftArchitectureSettings = Field(default_factory=MicrosoftArchitectureSettings)
 
@@ -150,7 +155,8 @@ def write_semantic_settings_template(path: Path) -> bool:
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        f'''# Semantic inference uses one approved, in-process model and never uses HTTP.
+        f'''# Semantic profiles and architecture are deterministic by default and require no model.
+# If model generation is enabled below, inference uses one approved in-process model and no HTTP.
 # repo_id and revision are allowlisted constants; only local_path is operationally configurable.
 [model]
 repo_id = "{APPROVED_MODEL.repo_id}"
@@ -174,6 +180,10 @@ retain_raw_prompts = false
 redact_paths = true
 include_inventory_description = true
 
+[profile]
+# Set true only to opt into one local-model call per application.
+model_generation = false
+
 [clustering]
 strong_similarity = 0.62
 corroborated_similarity = 0.28
@@ -187,6 +197,7 @@ object_composition_weight = 0.08
 archetype_weight = 0.04
 
 [microsoft]
+# Set true only to opt into one portfolio-level local-model architecture call.
 model_generation = false
 approved_services = [
   "Microsoft Entra ID",

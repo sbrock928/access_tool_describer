@@ -44,6 +44,7 @@ from portfolio_analyzer.semantic.pipeline import (
     build_semantic_sources,
     evaluate_gold_set,
     run_semantic_pipeline,
+    semantic_state_is_current,
 )
 from portfolio_analyzer.semantic.provider import (
     LocalTransformersProvider,
@@ -169,7 +170,12 @@ class FakeProvider:
 
 
 def _settings() -> SemanticSettings:
-    return SemanticSettings()
+    settings = SemanticSettings()
+    return settings.model_copy(
+        update={
+            "profile": settings.profile.model_copy(update={"model_generation": True})
+        }
+    )
 
 
 def _portfolio() -> tuple[
@@ -584,6 +590,44 @@ def test_pipeline_drops_unknown_citations_and_enforces_disposition_gates() -> No
     )
 
 
+def test_default_profiles_are_deterministic_and_do_not_require_a_model() -> None:
+    inventory, artifacts, extracted, evidence, coverage = _portfolio()
+    settings = SemanticSettings()
+
+    state = run_semantic_pipeline(
+        settings,
+        None,
+        inventory,
+        artifacts,
+        extracted,
+        evidence,
+        [],
+        coverage,
+        [],
+    )
+
+    assert state.metadata.profile_model_generation is False
+    assert state.metadata.architecture_model_generation is False
+    assert state.metadata.model_manifest_sha256 == "not-used"
+    assert all(profile.generation_method == "deterministic" for profile in state.applications)
+    assert all(
+        profile.semantic_coverage is not None
+        and profile.semantic_coverage.model_input_kind == "none"
+        for profile in state.applications
+    )
+    assert all(item.model_input_characters == 0 for item in state.application_irs)
+    assert all(
+        profile.primary_archetype == "transactional workflow"
+        for profile in state.applications
+    )
+    assert all(
+        "Request management"
+        in {finding.label for finding in profile.findings}
+        for profile in state.applications
+    )
+    assert semantic_state_is_current(state, settings, inventory, artifacts, [])
+
+
 def test_architecture_model_generation_is_explicitly_opt_in() -> None:
     inventory, artifacts, extracted, evidence, coverage = _portfolio()
     base = _settings()
@@ -736,6 +780,21 @@ def test_six_hundred_code_objects_still_use_one_profile_generation() -> None:
     assert state.application_irs[0].model_input_omitted_counts["code_objects"] > 0
     assert state.applications[0].semantic_coverage is not None
     assert state.applications[0].semantic_coverage.complete_code_coverage is True
+
+    deterministic = run_semantic_pipeline(
+        SemanticSettings(),
+        None,
+        inventory[:1],
+        artifacts[:1],
+        extracted[:1],
+        [],
+        [],
+        coverage[:1],
+        [],
+    )
+    assert deterministic.applications[0].generation_method == "deterministic"
+    assert deterministic.application_irs[0].code_object_count == 600
+    assert deterministic.application_irs[0].model_input_characters == 0
 
 
 def test_failed_application_resume_reuses_completed_application() -> None:

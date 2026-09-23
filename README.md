@@ -41,29 +41,25 @@ See [docs/REPORTS.md](docs/REPORTS.md) and [docs/REFACTOR_PLAN.md](docs/REFACTOR
 
 ## Optional local semantic analysis
 
-Semantic analysis is opt-in and uses one approved model loaded directly in-process. Model
-acquisition is the only network-enabled phase. Analysis uses an integrity-verified local directory,
-sets Hugging Face and Transformers offline mode, passes `local_files_only=True` and
-`trust_remote_code=False`, and has no HTTP provider, API key, telemetry, or hosted fallback.
-Portfolio similarity is deterministic and explainable; it does not use embeddings or a vector
-database. The default generation profile is tuned for a four-core CPU; GPU installations must
-explicitly select `auto` or `cuda` in `semantic.toml`.
+Semantic analysis is opt-in and deterministic by default. It inspects all extracted code-bearing
+objects, builds one complete application IR, derives evidence-cited profiles, computes explainable
+similarity, and creates the target architecture without loading a model. It does not use embeddings
+or a vector database, and the normal deterministic path needs neither ML dependencies nor model
+weights.
 
 ```powershell
-python -m pip install -c requirements\semantic-py313.lock -e ".[dev,windows,semantic]"
 portfolio-analyzer semantic-init --workspace .\workspace
-portfolio-analyzer semantic-model-download --workspace .\workspace
-# Disconnect from external networks here when policy requires it.
 portfolio-analyzer semantic --workspace .\workspace
 portfolio-analyzer semantic-check --workspace .\workspace
 portfolio-analyzer report --workspace .\workspace --semantic-mode auto
 ```
 
-The approved model is `ibm-granite/granite-3.3-2b-instruct`, pinned to an immutable commit.
-Acquisition downloads only its allowlisted Transformers configuration, tokenizer files, model card,
-and safetensors weights. Every file must match a code-reviewed size and SHA-256 before acquisition
-writes the local manifest. Missing, altered, unsafe, or unexpected model files stop inference; they
-are never repaired by an implicit download.
+Local-model profile generation remains available as an explicit opt-in. Install the semantic extras,
+run `semantic-model-download`, then set `[profile] model_generation = true` in `semantic.toml`.
+Setting `[microsoft] model_generation = true` separately enables model-authored architecture
+synthesis. The approved model is `ibm-granite/granite-3.3-2b-instruct`, pinned to an immutable
+commit. Acquisition is the only network-enabled phase; every allowlisted file must match a
+code-reviewed size and SHA-256, and inference has no hosted fallback.
 
 Use `--semantic-mode require` in controlled production runs, or `off` for deterministic-only
 reporting. Reviewers can enter `Accept`, `Edit`, or `Reject` in the workbook's `Review Queue` and
@@ -76,12 +72,10 @@ portfolio-analyzer report --workspace .\workspace
 ```
 
 For a faster end-to-end smoke test, use `portfolio-analyzer semantic --workspace .\workspace
---quick`. Quick mode uses the same approved model but samples at most five representative objects
-per application and includes every code segment of each selected object. Normal mode covers all
-modules, queries, macros, and form/report code-behind deterministically, reduces those facts to one
-bounded application IR, and makes exactly one profile-generation call per application. Cluster
-labels and target architecture are deterministic by default. An optional portfolio-level
-architecture generation can be explicitly enabled in `semantic.toml`.
+--quick`. Quick mode samples at most five representative objects per application. Normal mode
+covers all modules, queries, macros, and form/report code-behind and reduces those facts to one
+application IR. With the default configuration there are zero model calls; model-backed profiles
+make one call per application only when explicitly enabled.
 Quick-mode state and reports are marked `TEST ONLY`; `semantic-check`, `--semantic-mode require`,
 and review import reject quick results. Each application is checkpointed so an interrupted run can
 resume without regenerating completed profiles. Both modes print wall-clock timestamps plus

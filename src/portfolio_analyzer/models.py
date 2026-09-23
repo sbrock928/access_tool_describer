@@ -241,7 +241,9 @@ class SemanticCoverage(BaseModel):
     code_segments_inspected: int = Field(ge=0)
     object_type_inventory: dict[str, int] = Field(default_factory=dict)
     object_type_inspected: dict[str, int] = Field(default_factory=dict)
-    model_input_kind: Literal["deterministic_application_ir"] = "deterministic_application_ir"
+    model_input_kind: Literal["deterministic_application_ir", "none"] = (
+        "deterministic_application_ir"
+    )
     complete_code_coverage: bool = False
 
 
@@ -283,6 +285,7 @@ class SemanticApplicationProfile(BaseModel):
     primary_archetype: str
     proposed_disposition: str
     confidence: Confidence
+    generation_method: Literal["deterministic", "local_model"] = "local_model"
     findings: list[SemanticFinding] = Field(default_factory=list)
     object_summaries: list[ObjectSemanticSummary] = Field(default_factory=list)
     application_ir_id: str | None = None
@@ -416,6 +419,7 @@ class SemanticRunMetadata(BaseModel):
     generation_parameters: dict[str, object] = Field(default_factory=dict)
     clustering_parameters: dict[str, object] = Field(default_factory=dict)
     approved_services: list[str] = Field(default_factory=list)
+    profile_model_generation: bool = False
     architecture_model_generation: bool = False
     context_hash: str = ""
     generated_at: datetime

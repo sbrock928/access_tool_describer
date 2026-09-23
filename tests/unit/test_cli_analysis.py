@@ -102,6 +102,15 @@ def test_semantic_check_fails_closed_when_approved_model_is_missing(tmp_path: Pa
     workspace = tmp_path / "workspace"
     runner = CliRunner()
     assert runner.invoke(app, ["semantic-init", "--workspace", str(workspace)]).exit_code == 0
+    config = workspace / "semantic" / "semantic.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "model_generation = false",
+            "model_generation = true",
+            1,
+        ),
+        encoding="utf-8",
+    )
 
     result = runner.invoke(
         app,
@@ -111,3 +120,16 @@ def test_semantic_check_fails_closed_when_approved_model_is_missing(tmp_path: Pa
 
     assert result.exit_code != 0
     assert "manifest is missing" in result.output
+
+
+def test_semantic_check_default_does_not_require_model_files(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    runner = CliRunner()
+    assert runner.invoke(app, ["semantic-init", "--workspace", str(workspace)]).exit_code == 0
+
+    result = runner.invoke(app, ["semantic-check", "--workspace", str(workspace)])
+
+    assert result.exit_code == 1
+    assert '"mode": "deterministic"' in result.output
+    assert '"model_inference": false' in result.output
+    assert "manifest is missing" not in result.output

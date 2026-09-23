@@ -890,11 +890,28 @@ def _method_sheet(
     semantic: SemanticPortfolioState | None,
     semantic_status: str,
 ) -> None:
+    model_enabled = bool(
+        semantic
+        and (
+            semantic.metadata.profile_model_generation
+            or semantic.metadata.architecture_model_generation
+        )
+    )
     rows: list[list[object]] = [
         ["Item", "Value"],
         ["Semantic status", semantic_status],
-        ["Interpretation boundary", "AI results are reviewable proposals, not observed facts."],
-        ["Network boundary", "Integrity-verified in-process model; offline inference only."],
+        [
+            "Interpretation boundary",
+            "Semantic results are reviewable proposals, not observed facts.",
+        ],
+        [
+            "Network boundary",
+            (
+                "Integrity-verified in-process model; offline inference only."
+                if model_enabled
+                else "Deterministic local analysis; no model inference or network access."
+            ),
+        ],
         [
             "Confidence policy",
             "System-derived from cited evidence, claims, and extraction coverage.",
@@ -924,6 +941,10 @@ def _method_sheet(
                     f"{metadata.inference_library} {metadata.inference_library_version}",
                 ],
                 ["Similarity version", metadata.deterministic_similarity_version],
+                [
+                    "Application profile synthesis",
+                    "Local model" if metadata.profile_model_generation else "Deterministic",
+                ],
                 [
                     "Architecture synthesis",
                     "Local model" if metadata.architecture_model_generation else "Deterministic",
@@ -1277,7 +1298,7 @@ def _semantic_portfolio_section(
     content: list[object] = [
         Paragraph("Semantic Portfolio Intelligence", styles["ReportHeading"]),
         Paragraph(
-            "AI-generated labels and dispositions are grounded proposals. Observed static "
+            "Semantic labels and dispositions are grounded proposals. Observed static "
             "facts and owner claims remain separately traceable in the workbook.",
             styles["ReportBody"],
         ),

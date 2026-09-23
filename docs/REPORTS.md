@@ -3,7 +3,8 @@
 The primary deliverable is `Portfolio_Intelligence.html`, a self-contained offline report with no
 CDN or network dependency. It includes coverage, search, application drill-down, an observed
 dependency map, a semantic consolidation map, both architecture tracks, and migration waves.
-Drill-down keeps observed sources, owner claims, and AI proposals in visibly separate sections.
+Drill-down keeps observed sources, owner claims, and semantic proposals in visibly separate
+sections and identifies whether each profile used deterministic rules or the optional local model.
 The embedded content-security policy disables all network sources.
 
 `Portfolio_Analysis.xlsx` retains the original detailed sheets and adds a dashboard, Application
