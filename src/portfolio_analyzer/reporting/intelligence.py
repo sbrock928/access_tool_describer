@@ -35,6 +35,14 @@ def write_semantic_datasets(
             [
                 {
                     "euc_name": application_names.get(profile.tool_inventory_id, "Unknown EUC"),
+                    "purpose_provenance": profile.purpose_provenance,
+                    "purpose_claim_ids": " | ".join(profile.purpose_claim_ids),
+                    "observed_behavior": " | ".join(profile.observed_behavior),
+                    "inputs": " | ".join(profile.inputs),
+                    "outputs": " | ".join(profile.outputs),
+                    "secondary_capabilities": " | ".join(profile.secondary_capabilities),
+                    "classification_rationale": profile.classification_rationale,
+                    "classification_evidence_ids": " | ".join(profile.classification_evidence_ids),
                     "summary": profile.summary,
                     "business_purpose": profile.business_purpose,
                     "primary_archetype": profile.primary_archetype,
@@ -98,6 +106,14 @@ def write_semantic_datasets(
                 "open_questions",
                 "evidence_ids",
                 "claim_ids",
+                "purpose_provenance",
+                "purpose_claim_ids",
+                "observed_behavior",
+                "inputs",
+                "outputs",
+                "secondary_capabilities",
+                "classification_rationale",
+                "classification_evidence_ids",
             ],
         )
     )
@@ -107,6 +123,14 @@ def write_semantic_datasets(
             [
                 {
                     "euc_name": application_names.get(item.tool_inventory_id, "Unknown EUC"),
+                    "inventory_object_type_counts": json.dumps(
+                        item.inventory_object_type_counts, sort_keys=True
+                    ),
+                    "inventory_object_names_by_type": json.dumps(
+                        item.inventory_object_names_by_type, sort_keys=True
+                    ),
+                    "inventory_source_ids": " | ".join(item.inventory_source_ids),
+                    "behavior_fact_count": len(item.behavior_facts),
                     "ir_id": item.ir_id,
                     "ir_version": item.ir_version,
                     "code_object_count": item.code_object_count,
@@ -132,6 +156,72 @@ def write_semantic_datasets(
                 "model_input_sha256",
                 "model_input_item_counts",
                 "model_input_omitted_counts",
+                "inventory_object_type_counts",
+                "inventory_object_names_by_type",
+                "inventory_source_ids",
+                "behavior_fact_count",
+            ],
+        )
+    )
+    outputs.append(
+        _csv(
+            directory / "application_behaviors.csv",
+            [
+                {
+                    "euc_name": application_names.get(ir.tool_inventory_id, "Unknown EUC"),
+                    "action": fact.action,
+                    "description": fact.description,
+                    "object_type": fact.object_type,
+                    "object_name": fact.object_name,
+                    "targets": " | ".join(fact.targets),
+                    "datasource_scope": fact.datasource_scope,
+                    "evidence_ids": " | ".join(fact.evidence_ids),
+                }
+                for ir in state.application_irs
+                for fact in ir.behavior_facts
+            ],
+            [
+                "euc_name",
+                "action",
+                "description",
+                "object_type",
+                "object_name",
+                "targets",
+                "datasource_scope",
+                "evidence_ids",
+            ],
+        )
+    )
+    cited_sources = {
+        ref
+        for ir in state.application_irs
+        for fact in ir.behavior_facts
+        for ref in fact.evidence_ids
+    }
+    outputs.append(
+        _csv(
+            directory / "behavior_sources.csv",
+            [
+                {
+                    "euc_name": application_names.get(source.tool_inventory_id, "Unknown EUC"),
+                    "source_id": source.source_id,
+                    "object_type": source.object_type,
+                    "object_name": source.object_name,
+                    "location": source.location or "",
+                    "excerpt": source.excerpt,
+                    "ui_properties": json.dumps(source.ui_properties, sort_keys=True),
+                }
+                for source in state.sources
+                if source.source_id in cited_sources
+            ],
+            [
+                "euc_name",
+                "source_id",
+                "object_type",
+                "object_name",
+                "location",
+                "excerpt",
+                "ui_properties",
             ],
         )
     )
@@ -419,6 +509,7 @@ def write_intelligence_html(
                     "source_id": source.source_id,
                     "object": f"{source.object_type}: {source.object_name}",
                     "excerpt": source.excerpt,
+                    "ui_properties": json.dumps(source.ui_properties, sort_keys=True),
                 }
             )
         for claim in state.claims:
@@ -450,14 +541,22 @@ def write_intelligence_html(
                 "name": names.get(tool_id, "Unknown EUC"),
                 "summary": profile.summary if profile else "Semantic profile unavailable.",
                 "purpose": profile.business_purpose if profile else "Unknown",
+                "purpose_provenance": profile.purpose_provenance if profile else "unconfirmed",
+                "purpose_claim_ids": profile.purpose_claim_ids if profile else [],
+                "observed_behavior": profile.observed_behavior if profile else [],
+                "inputs": profile.inputs if profile else [],
+                "outputs": profile.outputs if profile else [],
+                "secondary_capabilities": profile.secondary_capabilities if profile else [],
+                "classification_rationale": profile.classification_rationale if profile else "",
+                "classification_evidence_ids": profile.classification_evidence_ids
+                if profile
+                else [],
                 "archetype": profile.primary_archetype if profile else "unknown",
                 "confidence": profile.confidence.value if profile else "low",
                 "disposition": mapping.disposition if mapping else "investigate",
                 "wave": mapping.wave if mapping else 0,
                 "review": mapping.review_status if mapping else "pending",
-                "generation_method": (
-                    profile.generation_method if profile else "unavailable"
-                ),
+                "generation_method": (profile.generation_method if profile else "unavailable"),
                 "semantic_coverage": (
                     profile.semantic_coverage.model_dump(mode="json")
                     if profile and profile.semantic_coverage
@@ -725,7 +824,7 @@ input[type=search]{{width:100%;max-width:520px;padding:11px;border:1px solid #ae
 <main><section id="overview" class="active"><h2>Portfolio overview</h2><div class="status"><strong>Semantic status:</strong> {escape(semantic_status)}</div>
 <div class="cards"><div class="card"><span>Applications</span><strong>{inventory_count}</strong></div><div class="card"><span>Analysis complete</span><strong>{complete_count}</strong></div><div class="card"><span>Semantic profiles</span><strong>{profile_count}</strong></div><div class="card"><span>Capability clusters</span><strong>{cluster_count}</strong></div></div>
 <div class="grid2"><div class="panel"><h3>Application archetypes</h3>{archetype_bars}</div><div class="panel"><h3>Proposed migration waves</h3>{wave_bars}</div></div></section>
-<section id="portfolio"><h2>Application portfolio</h2><input id="search" type="search" placeholder="Search name, purpose, archetype, disposition, or summary" aria-label="Search applications"><div class="panel" style="overflow:auto"><table><thead><tr><th>EUC name</th><th>Purpose</th><th>Archetype</th><th>Disposition</th><th>Wave</th><th>Confidence</th></tr></thead><tbody id="apps"></tbody></table></div></section>
+<section id="portfolio"><h2>Application portfolio</h2><input id="search" type="search" placeholder="Search name, purpose, archetype, disposition, or summary" aria-label="Search applications"><div class="panel" style="overflow:auto"><table><thead><tr><th>EUC name</th><th>Observed behavior</th><th>Archetype</th><th>Disposition</th><th>Wave</th><th>Confidence</th></tr></thead><tbody id="apps"></tbody></table></div></section>
 <section id="clusters"><h2>Consolidation map</h2><p class="muted">Lines show qualified semantic similarity. Select an application node to open its evidence-grounded profile.</p>{cluster_svg}</section>
 <section id="dependencies"><h2>Observed dependency map</h2><p class="muted">Edges come from deterministic extraction. Select an application node to open its evidence-grounded profile.</p>{dependency_svg}</section>
 <section id="architecture"><h2>Proposed target architecture</h2><p class="status">All components remain proposals until reviewed. The Microsoft track is limited to the approved service catalog.</p>{architecture_html}</section>
@@ -734,8 +833,8 @@ input[type=search]{{width:100%;max-width:520px;padding:11px;border:1px solid #ae
 <script id="portfolio-data" type="application/json">{safe_json}</script><script>
 const D=JSON.parse(document.getElementById('portfolio-data').textContent);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
 const apps=document.getElementById('apps'),drawer=document.getElementById('drawer'),detail=document.getElementById('detail');
-function rows(q=''){{q=q.toLowerCase();apps.innerHTML=D.applications.filter(a=>Object.values(a).join(' ').toLowerCase().includes(q)).map(a=>`<tr><td><button class="link" data-id="${{esc(a.id)}}">${{esc(a.name)}}</button></td><td>${{esc(a.purpose)}}</td><td>${{esc(a.archetype)}}</td><td>${{esc(a.disposition)}}</td><td>${{a.wave}}</td><td><span class="pill ${{esc(a.confidence)}}">${{esc(a.confidence)}}</span></td></tr>`).join('')}}
-function openApp(id){{const a=D.applications.find(x=>x.id===id);if(!a)return;const c=a.semantic_coverage;const ir=a.application_ir;const method=a.generation_method==='local_model'?'Local model':'Deterministic rules';detail.innerHTML=`<h2>${{esc(a.name)}}</h2><p>${{esc(a.summary)}}</p><dl><dt>Business purpose</dt><dd>${{esc(a.purpose)}}</dd><dt>Archetype</dt><dd>${{esc(a.archetype)}}</dd><dt>Proposed disposition</dt><dd>${{esc(a.disposition)}} · Wave ${{a.wave}}</dd><dt>Profile synthesis</dt><dd>${{method}}</dd><dt>Deterministic code coverage</dt><dd>${{c?(c.complete_code_coverage?'Complete':'Sampled')+' · '+c.code_objects_inspected+'/'+c.code_objects_available+' objects · '+c.code_segments_inspected+'/'+c.code_segments_available+' segments':'Unavailable'}}</dd><dt>Model input</dt><dd>${{a.generation_method==='local_model'&&ir?'One deterministic application IR · '+ir.model_input_characters+' characters · '+esc(ir.ir_id):'None'}}</dd></dl><h3>Observed sources</h3>${{a.observed_sources.map(s=>`<div class="finding"><strong>${{esc(s.object)}}</strong><p>${{esc(s.excerpt)}}</p><small>Observed source · ${{esc(s.source_id)}}</small></div>`).join('')||'<p class="muted">No bounded observed source available.</p>'}}<h3>Owner claims</h3>${{a.owner_claims.map(c=>`<div class="finding"><strong>${{esc(c.field.replaceAll('_',' '))}}</strong><p>${{esc(c.value)}}</p><small>Owner claim · ${{esc(c.claim_id)}} · source ${{esc(c.source)}}</small></div>`).join('')||'<p class="muted">No owner context supplied.</p>'}}<h3>Semantic proposals</h3>${{a.findings.map(f=>`<div class="finding"><strong>${{esc(f.category.replaceAll('_',' '))}}: ${{esc(f.label)}}</strong><p>${{esc(f.description)}}</p><small>${{method}} proposal · ${{esc(f.confidence)}} confidence · ${{esc(f.review_status)}} · evidence ${{esc(f.evidence_ids.join(', '))}}${{f.claim_ids.length?' · claims '+esc(f.claim_ids.join(', ')):''}}</small></div>`).join('')||'<p class="muted">No grounded semantic findings.</p>'}}<h3>Open questions</h3><ul>${{a.open_questions.map(x=>`<li>${{esc(x)}}</li>`).join('')||'<li>None recorded</li>'}}</ul>`;drawer.classList.add('open')}}
+function rows(q=''){{q=q.toLowerCase();apps.innerHTML=D.applications.filter(a=>Object.values(a).join(' ').toLowerCase().includes(q)).map(a=>`<tr><td><button class="link" data-id="${{esc(a.id)}}">${{esc(a.name)}}</button></td><td>${{esc(a.observed_behavior.slice(0,3).join("; ")||a.summary)}}</td><td>${{esc(a.archetype)}}</td><td>${{esc(a.disposition)}}</td><td>${{a.wave}}</td><td><span class="pill ${{esc(a.confidence)}}">${{esc(a.confidence)}}</span></td></tr>`).join('')}}
+function openApp(id){{const a=D.applications.find(x=>x.id===id);if(!a)return;const c=a.semantic_coverage;const ir=a.application_ir;const method=a.generation_method==='local_model'?'Local model':'Deterministic rules';detail.innerHTML=`<h2>${{esc(a.name)}}</h2><p>${{esc(a.summary)}}</p><dl><dt>Business purpose</dt><dd>${{esc(a.purpose)}} · ${{esc(a.purpose_provenance.replaceAll("_"," "))}}${{a.purpose_claim_ids.length?" · claims "+esc(a.purpose_claim_ids.join(", ")):""}}</dd><dt>Archetype</dt><dd>${{esc(a.archetype)}} · Deterministic behavior rules</dd><dt>Why this classification</dt><dd>${{esc(a.classification_rationale)}}<br><small>${{esc(a.classification_evidence_ids.join(", "))}}</small></dd><dt>Known inputs</dt><dd>${{esc(a.inputs.join(", "))||"Not established"}}</dd><dt>Known outputs / write targets</dt><dd>${{esc(a.outputs.join(", "))||"Not established"}}</dd><dt>Secondary capabilities</dt><dd>${{esc(a.secondary_capabilities.join("; "))||"None established"}}</dd><dt>Proposed disposition</dt><dd>${{esc(a.disposition)}} · Wave ${{a.wave}}</dd><dt>Profile synthesis</dt><dd>${{method}}</dd><dt>Deterministic code coverage</dt><dd>${{c?(c.complete_code_coverage?'Complete':'Sampled')+' · '+c.code_objects_inspected+'/'+c.code_objects_available+' objects · '+c.code_segments_inspected+'/'+c.code_segments_available+' segments':'Unavailable'}}</dd><dt>Model input</dt><dd>${{a.generation_method==='local_model'&&ir?'One deterministic application IR · '+ir.model_input_characters+' characters · '+esc(ir.ir_id):'None'}}</dd></dl><h3>Observed behavior</h3><p class="muted">Static definitions and code; these are not proof of execution or an inferred execution order.</p>${{(ir?.behavior_facts||[]).map(f=>`<div class="finding"><strong>${{esc(f.description)}}</strong><p>${{esc(f.object_type)}}: ${{esc(f.object_name)}} · ${{esc(f.datasource_scope.replaceAll("_"," "))}}</p><small>Evidence ${{esc(f.evidence_ids.join(", "))}}</small></div>`).join('')||'<p class="muted">No behavior established.</p>'}}<h3>Observed sources</h3>${{a.observed_sources.map(s=>`<div class="finding"><strong>${{esc(s.object)}}</strong><p>${{esc(s.excerpt)}}</p>${{s.ui_properties!=="{{}}"?`<p>Root UI properties: ${{esc(s.ui_properties)}}</p>`:""}}<small>Observed source · ${{esc(s.source_id)}}</small></div>`).join('')||'<p class="muted">No bounded observed source available.</p>'}}<h3>Owner claims</h3>${{a.owner_claims.map(c=>`<div class="finding"><strong>${{esc(c.field.replaceAll('_',' '))}}</strong><p>${{esc(c.value)}}</p><small>Owner claim · ${{esc(c.claim_id)}} · source ${{esc(c.source)}}</small></div>`).join('')||'<p class="muted">No owner context supplied.</p>'}}<h3>Semantic proposals</h3>${{a.findings.map(f=>`<div class="finding"><strong>${{esc(f.category.replaceAll('_',' '))}}: ${{esc(f.label)}}</strong><p>${{esc(f.description)}}</p><small>${{method}} proposal · ${{esc(f.confidence)}} confidence · ${{esc(f.review_status)}} · evidence ${{esc(f.evidence_ids.join(', '))}}${{f.claim_ids.length?' · claims '+esc(f.claim_ids.join(', ')):''}}</small></div>`).join('')||'<p class="muted">No grounded semantic findings.</p>'}}<h3>Open questions</h3><ul>${{a.open_questions.map(x=>`<li>${{esc(x)}}</li>`).join('')||'<li>None recorded</li>'}}</ul>`;drawer.classList.add('open')}}
 rows();document.getElementById('search').addEventListener('input',e=>rows(e.target.value));document.addEventListener('click',e=>{{const id=e.target.closest('[data-id]')?.dataset.id||e.target.closest('[data-app-id]')?.dataset.appId;if(id)openApp(id)}});document.getElementById('close').onclick=()=>drawer.classList.remove('open');
 document.addEventListener('keydown',e=>{{if(e.key==='Escape')drawer.classList.remove('open')}});
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{{document.querySelectorAll('nav button,main section').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById(b.dataset.tab).classList.add('active')}});

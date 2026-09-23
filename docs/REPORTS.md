@@ -49,3 +49,14 @@ and are omitted from report outputs.
 Reports ignore stale analysis checkpoints from older rule versions or different staged hashes.
 When an EUC has multiple listed Access applications, coverage and application reports include the
 primary filename beside the repeated EUC name so each application remains identifiable.
+
+Application drill-downs and the Application Portfolio sheet include observed behavior, known inputs,
+outputs/write targets, secondary capabilities, purpose provenance, and the classification rationale
+with citations. The HTML portfolio table leads with observed behavior; owner claims remain separate.
+The executive PDF includes up to six alphabetical application behavior examples, with the complete
+portfolio retained in HTML and Excel.
+
+The Application Behavior and Behavior Sources sheets, and matching `application_behaviors.csv` and
+`behavior_sources.csv` datasets, connect behavior facts to redacted source excerpts and root UI
+properties. `semantic_applications.csv` appends the new profile fields; `semantic_application_irs.csv`
+appends full inventory counts/names, source IDs, and behavior counts. Existing columns remain intact.

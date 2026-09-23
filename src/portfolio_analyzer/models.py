@@ -201,6 +201,21 @@ class SemanticSource(BaseModel):
     model_eligible: bool = True
     segment_index: int = Field(default=1, ge=1)
     segment_count: int = Field(default=1, ge=1)
+    ui_properties: dict[str, str] = Field(default_factory=dict)
+
+
+class BehaviorFact(BaseModel):
+    """A static behavior and the objects/evidence that support it, not an execution trace."""
+
+    action: str
+    description: str
+    object_type: str
+    object_name: str
+    targets: list[str] = Field(default_factory=list)
+    datasource_scope: Literal["local", "external", "unresolved", "not_applicable"] = (
+        "not_applicable"
+    )
+    evidence_ids: list[str] = Field(default_factory=list)
 
 
 class SemanticApplicationIR(BaseModel):
@@ -216,6 +231,10 @@ class SemanticApplicationIR(BaseModel):
     code_segment_count: int = Field(ge=0)
     object_type_counts: dict[str, int] = Field(default_factory=dict)
     object_names_by_type: dict[str, list[str]] = Field(default_factory=dict)
+    inventory_object_type_counts: dict[str, int] = Field(default_factory=dict)
+    inventory_object_names_by_type: dict[str, list[str]] = Field(default_factory=dict)
+    inventory_source_ids: list[str] = Field(default_factory=list)
+    behavior_facts: list[BehaviorFact] = Field(default_factory=list)
     procedure_names: list[str] = Field(default_factory=list)
     sql_operations: dict[str, int] = Field(default_factory=dict)
     referenced_objects: list[str] = Field(default_factory=list)
@@ -285,6 +304,14 @@ class SemanticApplicationProfile(BaseModel):
     primary_archetype: str
     proposed_disposition: str
     confidence: Confidence
+    purpose_provenance: str = "unconfirmed"
+    purpose_claim_ids: list[str] = Field(default_factory=list)
+    observed_behavior: list[str] = Field(default_factory=list)
+    inputs: list[str] = Field(default_factory=list)
+    outputs: list[str] = Field(default_factory=list)
+    secondary_capabilities: list[str] = Field(default_factory=list)
+    classification_rationale: str = ""
+    classification_evidence_ids: list[str] = Field(default_factory=list)
     generation_method: Literal["deterministic", "local_model"] = "local_model"
     findings: list[SemanticFinding] = Field(default_factory=list)
     object_summaries: list[ObjectSemanticSummary] = Field(default_factory=list)

@@ -324,3 +324,27 @@ portfolio-analyzer import-review --workspace .\workspace `
 is absent, partial, stale, or incompatible; `off` produces deterministic-only reports. The report
 manifest records semantic provenance and output checksums without persisting an absolute local model
 path or workstation username.
+
+## Behavior profiles (schema v8)
+
+Schema v8 / application IR v2 adds complete extracted object counts and names, redacted root UI
+properties, and evidence-linked behavior facts alongside code-only counts. Profiles include observed
+behavior, known inputs and outputs, secondary capabilities, purpose provenance/claim IDs, and
+classification rationale/evidence IDs. The bounded model payload includes the same inventory and
+behavior facts, with omitted counts; model output and input limits remain unchanged. Deterministic
+behavior rules assign the primary archetype in both modes; optional model purpose/findings remain
+separately identified proposals. No new model or inference runtime is required.
+
+Existing v7 semantic checkpoints are cache-incompatible. Keep the saved extraction/static analysis
+and rerun these commands (substitute your actual workspace):
+
+```powershell
+portfolio-analyzer semantic --workspace .\workspace
+portfolio-analyzer report --workspace .\workspace --semantic-mode require
+```
+
+Re-extraction is only needed if the saved extraction lacks relevant form/report definitions. Do not
+use quick mode for production acceptance. Review the existing stratified gold set after regenerating;
+enter `(none)` in `expected_business_capabilities` to explicitly confirm that no business capability
+is established. An empty cell continues to mean unreviewed. This permits evaluating conservative
+behavior profiles without inventing business capabilities to satisfy the gold-set gate.

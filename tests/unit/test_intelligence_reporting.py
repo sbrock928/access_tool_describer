@@ -407,3 +407,90 @@ def test_synthetic_500_application_graph_and_reports_stay_bounded(tmp_path: Path
     assert html_path.stat().st_size > 100_000
     assert workbook_path.stat().st_size > 10_000
     assert peak < 100 * 1024 * 1024
+
+
+def test_behavior_reports_preserve_provenance_and_resolvable_sources(tmp_path: Path) -> None:
+    import csv
+    import json
+    import re
+
+    from portfolio_analyzer.models import BehaviorFact, SemanticSource
+
+    state = _state()
+    profile = state.applications[0]
+    profile.purpose_provenance = "owner_claim"
+    profile.purpose_claim_ids = ["claim-purpose"]
+    profile.observed_behavior = ["Reads Requests (local datasource)", "Exports spreadsheet data"]
+    profile.inputs = ["Requests"]
+    profile.outputs = ["Spreadsheet export"]
+    profile.secondary_capabilities = ["Exports spreadsheet data"]
+    profile.classification_rationale = "Form contains record editing code."
+    profile.classification_evidence_ids = ["src-form"]
+    state.application_irs[0].behavior_facts = [
+        BehaviorFact(
+            action="entry",
+            description="Form contains record editing code",
+            object_type="form",
+            object_name="Requests",
+            targets=["Requests"],
+            evidence_ids=["src-form"],
+        )
+    ]
+    state.sources = [
+        SemanticSource(
+            source_id="src-form",
+            tool_inventory_id="1",
+            artifact_hash="a" * 64,
+            object_type="form",
+            object_name="Requests",
+            content_sha256="b" * 64,
+            excerpt="Me.Recordset.Update",
+            ui_properties={"recordsource": "Requests"},
+        )
+    ]
+    inventory = [
+        InventoryRecord(
+            tool_inventory_id="1",
+            tool_name="Request Tracker",
+            inventory_filename="requests.accdb",
+            filepath=Path("requests.accdb"),
+        )
+    ]
+    workbook_path = tmp_path / "behavior.xlsx"
+    write_workbook(workbook_path, inventory, [], [], [], [], [], semantic=state)
+    workbook = load_workbook(workbook_path)
+    rows = list(workbook["Application Portfolio"].values)
+    row = dict(zip(rows[0], rows[1], strict=True))
+    assert row["Purpose Provenance"] == "owner_claim"
+    assert row["Classification Rationale"] == profile.classification_rationale
+    assert row["Known Inputs"] == "Requests"
+    assert row["Secondary Capabilities"] == "Exports spreadsheet data"
+    assert workbook["Behavior Sources"]["B2"].value == "src-form"
+    assert workbook["Application Behavior"]["H2"].value == "src-form"
+
+    write_semantic_datasets(tmp_path, state, {"1": "Request Tracker"})
+    with (tmp_path / "semantic_applications.csv").open() as handle:
+        application = next(csv.DictReader(handle))
+    assert application["classification_rationale"] == profile.classification_rationale
+    assert application["purpose_provenance"] == "owner_claim"
+    assert application["purpose_claim_ids"] == "claim-purpose"
+    with (tmp_path / "application_behaviors.csv").open() as handle:
+        behavior = next(csv.DictReader(handle))
+    with (tmp_path / "behavior_sources.csv").open() as handle:
+        source = next(csv.DictReader(handle))
+    assert behavior["evidence_ids"] == source["source_id"] == "src-form"
+    assert json.loads(source["ui_properties"]) == {"recordsource": "Requests"}
+
+    path = tmp_path / "behavior.html"
+    write_intelligence_html(path, inventory, [], state, semantic_status="current")
+    html = path.read_text()
+    payload = re.search(
+        r'<script id="portfolio-data" type="application/json">(.*?)</script>', html, re.S
+    )
+    assert payload is not None
+    application_data = json.loads(payload[1])["applications"][0]
+    assert application_data["classification_rationale"] == application["classification_rationale"]
+    assert application_data["observed_behavior"] == profile.observed_behavior
+    assert application_data["inputs"] == profile.inputs
+    assert "Why this classification" in html
+    assert "Root UI properties" in html

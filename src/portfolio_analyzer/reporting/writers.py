@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
@@ -572,6 +573,14 @@ def _semantic_workbook_sheets(
                 "Review Status",
                 "Summary",
                 "Open Questions",
+                "Purpose Provenance",
+                "Purpose Claim IDs",
+                "Observed Behavior",
+                "Known Inputs",
+                "Known Outputs / Write Targets",
+                "Secondary Capabilities",
+                "Classification Rationale",
+                "Classification Evidence IDs",
             ],
             *[
                 _application_portfolio_row(
@@ -582,6 +591,70 @@ def _semantic_workbook_sheets(
                     mappings.get(tool_id),
                 )
                 for tool_id in unique_ids
+            ],
+        ],
+    )
+    _sheet(
+        workbook,
+        "Application Behavior",
+        [
+            [
+                "EUC Name",
+                "Action",
+                "Observed Behavior",
+                "Object Type",
+                "Object Name",
+                "Targets",
+                "Datasource Scope",
+                "Evidence IDs",
+            ],
+            *[
+                [
+                    names.get(ir.tool_inventory_id, "Unknown EUC"),
+                    fact.action,
+                    fact.description,
+                    fact.object_type,
+                    fact.object_name,
+                    " | ".join(fact.targets),
+                    fact.datasource_scope,
+                    " | ".join(fact.evidence_ids),
+                ]
+                for ir in (semantic.application_irs if semantic else [])
+                for fact in ir.behavior_facts
+            ],
+        ],
+    )
+    cited_sources = {
+        ref
+        for ir in (semantic.application_irs if semantic else [])
+        for fact in ir.behavior_facts
+        for ref in fact.evidence_ids
+    }
+    _sheet(
+        workbook,
+        "Behavior Sources",
+        [
+            [
+                "EUC Name",
+                "Source ID",
+                "Object Type",
+                "Object Name",
+                "Location",
+                "Excerpt",
+                "UI Properties",
+            ],
+            *[
+                [
+                    names.get(source.tool_inventory_id, "Unknown EUC"),
+                    source.source_id,
+                    source.object_type,
+                    source.object_name,
+                    source.location or "",
+                    source.excerpt,
+                    json.dumps(source.ui_properties, sort_keys=True),
+                ]
+                for source in (semantic.sources if semantic else [])
+                if source.source_id in cited_sources
             ],
         ],
     )
@@ -764,6 +837,14 @@ def _application_portfolio_row(
         getattr(target_mapping, "review_status", "pending"),
         getattr(semantic_profile, "summary", "Semantic profile unavailable."),
         " | ".join(getattr(semantic_profile, "open_questions", [])),
+        getattr(semantic_profile, "purpose_provenance", "unconfirmed"),
+        " | ".join(getattr(semantic_profile, "purpose_claim_ids", [])),
+        " | ".join(getattr(semantic_profile, "observed_behavior", [])),
+        " | ".join(getattr(semantic_profile, "inputs", [])),
+        " | ".join(getattr(semantic_profile, "outputs", [])),
+        " | ".join(getattr(semantic_profile, "secondary_capabilities", [])),
+        getattr(semantic_profile, "classification_rationale", ""),
+        " | ".join(getattr(semantic_profile, "classification_evidence_ids", [])),
     ]
 
 
@@ -1345,6 +1426,30 @@ def _semantic_portfolio_section(
             ),
         ]
     )
+    examples = sorted(semantic.applications, key=lambda p: p.tool_name.casefold())[:6]
+    if examples:
+        content.extend(
+            [
+                Spacer(1, 0.16 * inch),
+                Paragraph("Application behavior examples", styles["Heading2"]),
+                Paragraph(
+                    "Up to six applications, alphabetically. Full behavior and evidence appear "
+                    "in the workbook and HTML. Static behavior does not prove execution.",
+                    styles["ReportBody"],
+                ),
+                _table(
+                    [["EUC Name", "Observed behavior and classification"]]
+                    + [
+                        [
+                            application_names.get(p.tool_inventory_id, p.tool_name),
+                            f"{p.primary_archetype}: {p.summary}",
+                        ]
+                        for p in examples
+                    ],
+                    [1.3 * inch, 4.8 * inch],
+                ),
+            ]
+        )
     if semantic.clusters:
         rows = [["Cluster", "EUC Names", "Shared capabilities", "Confidence"]]
         for cluster in semantic.clusters[:12]:
