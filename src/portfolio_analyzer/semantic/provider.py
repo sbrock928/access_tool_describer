@@ -41,6 +41,10 @@ class LocalTransformersProvider:
             os.environ.setdefault("OMP_NUM_THREADS", str(settings.execution.cpu_threads))
             os.environ.setdefault("MKL_NUM_THREADS", str(settings.execution.cpu_threads))
         self.verified: VerifiedModel = verify_model_directory(settings.model.local_path)
+        if (self.verified.manifest.repo_id, self.verified.manifest.revision) != (
+            settings.model.repo_id, settings.model.revision
+        ):
+            raise ValueError("Local model manifest does not match the configured model")
         self._tokenizer: Any = None
         self._model: Any = None
         self._torch: Any = None
@@ -137,7 +141,11 @@ class LocalTransformersProvider:
 
         def render(budget: int) -> Any:
             bounded_user = _bound_untrusted_message(user, budget)
-            prompt = _granite_prompt(system, bounded_user)
+            prompt = (
+                _qwen_prompt(system, bounded_user)
+                if self.settings.model.repo_id.startswith("Qwen/")
+                else _granite_prompt(system, bounded_user)
+            )
             return self._tokenizer(prompt, return_tensors="pt")
 
         largest = render(upper)
@@ -278,4 +286,13 @@ def _granite_prompt(system: str, user: str) -> str:
         f"<|start_of_role|>system<|end_of_role|>{system}<|end_of_text|>\n"
         f"<|start_of_role|>user<|end_of_role|>{user}<|end_of_text|>\n"
         "<|start_of_role|>assistant<|end_of_role|>"
+    )
+
+
+def _qwen_prompt(system: str, user: str) -> str:
+    """Reviewed Qwen ChatML format; no repository template code is executed."""
+    return (
+        f"<|im_start|>system\n{system}<|im_end|>\n"
+        f"<|im_start|>user\n{user}<|im_end|>\n"
+        "<|im_start|>assistant\n"
     )

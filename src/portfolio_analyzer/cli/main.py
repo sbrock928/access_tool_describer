@@ -53,6 +53,7 @@ from portfolio_analyzer.semantic.config import (
     QUICK_MODE_MAX_OBJECTS,
     load_semantic_settings,
     quick_mode_settings,
+    select_model_preset,
     write_semantic_settings_template,
 )
 from portfolio_analyzer.semantic.context import (
@@ -61,7 +62,7 @@ from portfolio_analyzer.semantic.context import (
     load_claims,
     read_gold_set,
 )
-from portfolio_analyzer.semantic.model_store import APPROVED_MODEL, acquire_approved_model
+from portfolio_analyzer.semantic.model_store import acquire_approved_model, approved_model
 from portfolio_analyzer.semantic.pipeline import (
     evaluate_gold_set,
     preflight_semantic_provider,
@@ -821,6 +822,24 @@ def semantic_init(workspace: Path = typer.Option(...)) -> None:
     )
 
 
+@app.command("semantic-model-select")
+def semantic_model_select(
+    workspace: Path = typer.Option(...), model: str = typer.Option(...),
+) -> None:
+    """Select qwen (1.5B CPU) or granite; enable local profiles with a 768-token budget."""
+    path = _semantic_config_path(_settings(workspace))
+    if not path.exists():
+        raise typer.BadParameter("No semantic configuration found. Run 'semantic-init' first.")
+    try:
+        selected = select_model_preset(path, model)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(f"Selected {selected.model.repo_id}; enabled local model profiles on CPU.")
+    typer.echo(
+        "Profile output budget: 768 tokens. Download the selected model, then rerun semantic."
+    )
+
+
 @app.command("semantic-model-download")
 def semantic_model_download(workspace: Path = typer.Option(...)) -> None:
     """Acquire the allowlisted model at its immutable Hugging Face revision."""
@@ -830,11 +849,15 @@ def semantic_model_download(workspace: Path = typer.Option(...)) -> None:
         raise typer.BadParameter("No semantic configuration found. Run 'semantic-init' first.")
     semantic_settings = load_semantic_settings(config_path)
     typer.echo(
-        f"Downloading approved model {APPROVED_MODEL.repo_id}@{APPROVED_MODEL.revision} "
+        f"Downloading approved model {semantic_settings.model.repo_id}"
+        f"@{semantic_settings.model.revision} "
         f"to {semantic_settings.model.local_path}"
     )
     try:
-        manifest = acquire_approved_model(semantic_settings.model.local_path)
+        manifest = acquire_approved_model(
+            semantic_settings.model.local_path,
+            approved_model(semantic_settings.model.repo_id, semantic_settings.model.revision),
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         raise typer.BadParameter(f"Approved model acquisition failed: {exc}") from exc
     typer.echo(
@@ -1216,6 +1239,8 @@ def report(
         semantic_state,
         semantic_status=semantic_status,
         dependencies=dependencies,
+        datasources=datasources,
+        artifacts=artifacts,
         themes=themes,
     )
     produced.append(html_path)

@@ -2,7 +2,7 @@
 
 The primary deliverable is `Portfolio_Intelligence.html`, a self-contained offline report with no
 CDN or network dependency. It includes coverage, search, application drill-down, an observed
-dependency map, a semantic consolidation map, both architecture tracks, and migration waves.
+dependency network, evidence-supported reuse candidates, both architecture tracks, and migration waves.
 Drill-down keeps observed sources, owner claims, and semantic proposals in visibly separate
 sections and identifies whether each profile used deterministic rules or the optional local model.
 The embedded content-security policy disables all network sources.
@@ -92,3 +92,34 @@ receives these groups and can propose different names and designs, subject to ev
 and the approved platform-service list. It does not use a role-to-product lookup table. Model
 proposals are shown separately from deterministic discoveries; every included application needs
 its own supporting references. Existing model defaults and generation limits remain unchanged.
+
+
+## Capability discovery, reuse and dependency exploration
+
+The overview exposes business capability and workflow interpretations from semantic findings,
+separately from technical roles. Applications can appear under several labels. Each label includes
+affected applications, evidence and owner-claim references, confidence and review state. Rejected
+or uncited findings are excluded. Labels are open vocabulary, with exact case-insensitive matching;
+this report does not silently merge different labels that might be synonyms. Model generation
+must be enabled to obtain model-authored labels; the report cannot invent missing interpretations.
+Existing semantic-findings CSV/Excel exports retain the same labels and descriptions.
+
+“Reuse candidates” replaces the misleading singleton consolidation chart. It shows shared evidence,
+affected applications, source locations, candidate solutions, alternatives and owner questions.
+Applications without evidence-supported overlap stay ungrouped. Pairwise semantic similarity is
+available separately and is not presented as a dependency or a deployment decision.
+
+The dependency network aggregates references into one node per application and scoped resource.
+Confirmed server/database/schema identities and shared UNC files or endpoints can connect apps;
+local tables and unresolved names stay within their application/artifact scope. Selecting a linked
+resource retains referenced tables, source queries/forms, read/write operations, paths and evidence
+IDs. Static UI facts are joined through their artifact and linked-table alias when unambiguous.
+Runtime libraries and analysis staging files are hidden by default and never generate shared-service
+candidates. The graph includes all records, not only the first 100.
+
+Use the application selector, shared-resource toggle and search to isolate a manageable neighborhood.
+Application focus includes other consumers of its resources. Click a resource or line for evidence;
+click an application for its profile. Drag nodes, pan, zoom, or fit the view. Shared dependency
+reviews suggest comparing ownership, data writes, contracts and lifecycle requirements; they do not
+assert that a common database requires a microservice. Missing dependencies remain possible where
+extraction is incomplete or references are dynamic.

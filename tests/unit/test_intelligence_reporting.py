@@ -280,7 +280,7 @@ def test_semantic_reports_are_offline_traceable_and_reviewable(tmp_path: Path) -
     assert "default-src 'none'" in html
     assert "https://" not in html
     assert "Request Tracker" in html
-    assert "Observed dependency map" in html
+    assert "Observed dependency network" in html
     assert "Request table" in html
     assert "Observed sources" in html
     assert "Deterministic code coverage" in html
@@ -497,3 +497,133 @@ def test_behavior_reports_preserve_provenance_and_resolvable_sources(tmp_path: P
     assert application_data["inputs"] == profile.inputs
     assert "Why this classification" in html
     assert "Root UI properties" in html
+
+
+def test_offline_explorer_interactions_and_capability_overlap(tmp_path: Path) -> None:
+    import json
+    import re
+    import shutil
+    import subprocess
+
+    import pytest
+
+    from portfolio_analyzer.models import Datasource, Evidence, PortfolioTheme
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is needed for the generated report JavaScript contract test")
+    state = _state()
+    state.applications[0].findings.append(
+        SemanticFinding(
+            tool_inventory_id="1",
+            category="workflow",
+            label="Record reconciliation",
+            description="Compares persisted records",
+            evidence_ids=["ev-1"],
+        )
+    )
+    state.applications[0].findings.append(
+        SemanticFinding(
+            tool_inventory_id="1",
+            category="business_capability",
+            label="Rejected label",
+            description="Wrong interpretation",
+            evidence_ids=["ev-1"],
+            review_status="rejected",
+        )
+    )
+    other = state.applications[0].model_copy(deep=True)
+    other.tool_inventory_id = "2"
+    other.tool_name = "Other App"
+    other.findings = []
+    state.applications.append(other)
+    inventory = [
+        InventoryRecord(
+            tool_inventory_id=p.tool_inventory_id,
+            tool_name=p.tool_name,
+            inventory_filename="app.accdb",
+            filepath=Path("app.accdb"),
+        )
+        for p in state.applications
+    ]
+    sources = [
+        Datasource(
+            tool_inventory_id=app,
+            platform="SQL Server",
+            server="sql01",
+            database="Records",
+            object_name="Requests",
+            operation=op,
+            evidence=[
+                Evidence(
+                    tool_inventory_id=app,
+                    artifact_path="app.accdb",
+                    object_type="query",
+                    object_name="Requests",
+                    location="SQL line 1",
+                    text="Read requests",
+                )
+            ],
+        )
+        for app, op in [("1", "READ"), ("2", "UPDATE")]
+    ]
+    sources.append(
+        Datasource(
+            tool_inventory_id="1",
+            platform="Access (local)",
+            object_name="LocalQueue",
+            operation="READ",
+        )
+    )
+    dependencies = [
+        Dependency(
+            tool_inventory_id=app,
+            source="DAO",
+            target="dao.dll",
+            dependency_type="access_vba_reference",
+        )
+        for app in ("1", "2")
+    ]
+    themes = [
+        PortfolioTheme(
+            theme_id="shared-records",
+            title="Shared records",
+            category="shared external data",
+            observed_pattern="Shared database",
+            proposed_solution="Review record ownership",
+            affected_tool_ids=["1", "2"],
+        )
+    ]
+    path = tmp_path / "explorer.html"
+    write_intelligence_html(
+        path,
+        inventory,
+        [],
+        state,
+        semantic_status="current",
+        datasources=sources,
+        dependencies=dependencies,
+        themes=themes,
+    )
+    data = json.loads(
+        re.search(
+            r'<script id="portfolio-data" type="application/json">(.*?)</script>',
+            path.read_text(),
+            re.S,
+        ).group(1)
+    )
+    assert {g["label"] for g in data["capability_groups"]} == {
+        "Request intake",
+        "Record reconciliation",
+    }
+    result = subprocess.run(
+        [
+            node,
+            str(Path(__file__).parents[1] / "fixtures" / "report_explorer_check.cjs"),
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

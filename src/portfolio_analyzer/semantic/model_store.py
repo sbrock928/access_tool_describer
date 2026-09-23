@@ -83,7 +83,7 @@ class ApprovedModel(BaseModel):
         return self
 
 
-# This is the only production model. It is published by IBM, Apache-2.0 licensed,
+# This is the original production model. It is published by IBM, Apache-2.0 licensed,
 # Transformers-native, approximately 5 GB in BF16, and has safetensors-only weights.
 # Sizes and SHA-256 values were independently reviewed against the pinned Hugging Face
 # revision on 2026-09-22. The two LFS digests are the publisher-hosted LFS object IDs.
@@ -159,6 +159,72 @@ APPROVED_MODEL = ApprovedModel(
 )
 
 
+# Publisher metadata and small-file hashes verified at this immutable revision.
+# Weight SHA-256 is the publisher LFS object ID; verified again after acquisition.
+QWEN_MODEL = ApprovedModel(
+    repo_id="Qwen/Qwen2.5-1.5B-Instruct",
+    revision="989aa7980e4cf806f80c7fef2b1adb7bc71aa306",
+    local_identifier="qwen2.5-1.5b-instruct",
+    license="Apache-2.0",
+    architecture="Qwen2ForCausalLM",
+    model_type="qwen2",
+    artifacts=(
+        ApprovedArtifact(
+            path="LICENSE",
+            size_bytes=11343,
+            sha256="832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+        ),
+        ApprovedArtifact(
+            path="README.md",
+            size_bytes=4917,
+            sha256="2e1bcd8bd964728a820be709fa0f7b9dd54817a94fd2254c535df70c5e67fada",
+        ),
+        ApprovedArtifact(
+            path="config.json",
+            size_bytes=660,
+            sha256="98d2ff8cc47488d08a2b0b3acf4eb99ef210779b42bd48605f6b8e36acdbf670",
+        ),
+        ApprovedArtifact(
+            path="generation_config.json",
+            size_bytes=242,
+            sha256="e558847a8b4402616f1273797b015104dc266fe4b520056fca88823ba8f8ebe6",
+        ),
+        ApprovedArtifact(
+            path="merges.txt",
+            size_bytes=1671839,
+            sha256="599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+        ),
+        ApprovedArtifact(
+            path="model.safetensors",
+            size_bytes=3087467144,
+            sha256="dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee",
+        ),
+        ApprovedArtifact(
+            path="tokenizer.json",
+            size_bytes=7031645,
+            sha256="c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
+        ),
+        ApprovedArtifact(
+            path="tokenizer_config.json",
+            size_bytes=7305,
+            sha256="5b5d4f65d0acd3b2d56a35b56d374a36cbc1c8fa5cf3b3febbbfabf22f359583",
+        ),
+        ApprovedArtifact(
+            path="vocab.json",
+            size_bytes=2776833,
+            sha256="ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+        ),
+    ),
+)
+
+
+def approved_model(repo_id: str, revision: str) -> ApprovedModel:
+    for model in (APPROVED_MODEL, QWEN_MODEL):
+        if model.repo_id == repo_id and model.revision == revision:
+            return model
+    raise ValueError("repository and revision must match the approved-model allowlist")
+
+
 class ModelFileRecord(BaseModel):
     path: str
     size_bytes: int = Field(ge=0)
@@ -204,17 +270,16 @@ class ModelManifest(BaseModel):
     def validate_identity(self) -> ModelManifest:
         if self.schema_version != MANIFEST_SCHEMA_VERSION:
             raise ValueError("unsupported model manifest schema")
-        if self.repo_id != APPROVED_MODEL.repo_id:
-            raise ValueError("model manifest repository is not approved")
-        if self.revision != APPROVED_MODEL.revision:
+        model = approved_model(self.repo_id, self.revision)
+        if self.revision != model.revision:
             raise ValueError(
                 "model manifest revision does not match the approved immutable revision"
             )
-        if self.license != APPROVED_MODEL.license:
+        if self.license != model.license:
             raise ValueError("model manifest license does not match the approved model")
-        if self.architecture != APPROVED_MODEL.architecture:
+        if self.architecture != model.architecture:
             raise ValueError("model manifest architecture does not match the approved model")
-        if self.model_type != APPROVED_MODEL.model_type:
+        if self.model_type != model.model_type:
             raise ValueError("model manifest type does not match the approved model")
         if len({item.path for item in self.files}) != len(self.files):
             raise ValueError("model manifest contains duplicate file records")
@@ -226,8 +291,13 @@ class VerifiedModel(BaseModel):
     manifest: ModelManifest
 
 
-def acquire_approved_model(destination: Path) -> ModelManifest:
+def acquire_approved_model(
+    destination: Path,
+    model: ApprovedModel | None = None,
+) -> ModelManifest:
     """Download only allowlisted files at the approved SHA, then verify and publish atomically."""
+    model = model or APPROVED_MODEL
+    model = approved_model(model.repo_id, model.revision)
     if destination.exists():
         raise FileExistsError(
             f"Approved model destination already exists: {destination}. "
@@ -247,20 +317,20 @@ def acquire_approved_model(destination: Path) -> ModelManifest:
     )
     try:
         snapshot_download(
-            repo_id=APPROVED_MODEL.repo_id,
-            revision=APPROVED_MODEL.revision,
+            repo_id=model.repo_id,
+            revision=model.revision,
             local_dir=staging,
-            allow_patterns=list(APPROVED_MODEL.expected_files),
+            allow_patterns=list(model.expected_files),
             token=False,
             force_download=True,
         )
         cache_metadata = staging / ".cache"
         if cache_metadata.exists():
             shutil.rmtree(cache_metadata)
-        _validate_file_inventory(staging, include_manifest=False)
-        _validate_approved_artifact_digests(staging)
-        _validate_transformers_configuration(staging)
-        manifest = _build_manifest(staging)
+        _validate_file_inventory(staging, include_manifest=False, model=model)
+        _validate_approved_artifact_digests(staging, model)
+        _validate_transformers_configuration(staging, model)
+        manifest = _build_manifest(staging, model)
         _write_manifest(staging / "model_manifest.json", manifest)
         verify_model_directory(staging)
         staging.replace(destination)
@@ -282,16 +352,17 @@ def verify_model_directory(directory: Path) -> VerifiedModel:
         manifest = ModelManifest.model_validate(raw)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"Approved model manifest is invalid: {manifest_path}") from exc
+    model = approved_model(manifest.repo_id, manifest.revision)
     expected_manifest_hash = _manifest_digest(manifest)
     if manifest.manifest_sha256 != expected_manifest_hash:
         raise ValueError("Approved model manifest hash mismatch")
-    _validate_file_inventory(directory, include_manifest=True)
-    expected_names = set(APPROVED_MODEL.expected_files)
+    _validate_file_inventory(directory, include_manifest=True, model=model)
+    expected_names = set(model.expected_files)
     manifest_names = {item.path for item in manifest.files}
     if manifest_names != expected_names:
         raise ValueError("Approved model manifest file inventory does not match the allowlist")
     by_name = {item.path: item for item in manifest.files}
-    approved_by_name = APPROVED_MODEL.artifacts_by_path
+    approved_by_name = model.artifacts_by_path
     for name in sorted(expected_names):
         path = directory / name
         if path.is_symlink() or not path.is_file():
@@ -304,25 +375,26 @@ def verify_model_directory(directory: Path) -> VerifiedModel:
             raise ValueError(f"Approved model file size mismatch: {name}")
         if _sha256(path) != approved.sha256:
             raise ValueError(f"Approved model checksum mismatch: {name}")
-    _validate_transformers_configuration(directory)
+    _validate_transformers_configuration(directory, model)
     return VerifiedModel(directory=directory.resolve(), manifest=manifest)
 
 
-def _build_manifest(directory: Path) -> ModelManifest:
+def _build_manifest(directory: Path, model: ApprovedModel | None = None) -> ModelManifest:
+    model = model or APPROVED_MODEL
     records = [
         ModelFileRecord(
             path=name,
             size_bytes=(directory / name).stat().st_size,
             sha256=_sha256(directory / name),
         )
-        for name in sorted(APPROVED_MODEL.expected_files)
+        for name in sorted(model.expected_files)
     ]
     manifest = ModelManifest(
-        repo_id=APPROVED_MODEL.repo_id,
-        revision=APPROVED_MODEL.revision,
-        license=APPROVED_MODEL.license,
-        architecture=APPROVED_MODEL.architecture,
-        model_type=APPROVED_MODEL.model_type,
+        repo_id=model.repo_id,
+        revision=model.revision,
+        license=model.license,
+        architecture=model.architecture,
+        model_type=model.model_type,
         acquired_at=datetime.now(UTC),
         files=records,
         manifest_sha256="0" * 64,
@@ -345,8 +417,14 @@ def _write_manifest(path: Path, manifest: ModelManifest) -> None:
     )
 
 
-def _validate_file_inventory(directory: Path, *, include_manifest: bool) -> None:
-    allowed = set(APPROVED_MODEL.expected_files)
+def _validate_file_inventory(
+    directory: Path,
+    *,
+    include_manifest: bool,
+    model: ApprovedModel | None = None,
+) -> None:
+    model = model or APPROVED_MODEL
+    allowed = set(model.expected_files)
     if include_manifest:
         allowed.add("model_manifest.json")
     actual: set[str] = set()
@@ -370,9 +448,13 @@ def _validate_file_inventory(directory: Path, *, include_manifest: bool) -> None
         raise ValueError("Approved model contains no safetensors weights")
 
 
-def _validate_approved_artifact_digests(directory: Path) -> None:
+def _validate_approved_artifact_digests(
+    directory: Path,
+    model: ApprovedModel | None = None,
+) -> None:
     """Reject upstream or transport bytes that differ from the reviewed artifact set."""
-    for artifact in APPROVED_MODEL.artifacts:
+    model = model or APPROVED_MODEL
+    for artifact in model.artifacts:
         path = directory / artifact.path
         if path.stat().st_size != artifact.size_bytes:
             raise ValueError(f"Downloaded model file has an unapproved size: {artifact.path}")
@@ -380,42 +462,45 @@ def _validate_approved_artifact_digests(directory: Path) -> None:
             raise ValueError(f"Downloaded model file has an unapproved SHA-256: {artifact.path}")
 
 
-def _validate_transformers_configuration(directory: Path) -> None:
+def _validate_transformers_configuration(
+    directory: Path,
+    model: ApprovedModel | None = None,
+) -> None:
+    model = model or APPROVED_MODEL
     config_path = directory / "config.json"
     try:
         config: dict[str, Any] = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError("Approved model config.json is missing or invalid") from exc
-    if config.get("model_type") != APPROVED_MODEL.model_type:
+    if config.get("model_type") != model.model_type:
         raise ValueError("Approved model config has the wrong model_type")
-    if config.get("architectures") != [APPROVED_MODEL.architecture]:
+    if config.get("architectures") != [model.architecture]:
         raise ValueError("Approved model config has an unexpected architecture")
     if config.get("auto_map") or config.get("custom_pipelines") or config.get("trust_remote_code"):
         raise ValueError("Approved model config requests custom or remote executable code")
     tokenizer_path = directory / "tokenizer_config.json"
     try:
-        tokenizer_config: dict[str, Any] = json.loads(
-            tokenizer_path.read_text(encoding="utf-8")
-        )
+        tokenizer_config: dict[str, Any] = json.loads(tokenizer_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError("Approved model tokenizer_config.json is missing or invalid") from exc
     if tokenizer_config.get("auto_map") or tokenizer_config.get("trust_remote_code"):
         raise ValueError("Approved tokenizer config requests custom or remote executable code")
-    if tokenizer_config.get("tokenizer_class") not in {
-        None,
-        "GPT2Tokenizer",
-        "GPT2TokenizerFast",
-    }:
+    allowed_tokenizers = (
+        {"Qwen2Tokenizer", "Qwen2TokenizerFast"}
+        if model.model_type == "qwen2"
+        else {None, "GPT2Tokenizer", "GPT2TokenizerFast"}
+    )
+    if tokenizer_config.get("tokenizer_class") not in allowed_tokenizers:
         raise ValueError("Approved tokenizer config has an unexpected tokenizer class")
+    if "model.safetensors.index.json" not in model.expected_files:
+        return  # Unsharded safetensors are checked by inventory and pinned digest validation.
     index_path = directory / "model.safetensors.index.json"
     try:
         index: dict[str, Any] = json.loads(index_path.read_text(encoding="utf-8"))
         weight_names = set(index["weight_map"].values())
     except (OSError, json.JSONDecodeError, KeyError, AttributeError) as exc:
         raise ValueError("Approved model safetensors index is missing or invalid") from exc
-    expected_weights = {
-        name for name in APPROVED_MODEL.expected_files if name.endswith(".safetensors")
-    }
+    expected_weights = {name for name in model.expected_files if name.endswith(".safetensors")}
     if weight_names != expected_weights:
         raise ValueError("Approved model weight index references unexpected files")
 

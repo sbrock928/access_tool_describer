@@ -54,12 +54,33 @@ portfolio-analyzer semantic-check --workspace .\workspace
 portfolio-analyzer report --workspace .\workspace --semantic-mode auto
 ```
 
-Local-model profile generation remains available as an explicit opt-in. Install the semantic extras,
-run `semantic-model-download`, then set `[profile] model_generation = true` in `semantic.toml`.
-Setting `[microsoft] model_generation = true` separately enables model-authored architecture
-synthesis. The approved model is `ibm-granite/granite-3.3-2b-instruct`, pinned to an immutable
-commit. Acquisition is the only network-enabled phase; every allowlisted file must match a
-code-reviewed size and SHA-256, and inference has no hosted fallback.
+Local-model profiles can propose several business capabilities and workflows per application,
+using open-ended labels with evidence citations. For a Windows CPU workstation with 16 GB RAM,
+start a reviewed trial with the smaller **Qwen2.5 1.5B Instruct** preset. Its approximately 3.09 GB
+BF16 weights are smaller than Granite's approximately 5 GB weights; runtime memory and speed
+still need measurement on your hardware. This is not a measured accuracy recommendation.
+
+```powershell
+python -m pip install -c requirements\semantic-py313.lock -e ".[semantic]"
+portfolio-analyzer semantic-model-select --workspace .\workspace --model qwen
+portfolio-analyzer semantic-model-download --workspace .\workspace
+portfolio-analyzer semantic --workspace .\workspace
+portfolio-analyzer report --workspace .\workspace --semantic-mode require
+```
+
+Run `semantic-init` first if the workspace has no semantic configuration. Model selection enables
+local profile generation on CPU and sets a 768-token profile budget; it preserves other settings.
+Use `--model granite` to select the existing Granite option. New default configurations remain
+model-free. Setting `[microsoft] model_generation = true` separately enables model-authored
+architecture proposals. Both models are pinned to immutable revisions with verified file sizes
+and SHA-256 hashes. Acquisition is the only network-enabled phase; inference has no hosted fallback.
+
+The report now shows overlapping capability interpretations, evidence-supported reuse candidates,
+and an interactive dependency network with resource/operation/source drill-down. Shared resources
+suggest boundary reviews, not automatic microservice deployment decisions.
+
+After this upgrade, rerun `semantic` and `report` using saved extraction and analysis results.
+There is no new extraction or deterministic `analyze` requirement for these report/model changes.
 
 Use `--semantic-mode require` in controlled production runs, or `off` for deterministic-only
 reporting. Reviewers can enter `Accept`, `Edit`, or `Reject` in the workbook's `Review Queue` and

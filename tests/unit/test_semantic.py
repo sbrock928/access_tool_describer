@@ -648,7 +648,7 @@ def test_architecture_model_generation_is_explicitly_opt_in() -> None:
     assert state.metadata.architecture_model_generation is True
 
 
-def test_existing_cpu_config_is_capped_to_compact_profile_output() -> None:
+def test_configured_profile_budget_is_honored_within_synthesis_cap() -> None:
     inventory, artifacts, extracted, evidence, coverage = _portfolio()
     base = _settings()
     settings = base.model_copy(
@@ -673,8 +673,8 @@ def test_existing_cpu_config_is_capped_to_compact_profile_output() -> None:
         for schema_name, limit, _required in provider.output_limits
         if schema_name == "semantic_application_profile"
     ]
-    assert profile_limits == [256]
-    assert state.metadata.generation_parameters["effective_profile_output_tokens"] == 256
+    assert profile_limits == [512]
+    assert state.metadata.generation_parameters["effective_profile_output_tokens"] == 512
     assert state.metadata.generation_parameters["effective_profile_characters"] == 12000
 
 
@@ -1322,3 +1322,35 @@ def test_optional_model_receives_behavior_but_cannot_override_observed_role() ->
     assert all("transactional workflow" in {r.role for r in p.roles} for p in state.applications)
     assert all(p.classification_evidence_ids for p in state.applications)
     assert all(ir.model_input_characters <= 12000 for ir in state.application_irs)
+
+
+def test_model_can_propose_several_free_form_capabilities_with_reasons() -> None:
+    class DetailedProvider(FakeProvider):
+        def complete_json(self, **kwargs: Any) -> dict[str, Any]:
+            output = super().complete_json(**kwargs)
+            if kwargs["schema_name"] == "semantic_application_profile":
+                first = output["f"][0]
+                first["l"] = "Request validation"
+                first["r"] = "Checks required request fields before persisting records."
+                output["f"].append(
+                    {**first, "l": "Exception reconciliation", "r": "Compares exceptions."}
+                )
+            return output
+
+    inventory, artifacts, extracted, evidence, coverage = _portfolio()
+    state = run_semantic_pipeline(
+        _settings(),
+        DetailedProvider(),
+        inventory[:1],
+        artifacts[:1],
+        extracted[:1],
+        [e for e in evidence if e.tool_inventory_id == "1"],
+        [],
+        coverage[:1],
+        [],
+    )
+    findings = {f.label: f for f in state.applications[0].findings}
+    assert {"Request validation", "Exception reconciliation"} <= findings.keys()
+    assert "Hallucinated capability" not in findings
+    assert findings["Request validation"].description.startswith("Checks required")
+    assert findings["Exception reconciliation"].evidence_ids

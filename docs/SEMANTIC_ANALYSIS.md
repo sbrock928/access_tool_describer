@@ -27,27 +27,35 @@ option is enabled, the model is loaded once per semantic process and reused acro
 
 ## Approved model and selection
 
-The production allowlist contains exactly one model:
+The allowlist contains two immutable, native Transformers models:
 
-- repository: `ibm-granite/granite-3.3-2b-instruct`;
-- revision: `707f574c62054322f6b5b04b6d075f0a8f05e0f0`;
-- publisher: IBM Granite;
-- license: Apache-2.0;
-- architecture: `GraniteForCausalLM`, supported natively by the pinned Transformers runtime;
-- weights: two BF16 safetensors shards, approximately 5 GB total;
-- intended strengths: instruction following, classification, extraction, summarization, and
-  function-style output.
+| Preset | Repository | Revision | Architecture | BF16 weights |
+| --- | --- | --- | --- | --- |
+| `granite` | `ibm-granite/granite-3.3-2b-instruct` | `707f574c62054322f6b5b04b6d075f0a8f05e0f0` | `GraniteForCausalLM` | approximately 5.07 GB |
+| `qwen` | `Qwen/Qwen2.5-1.5B-Instruct` | `989aa7980e4cf806f80c7fef2b1adb7bc71aa306` | `Qwen2ForCausalLM` | approximately 3.09 GB |
 
-Granite 3.3 2B was selected as a maintainable CPU-capable baseline from an established publisher
-with a permissive license, normal Transformers loading, no repository Python requirement, and
-safetensors weights. SmolLM2 1.7B is lighter and Apache-2.0 but has a weaker structured-analysis
-quality ceiling. Qwen 2.5 3B has attractive JSON behavior but its model repository uses the Qwen
-Research license. Mistral 7B Instruct is Apache-2.0 and capable, but its roughly 14.5 GB BF16 weight
-set is materially less practical for the required workstation baseline.
+Both are Apache-2.0 licensed and use safetensors. Qwen is the smaller candidate for the Windows
+CPU / 16 GB RAM baseline; actual peak memory, runtime, valid-JSON rate and portfolio quality must
+be measured internally. No claim of improved accuracy over Granite has been established.
+The [publisher's Qwen model card](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct) documents 1.54B
+parameters and structured output support. This preset uses native BF16 weights, not a quantized
+runtime. Disk weight size is not a peak-RAM estimate.
 
-Changing the production model is a code-reviewed allowlist change, not a runtime configuration
-feature. A repository that requires `trust_remote_code=True`, custom Python, unsafe serialized
-weights, or an unclear license is ineligible.
+Select an existing allowlisted model with:
+
+```powershell
+portfolio-analyzer semantic-model-select --workspace .\workspace --model qwen
+# Or use --model granite to switch back.
+```
+
+This explicit command enables `[profile] model_generation`, selects CPU, sets the profile output
+budget to 768, and replaces the model repository/revision/path with its preset. Other configuration
+values are preserved, but TOML comments are rewritten. New `semantic-init` configurations still use
+deterministic profiles by default. Switching models changes provenance and cache fingerprints;
+rerun semantic analysis and reporting, using saved extraction and deterministic analysis.
+
+Adding another model or revision requires a reviewed allowlist change. Repositories requiring
+remote code, custom Python or unsafe serialized weights are ineligible.
 
 ### Security approval record
 
@@ -59,6 +67,14 @@ code execution on load, and VirusTotal reported 0/75 and 0/77 detections. Some s
 `unscanned`, so these third-party results are supporting evidence rather than a security guarantee,
 consistent with [Hugging Face's scanner guidance](https://huggingface.co/docs/hub/security-malware).
 Reapproval of another model or revision must repeat and document this review.
+
+For Qwen, the pinned model card, Apache-2.0 license, native architecture and tokenizer configuration,
+file inventory, small-file SHA-256 hashes, and publisher weight digest were checked on 2026-09-23.
+The [pinned file inventory](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/tree/989aa7980e4cf806f80c7fef2b1adb7bc71aa306)
+reported all nine allowlisted files as “Safe”. The [pinned safetensors page](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/blob/989aa7980e4cf806f80c7fef2b1adb7bc71aa306/model.safetensors)
+reported “Safe” and the compiled weight digest. This review did not download or execute the
+3.09 GB weights, independently scan them, or benchmark inference; acquisition validates their
+bytes against the pinned digest. Treat upstream scan status as supporting evidence only.
 
 The approved size and SHA-256 of every allowlisted file are compiled into the analyzer. The weight
 digests match the publisher-hosted LFS object IDs; the remaining hashes were calculated from the
@@ -112,8 +128,10 @@ provider explicitly enables the generation key/value cache and greedy single-bea
 GPU-equipped installations can change `device` to `auto` or `cuda` after validating the
 environment.
 
-Older configurations that specify larger profile prompt or output limits are automatically capped
-at 12,000 characters and 256 output tokens; effective values are recorded in semantic provenance.
+Profile input is capped at 12,000 characters and output at 1,024 tokens; smaller configured limits
+are honored. Existing/default 256-token configurations remain at 256 until explicitly changed.
+Model presets select 768 tokens to allow several capability descriptions with citations. Quick
+mode stays capped at 256. Effective values are recorded in semantic provenance.
 Set `[profile] model_generation = true` only when model-authored profiles justify the substantial
 CPU inference time. This changes the default from zero model calls to one call per application.
 Set `[microsoft] model_generation = true` only when the optional model-authored architecture is
@@ -129,7 +147,7 @@ portfolio-analyzer semantic-model-download --workspace .\workspace
 
 This command alone imports `huggingface_hub` and calls `snapshot_download()` with the immutable
 revision and an exact filename allowlist. It downloads only the model card, configuration,
-tokenizer files, safetensors index, and safetensors shards. It does not read application inventory,
+tokenizer files, safetensors weights, and an index when the selected model is sharded. It does not read application inventory,
 evidence, prompts, or semantic state, and it never uploads data.
 
 The command rejects an existing destination instead of modifying it, verifies every file against
@@ -161,7 +179,7 @@ unexpected files stop inference. The analyzer never repairs or redownloads a mod
 Inference sets `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_DATASETS_OFFLINE=1`, and telemetry
 disable flags before importing the ML runtime. Both tokenizer and model receive a local filesystem
 path, `local_files_only=True`, and `trust_remote_code=False`; the model also receives
-`use_safetensors=True`. No Hugging Face repository ID is passed to inference. The reviewed Granite
+`use_safetensors=True`. No Hugging Face repository ID is passed to inference. The reviewed Granite or Qwen
 role-token format is constructed by analyzer code, so inference does not execute the repository's
 chat template.
 

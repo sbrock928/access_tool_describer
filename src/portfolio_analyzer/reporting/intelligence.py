@@ -15,12 +15,15 @@ from typing import Any
 
 from portfolio_analyzer.models import (
     AnalysisCoverage,
+    Datasource,
     Dependency,
     InventoryRecord,
     PortfolioTheme,
     SemanticPortfolioState,
+    StagedArtifact,
 )
 from portfolio_analyzer.portfolio.themes import build_portfolio_themes
+from portfolio_analyzer.reporting.network import dependency_network
 from portfolio_analyzer.reporting.writers import write_csv
 
 
@@ -500,6 +503,8 @@ def write_intelligence_html(
     semantic_status: str,
     dependencies: list[Dependency] | None = None,
     themes: list[PortfolioTheme] | None = None,
+    datasources: list[Datasource] | None = None,
+    artifacts: list[StagedArtifact] | None = None,
 ) -> None:
     names = {item.tool_inventory_id: item.tool_name for item in inventory}
     themes = themes if themes is not None else build_portfolio_themes(state, coverage=coverage)
@@ -582,7 +587,28 @@ def write_intelligence_html(
                 "open_questions": profile.open_questions if profile else [],
             }
         )
+    capability_groups: dict[str, dict[str, Any]] = {}
+    for profile in profiles:
+        for finding in profile.findings:
+            if finding.category not in {"business_capability", "workflow"} or finding.review_status == "rejected":
+                continue
+            if not finding.evidence_ids and not finding.claim_ids:
+                continue
+            key = finding.label.strip().casefold()
+            group = capability_groups.setdefault(key, {
+                "key": key, "label": finding.label, "application_ids": [], "interpretations": [],
+            })
+            if profile.tool_inventory_id not in group["application_ids"]:
+                group["application_ids"].append(profile.tool_inventory_id)
+            group["interpretations"].append({
+                "app_id": profile.tool_inventory_id, "description": finding.description,
+                "category": finding.category, "confidence": finding.confidence.value,
+                "review_status": finding.review_status, "evidence_ids": finding.evidence_ids,
+                "claim_ids": finding.claim_ids, "method": profile.generation_method,
+            })
     data = {
+        "capability_groups": sorted(capability_groups.values(), key=lambda g: (-len(g["application_ids"]), g["key"])),
+        "network": dependency_network(inventory, dependencies or [], datasources or [], state, artifacts),
         "semantic_status": semantic_status,
         "themes": [theme.model_dump(mode="json") for theme in themes],
         "applications": application_rows,
@@ -602,13 +628,12 @@ def write_intelligence_html(
         inventory_count=len(unique_ids),
         complete_count=complete,
         profile_count=len(profiles),
-        cluster_count=len(state.clusters) if state else 0,
+        cluster_count=len(capability_groups),
         semantic_status=semantic_status,
         archetype_bars=_bars(archetypes),
         wave_bars=_bars({f"Wave {key}": value for key, value in sorted(waves.items())}),
         architecture_html=_architecture_cards(state, names),
-        cluster_svg=_cluster_svg(state, names),
-        dependency_svg=_dependency_svg(dependencies or [], names),
+        explorer_js=Path(__file__).with_name("explorer.js").read_text(encoding="utf-8"),
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(html, encoding="utf-8", newline="\n")
@@ -720,89 +745,6 @@ def _architecture_cards(state: SemanticPortfolioState | None, names: dict[str, s
     return "".join(sections)
 
 
-def _cluster_svg(state: SemanticPortfolioState | None, names: dict[str, str]) -> str:
-    if state is None or not state.clusters:
-        return '<p class="muted">No semantic clusters available.</p>'
-    width = 900
-    row_height = 120
-    height = max(260, len(state.clusters) * row_height + 40)
-    node_positions: dict[str, tuple[float, float]] = {}
-    elements: list[str] = []
-    for row, cluster in enumerate(state.clusters):
-        y = 70 + row * row_height
-        elements.append(
-            f'<text x="18" y="{y - 28}" class="cluster-label">{escape(cluster.label)}</text>'
-        )
-        count = max(1, len(cluster.application_ids))
-        for column, tool_id in enumerate(cluster.application_ids):
-            x = 190 + (column + 0.5) * min(120, 650 / count)
-            node_positions[tool_id] = (x, y)
-    for edge in state.similarity_edges:
-        left = node_positions.get(edge.source_tool_id)
-        right = node_positions.get(edge.target_tool_id)
-        if left and right:
-            elements.append(
-                f'<line x1="{left[0]:.1f}" y1="{left[1]:.1f}" '
-                f'x2="{right[0]:.1f}" y2="{right[1]:.1f}" class="edge" />'
-            )
-    for tool_id, (node_x, node_y) in node_positions.items():
-        label = names.get(tool_id, "Unknown EUC")
-        elements.append(
-            f'<g class="app-node" data-app-id="{escape(tool_id)}" tabindex="0">'
-            f'<circle cx="{node_x:.1f}" cy="{node_y:.1f}" r="17" />'
-            f"<title>{escape(label)}</title>"
-            f'<text x="{node_x:.1f}" y="{node_y + 35:.1f}">{escape(_short(label, 18))}</text></g>'
-        )
-    return (
-        f'<svg class="cluster-map" viewBox="0 0 {width} {height}" role="img" '
-        f'aria-label="Semantic application clusters">{"".join(elements)}</svg>'
-    )
-
-
-def _dependency_svg(dependencies: list[Dependency], names: dict[str, str]) -> str:
-    if not dependencies:
-        return '<p class="muted">No observed dependencies were extracted.</p>'
-    visible = sorted(
-        dependencies,
-        key=lambda item: (names.get(item.tool_inventory_id, ""), item.source, item.target),
-    )[:100]
-    width = 1000
-    row_height = 54
-    height = len(visible) * row_height + 78
-    elements = [
-        '<text x="18" y="28" class="dependency-heading">Application</text>',
-        '<text x="340" y="28" class="dependency-heading">Source object</text>',
-        '<text x="700" y="28" class="dependency-heading">Target</text>',
-    ]
-    for index, item in enumerate(visible):
-        y = 58 + index * row_height
-        name = names.get(item.tool_inventory_id, "Unknown EUC")
-        title = (
-            f"{name}: {item.source} to {item.target}; "
-            f"{item.dependency_type}; {item.operation}; {item.confidence.value} confidence"
-        )
-        elements.extend(
-            [
-                f'<line x1="205" y1="{y}" x2="326" y2="{y}" class="edge" />',
-                f'<line x1="555" y1="{y}" x2="686" y2="{y}" class="edge" />',
-                f'<g class="dependency-node app-node" data-app-id="{escape(item.tool_inventory_id, quote=True)}" tabindex="0">'
-                f'<rect x="18" y="{y - 17}" width="187" height="34" rx="6" />'
-                f'<title>{escape(title)}</title><text x="29" y="{y + 4}">{escape(_short(name, 25))}</text></g>',
-                f'<g class="dependency-node"><rect x="326" y="{y - 17}" width="229" height="34" rx="6" />'
-                f'<title>{escape(item.source)}</title><text x="337" y="{y + 4}">{escape(_short(item.source, 31))}</text></g>',
-                f'<g class="dependency-node target"><rect x="686" y="{y - 17}" width="296" height="34" rx="6" />'
-                f'<title>{escape(item.target)}</title><text x="697" y="{y + 4}">{escape(_short(item.target, 40))}</text></g>',
-            ]
-        )
-    note = ""
-    if len(dependencies) > len(visible):
-        note = f'<p class="muted">Showing the first {len(visible)} of {len(dependencies)} observed dependency edges. The complete normalized set remains in the workbook and CSV.</p>'
-    return (
-        note + f'<svg class="dependency-map" viewBox="0 0 {width} {height}" role="img" '
-        f'aria-label="Observed application dependencies">{"".join(elements)}</svg>'
-    )
-
-
 def _html_document(
     *,
     safe_json: str,
@@ -814,8 +756,7 @@ def _html_document(
     archetype_bars: str,
     wave_bars: str,
     architecture_html: str,
-    cluster_svg: str,
-    dependency_svg: str,
+    explorer_js: str,
 ) -> str:
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -830,27 +771,32 @@ main{{max-width:1180px;margin:auto;padding:24px}}section{{display:none}}section.
 .status{{border-left:5px solid var(--amber);padding:10px 14px;background:#fff8e7;margin-bottom:18px}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:16px 0 24px}}.card,.panel,.component{{background:white;border:1px solid var(--line);border-radius:7px;padding:16px}}.card strong{{display:block;font-size:30px;color:var(--navy)}}
 .grid2{{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:16px}}.bar-row{{display:grid;grid-template-columns:145px 1fr 38px;gap:8px;align-items:center;margin:8px 0}}.bar{{height:12px;background:#e7eef1;border-radius:8px;overflow:hidden}}.bar i{{display:block;height:100%;background:var(--blue)}}
 .component-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}}.component h3{{margin:8px 0 5px}}.component p{{min-height:42px}}.tag{{font-size:12px;color:var(--blue);text-transform:uppercase;font-weight:700}}.muted,small{{color:var(--muted)}}
-input[type=search]{{width:100%;max-width:520px;padding:11px;border:1px solid #aebdc5;border-radius:5px;margin-bottom:12px}}table{{width:100%;border-collapse:collapse;background:white}}th{{text-align:left;background:var(--navy);color:white;position:sticky;top:49px}}th,td{{padding:9px;border-bottom:1px solid var(--line);vertical-align:top}}tbody tr:hover{{background:#eef5f7}}button.link{{border:0;background:none;color:var(--blue);font-weight:700;cursor:pointer;text-align:left}}
+input[type=search]{{width:100%;max-width:520px;padding:11px;border:1px solid #aebdc5;border-radius:5px;margin-bottom:12px}}table{{width:100%;border-collapse:collapse;background:white}}th{{text-align:left;background:var(--navy);color:white;position:static}}th,td{{padding:9px;border-bottom:1px solid var(--line);vertical-align:top}}tbody tr:hover{{background:#eef5f7}}button.link{{border:0;background:none;color:var(--blue);font-weight:700;cursor:pointer;text-align:left}}
 .pill{{display:inline-block;border-radius:12px;padding:2px 8px;background:#e6eef2;font-size:12px}}.pill.low,.pill.pending{{background:#fff0cf;color:#765000}}.pill.high,.pill.accepted{{background:#dcefe4;color:#21543c}}.pill.rejected{{background:#f7dedb;color:#7d2925}}
 .drawer{{position:fixed;right:-560px;top:0;width:min(560px,94vw);height:100vh;background:white;z-index:4;box-shadow:-5px 0 22px #0003;padding:24px;overflow:auto;transition:right .2s}}.drawer.open{{right:0}}.drawer button{{float:right}}.finding{{border-left:3px solid var(--cyan);padding:8px 12px;margin:9px 0;background:#f6fafb}}
 .cluster-map,.dependency-map{{width:100%;height:auto;background:white;border:1px solid var(--line);border-radius:7px}}.edge{{stroke:#adc1ca;stroke-width:1.2}}.app-node circle{{fill:var(--blue);cursor:pointer}}.app-node text{{font-size:10px;text-anchor:middle;fill:var(--ink)}}.cluster-label,.dependency-heading{{font-weight:700;fill:var(--navy)}}.dependency-node rect{{fill:#edf5f7;stroke:#9bb5c1}}.dependency-node.app-node rect{{fill:#dcecf2;cursor:pointer;stroke:var(--blue)}}.dependency-node.target rect{{fill:#f7f4e9;stroke:#c7b776}}.dependency-node text{{font-size:12px;text-anchor:start;fill:var(--ink)}}
-@media(max-width:700px){{th:nth-child(3),td:nth-child(3),th:nth-child(5),td:nth-child(5){{display:none}}}}
+#network-canvas{{width:100%;height:680px;background:white;border:1px solid var(--line);touch-action:none;cursor:grab}}.network-controls{{display:flex;align-items:center;gap:12px;flex-wrap:wrap}}.network-controls select{{max-width:280px}}.network-controls input[type=search]{{max-width:300px;margin:0}}.network-node{{cursor:pointer}}.network-node text{{font-size:12px;paint-order:stroke;stroke:white;stroke-width:3px;fill:var(--ink)}}.network-link{{stroke:#99aeb8;stroke-width:1.7;cursor:pointer}}.network-link:hover,.network-link.selected{{stroke:#bd7010;stroke-width:4}}.network-edge-label{{font-size:10px;fill:#485e69;paint-order:stroke;stroke:white;stroke-width:3px}}.network-node:focus{{outline:none}}.network-node:focus circle,.network-node:focus rect{{stroke:#c77f00;stroke-width:4}}.network-controls button,select{{padding:7px}}.evidence-scroll{{max-height:460px;overflow:auto}}#reuse-pairs .panel{{margin:10px 0}}#capability-groups .component p{{min-height:0}}#network-detail{{margin:12px 0;overflow-wrap:anywhere}}
+@media(max-width:700px){{#portfolio th:nth-child(5),#portfolio td:nth-child(5),#portfolio th:nth-child(6),#portfolio td:nth-child(6){{display:none}}#network-canvas{{height:480px}}}}
 </style></head><body><header><h1>Access Portfolio Intelligence</h1><p>Evidence-grounded semantic analysis and proposed target architecture</p></header>
-<nav>{"".join(f'<button data-tab="{tab}" class="{"active" if tab == "overview" else ""}">{label}</button>' for tab, label in (("overview", "Overview"), ("portfolio", "Application portfolio"), ("themes", "Themes & solutions"), ("clusters", "Consolidation map"), ("dependencies", "Dependency map"), ("architecture", "Target architecture"), ("roadmap", "Migration roadmap")))}</nav>
+<nav>{"".join(f'<button data-tab="{tab}" class="{"active" if tab == "overview" else ""}">{label}</button>' for tab, label in (("overview", "Overview"), ("portfolio", "Application portfolio"), ("themes", "Themes & solutions"), ("clusters", "Reuse candidates"), ("dependencies", "Dependency map"), ("architecture", "Target architecture"), ("roadmap", "Migration roadmap")))}</nav>
 <main><section id="overview" class="active"><h2>Portfolio overview</h2><div class="status"><strong>Semantic status:</strong> {escape(semantic_status)}</div>
-<div class="cards"><div class="card"><span>Applications</span><strong>{inventory_count}</strong></div><div class="card"><span>Analysis complete</span><strong>{complete_count}</strong></div><div class="card"><span>Semantic profiles</span><strong>{profile_count}</strong></div><div class="card"><span>Capability clusters</span><strong>{cluster_count}</strong></div></div>
+<div class="cards"><div class="card"><span>Applications</span><strong>{inventory_count}</strong></div><div class="card"><span>Analysis complete</span><strong>{complete_count}</strong></div><div class="card"><span>Semantic profiles</span><strong>{profile_count}</strong></div><div class="card"><span>Capability / workflow labels</span><strong>{cluster_count}</strong></div></div>
+<div class="panel"><h3>Business capabilities and workflows</h3><p class="muted">Overlapping interpretations from application evidence and owner context. Labels are discovered, not a fixed taxonomy. Select a label to see affected applications; review its supporting evidence before using it as a business boundary.</p><div id="capability-groups" class="component-grid"></div></div>
 <div class="grid2"><div class="panel"><h3>Supported application roles</h3><p class="muted">Roles overlap. One application can contribute to several counts.</p>{archetype_bars}</div><div class="panel"><h3>Proposed migration waves</h3>{wave_bars}</div></div></section>
-<section id="portfolio"><h2>Application portfolio</h2><input id="search" type="search" placeholder="Search name, purpose, roles, disposition, or summary" aria-label="Search applications"><label for="role-filter">Role: </label><select id="role-filter"><option value="">All roles</option></select><div class="panel" style="overflow:auto"><table><thead><tr><th>EUC name</th><th>Observed behavior</th><th>Supported roles</th><th>Disposition</th><th>Wave</th><th>Confidence</th></tr></thead><tbody id="apps"></tbody></table></div></section>
+<section id="portfolio"><h2>Application portfolio</h2><input id="search" type="search" placeholder="Search name, purpose, roles, disposition, or summary" aria-label="Search applications"><label for="capability-filter">Capability: </label><select id="capability-filter"><option value="">All capabilities</option></select><label for="role-filter">Role: </label><select id="role-filter"><option value="">All roles</option></select><div class="panel" style="overflow:auto"><table><thead><tr><th>EUC name</th><th>Observed behavior</th><th>Capabilities / workflows</th><th>Supported roles</th><th>Disposition</th><th>Wave</th><th>Confidence</th></tr></thead><tbody id="apps"></tbody></table></div></section>
 <section id="themes"><h2>Discovered groups and design options</h2><p class="status">Applications can participate in several themes. Groups emerge from shared evidence. Names and roles alone do not create a group; applications without supported overlap remain ungrouped.</p><input id="theme-search" type="search" aria-label="Search themes" placeholder="Search solutions, applications, objects or dependencies"><div id="theme-list"></div></section>
-<section id="clusters"><h2>Consolidation map</h2><p class="muted">Lines show qualified semantic similarity. Select an application node to open its evidence-grounded profile.</p>{cluster_svg}</section>
-<section id="dependencies"><h2>Observed dependency map</h2><p class="muted">Edges come from deterministic extraction. Select an application node to open its evidence-grounded profile.</p>{dependency_svg}</section>
+<section id="clusters"><h2>Evidence-supported reuse candidates</h2><p class="status">Review which work or data contracts could be shared, and which responsibilities should remain separate. These are overlapping candidates, not instructions to merge whole applications.</p><div id="reuse-summary"></div><input id="reuse-search" type="search" aria-label="Search reuse candidates" placeholder="Search candidate, evidence or application"><div id="reuse-candidates"></div><details><summary>Pairwise semantic similarity</summary><p class="muted">Similarity suggests a comparison; it does not establish a dependency or a shared business owner.</p><div id="reuse-pairs"></div></details></section>
+<section id="dependencies"><h2>Observed dependency network</h2><p class="status">Each application and resource appears once. Connections show static references, not proof of execution. Shared dependencies are places to investigate ownership and contracts; they do not establish a microservice boundary.</p>
+<div class="network-controls"><label>Application <select id="network-app"><option value="">Whole portfolio</option></select></label><label><input type="checkbox" id="network-shared" checked> Shared resources only</label><label><input type="checkbox" id="network-runtime"> Include runtime / analysis files</label><input type="search" id="network-search" aria-label="Search dependencies" placeholder="Search resource or application"><button id="network-reset">Fit network</button><button id="network-in">Zoom in</button><button id="network-out">Zoom out</button></div>
+<p id="network-count" class="muted" aria-live="polite"></p><p class="muted">Blue circles: applications · amber squares: shared data, files or endpoints · gray squares: local or unresolved references. Arrow labels describe operations from the application’s perspective. Drag nodes to arrange; drag the background to pan; use the wheel or buttons to zoom. Select a resource or connection for source evidence.</p>
+<svg id="network-canvas" viewBox="0 0 1120 680" role="group" aria-label="Interactive application dependency network"><defs><marker id="network-arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d939e"/></marker></defs><g id="network-scene"></g></svg><div id="network-detail" class="panel" aria-live="polite">Select a resource or connection to inspect affected applications, operations and source locations.</div><h3>Shared dependency boundary reviews</h3><div id="network-candidates" class="component-grid"></div></section>
 <section id="architecture"><h2>Proposed target architecture</h2><p class="status">All components remain proposals until reviewed. The Microsoft track is limited to the approved service catalog.</p>{architecture_html}</section>
 <section id="roadmap"><h2>Migration roadmap</h2><div id="waves" class="component-grid"></div></section></main>
 <aside id="drawer" class="drawer" aria-live="polite"><button id="close" type="button" aria-label="Close application details">Close</button><div id="detail"></div></aside>
 <script id="portfolio-data" type="application/json">{safe_json}</script><script>
 const D=JSON.parse(document.getElementById('portfolio-data').textContent);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
 const apps=document.getElementById('apps'),drawer=document.getElementById('drawer'),detail=document.getElementById('detail');
-function rows(q=''){{q=q.toLowerCase();apps.innerHTML=D.applications.filter(a=>JSON.stringify(a).toLowerCase().includes(q)&&(!document.getElementById("role-filter").value||a.roles.some(r=>r.role===document.getElementById("role-filter").value))).map(a=>`<tr><td><button class="link" data-id="${{esc(a.id)}}">${{esc(a.name)}}</button></td><td>${{esc(a.observed_behavior.slice(0,3).join("; ")||a.summary)}}</td><td>${{a.roles.map(r=>`<span class="pill">${{esc(r.role)}}</span>`).join(" ")||"Not established"}}</td><td>${{esc(a.disposition)}}</td><td>${{a.wave}}</td><td><span class="pill ${{esc(a.confidence)}}">${{esc(a.confidence)}}</span></td></tr>`).join('')}}
+function rows(q=''){{q=q.toLowerCase();apps.innerHTML=D.applications.filter(a=>JSON.stringify(a).toLowerCase().includes(q)&&matchesCapability(a.id)&&(!document.getElementById("role-filter").value||a.roles.some(r=>r.role===document.getElementById("role-filter").value))).map(a=>`<tr><td><button class="link" data-id="${{esc(a.id)}}">${{esc(a.name)}}</button></td><td>${{esc(a.observed_behavior.slice(0,3).join("; ")||a.summary)}}</td><td>${{capabilityLabels(a.id).map(l=>`<span class="pill">${{esc(l)}}</span>`).join(" ")||"Not established"}}</td><td>${{a.roles.map(r=>`<span class="pill">${{esc(r.role)}}</span>`).join(" ")||"Not established"}}</td><td>${{esc(a.disposition)}}</td><td>${{a.wave}}</td><td><span class="pill ${{esc(a.confidence)}}">${{esc(a.confidence)}}</span></td></tr>`).join('')}}
 function openApp(id){{const a=D.applications.find(x=>x.id===id);if(!a)return;const c=a.semantic_coverage;const ir=a.application_ir;const method=a.generation_method==='local_model'?'Local model':'Deterministic rules';detail.innerHTML=`<h2>${{esc(a.name)}}</h2><p>${{esc(a.summary)}}</p><dl><dt>Business purpose</dt><dd>${{esc(a.purpose)}} · ${{esc(a.purpose_provenance.replaceAll("_"," "))}}${{a.purpose_claim_ids.length?" · claims "+esc(a.purpose_claim_ids.join(", ")):""}}</dd><dt>Supported roles</dt><dd>${{a.roles.map(r=>`<p><strong>${{esc(r.role)}}</strong>: ${{esc(r.rationale)}}<br><small>${{esc(r.evidence_ids.join(", "))}}</small></p>`).join("")||"Not established"}}</dd><dt>Legacy summary category</dt><dd>${{esc(a.archetype)}} · Retained for compatibility</dd><dt>Why this classification</dt><dd>${{esc(a.classification_rationale)}}<br><small>${{esc(a.classification_evidence_ids.join(", "))}}</small></dd><dt>Known inputs</dt><dd>${{esc(a.inputs.join(", "))||"Not established"}}</dd><dt>Known outputs / write targets</dt><dd>${{esc(a.outputs.join(", "))||"Not established"}}</dd><dt>Secondary capabilities</dt><dd>${{esc(a.secondary_capabilities.join("; "))||"None established"}}</dd><dt>Proposed disposition</dt><dd>${{esc(a.disposition)}} · Wave ${{a.wave}}</dd><dt>Profile synthesis</dt><dd>${{method}}</dd><dt>Deterministic code coverage</dt><dd>${{c?(c.complete_code_coverage?'Complete':'Sampled')+' · '+c.code_objects_inspected+'/'+c.code_objects_available+' objects · '+c.code_segments_inspected+'/'+c.code_segments_available+' segments':'Unavailable'}}</dd><dt>Model input</dt><dd>${{a.generation_method==='local_model'&&ir?'One deterministic application IR · '+ir.model_input_characters+' characters · '+esc(ir.ir_id):'None'}}</dd></dl><h3>Modernization themes</h3>${{themeCards(D.themes.filter(t=>t.affected_tool_ids.includes(id)),id)}}<h3>Proposed target components</h3>${{(D.architecture.components||[]).filter(c=>c.application_ids.includes(id)&&c.review_status!=="rejected").map(c=>`<div class="finding"><strong>${{esc(c.name)}}</strong><p>${{esc(c.description)}}</p><small>${{esc(c.track)}} · ${{esc(c.platform_service||"Logical boundary")}}</small></div>`).join("")||"No supported target proposed"}}<h3>Observed behavior</h3><p class="muted">Static definitions and code; these are not proof of execution or an inferred execution order.</p>${{(ir?.behavior_facts||[]).map(f=>`<div class="finding"><strong>${{esc(f.description)}}</strong><p>${{esc(f.object_type)}}: ${{esc(f.object_name)}} · ${{esc(f.datasource_scope.replaceAll("_"," "))}}</p><small>Evidence ${{esc(f.evidence_ids.join(", "))}}</small></div>`).join('')||'<p class="muted">No behavior established.</p>'}}<h3>Observed sources</h3>${{a.observed_sources.map(s=>`<div class="finding"><strong>${{esc(s.object)}}</strong><p>${{esc(s.excerpt)}}</p>${{s.ui_properties!=="{{}}"?`<p>Root UI properties: ${{esc(s.ui_properties)}}</p>`:""}}<small>Observed source · ${{esc(s.source_id)}}</small></div>`).join('')||'<p class="muted">No bounded observed source available.</p>'}}<h3>Owner claims</h3>${{a.owner_claims.map(c=>`<div class="finding"><strong>${{esc(c.field.replaceAll('_',' '))}}</strong><p>${{esc(c.value)}}</p><small>Owner claim · ${{esc(c.claim_id)}} · source ${{esc(c.source)}}</small></div>`).join('')||'<p class="muted">No owner context supplied.</p>'}}<h3>Semantic proposals</h3>${{a.findings.map(f=>`<div class="finding"><strong>${{esc(f.category.replaceAll('_',' '))}}: ${{esc(f.label)}}</strong><p>${{esc(f.description)}}</p><small>${{method}} proposal · ${{esc(f.confidence)}} confidence · ${{esc(f.review_status)}} · evidence ${{esc(f.evidence_ids.join(', '))}}${{f.claim_ids.length?' · claims '+esc(f.claim_ids.join(', ')):''}}</small></div>`).join('')||'<p class="muted">No grounded semantic findings.</p>'}}<h3>Open questions</h3><ul>${{a.open_questions.map(x=>`<li>${{esc(x)}}</li>`).join('')||'<li>None recorded</li>'}}</ul>`;drawer.classList.add('open')}}
 
 function appLink(id){{return `<button class="link" data-id="${{esc(id)}}">${{esc(D.names[id]||id)}}</button>`}}
@@ -859,6 +805,7 @@ function renderThemes(q=''){{document.getElementById('theme-list').innerHTML=the
 renderThemes();document.getElementById('theme-search').addEventListener('input',e=>renderThemes(e.target.value));
 const roleFilter=document.getElementById('role-filter');[...new Set(D.applications.flatMap(a=>a.roles.map(r=>r.role)))].sort().forEach(r=>{{const o=document.createElement('option');o.value=r;o.textContent=r;roleFilter.appendChild(o)}});roleFilter.addEventListener('change',()=>rows(document.getElementById('search').value));
 
+{explorer_js}
 rows();document.getElementById('search').addEventListener('input',e=>rows(e.target.value));document.addEventListener('click',e=>{{const id=e.target.closest('[data-id]')?.dataset.id||e.target.closest('[data-app-id]')?.dataset.appId;if(id)openApp(id)}});document.getElementById('close').onclick=()=>drawer.classList.remove('open');
 document.addEventListener('keydown',e=>{{if(e.key==='Escape')drawer.classList.remove('open')}});
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{{document.querySelectorAll('nav button,main section').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById(b.dataset.tab).classList.add('active')}});
