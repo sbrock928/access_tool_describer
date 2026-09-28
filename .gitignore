@@ -7,6 +7,7 @@ __pycache__/
 *.xlsx
 *.json
 *.accdb
+*.laccdb
 *.safetensors
 models/
 workspace/
