@@ -868,6 +868,48 @@ def test_schema_failure_is_isolated_per_application() -> None:
     assert set(state.errors) >= {"1", "2"}
 
 
+def test_profile_generation_repairs_overlong_bounded_output() -> None:
+    class OverlongProvider(FakeProvider):
+        def complete_json(self, **kwargs: Any) -> dict[str, Any]:
+            output = super().complete_json(**kwargs)
+            if kwargs["schema_name"] != "semantic_application_profile":
+                return output
+            payload = json.loads(kwargs["user"].split("\n", 1)[1].rsplit("\n", 1)[0])
+            allowed = list(payload["allowed_evidence_refs"])
+            assert len(allowed) >= 3
+            output["p"] = "p" * 300
+            output["f"][0].update(
+                {
+                    "l": "l" * 150,
+                    "r": "r" * 250,
+                    "e": ["E999", *allowed[:3], allowed[0]],
+                }
+            )
+            output["q"] = ["one", "two", "three"]
+            return output
+
+    inventory, artifacts, extracted, evidence, coverage = _portfolio()
+    state = run_semantic_pipeline(
+        _settings(),
+        OverlongProvider(),
+        inventory[:1],
+        artifacts[:1],
+        extracted[:1],
+        [item for item in evidence if item.tool_inventory_id == "1"],
+        [],
+        coverage[:1],
+        [],
+    )
+
+    profile = state.applications[0]
+    assert profile.status != "failed"
+    assert len(profile.business_purpose) == 240
+    assert len(profile.findings[0].label) == 120
+    assert len(profile.findings[0].description) == 220
+    assert len(profile.findings[0].evidence_ids) == 2
+    assert profile.open_questions == ["one", "two"]
+
+
 def test_compatible_state_resumes_profiles_deterministically() -> None:
     inventory, artifacts, extracted, evidence, coverage = _portfolio()
     first_provider = FakeProvider()
