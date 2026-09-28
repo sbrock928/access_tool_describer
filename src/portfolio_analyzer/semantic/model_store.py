@@ -275,9 +275,7 @@ def verify_model_directory(directory: Path) -> VerifiedModel:
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"Approved model manifest is invalid: {manifest_path}") from exc
     model = approved_model(manifest.repo_id, manifest.revision)
-    expected_manifest_hash = _manifest_digest(manifest)
-    if manifest.manifest_sha256 != expected_manifest_hash:
-        raise ValueError("Approved model manifest hash mismatch")
+    canonical_manifest_hash = _validated_manifest_digest(manifest)
     _validate_file_inventory(directory, include_manifest=True, model=model)
     expected_names = set(model.expected_files)
     manifest_names = {item.path for item in manifest.files}
@@ -298,6 +296,9 @@ def verify_model_directory(directory: Path) -> VerifiedModel:
         if _sha256(path) != approved.sha256:
             raise ValueError(f"Approved model checksum mismatch: {name}")
     _validate_transformers_configuration(directory, model)
+    # Expose the timestamp-independent identity to analysis/cache fingerprints even
+    # when the on-disk manifest came from the immediately preceding downloader.
+    manifest.manifest_sha256 = canonical_manifest_hash
     return VerifiedModel(directory=directory.resolve(), manifest=manifest)
 
 
@@ -332,6 +333,21 @@ def _manifest_digest(manifest: ModelManifest) -> str:
     )
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _legacy_manifest_digest(manifest: ModelManifest) -> str:
+    """Digest emitted before acquisition time was removed from model identity."""
+    payload = manifest.model_dump(mode="json", exclude={"manifest_sha256"})
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _validated_manifest_digest(manifest: ModelManifest) -> str:
+    """Return canonical identity after recognizing only approved digest algorithms."""
+    canonical = _manifest_digest(manifest)
+    if manifest.manifest_sha256 in {canonical, _legacy_manifest_digest(manifest)}:
+        return canonical
+    raise ValueError("Approved model manifest hash mismatch")
 
 
 def _write_manifest(path: Path, manifest: ModelManifest) -> None:

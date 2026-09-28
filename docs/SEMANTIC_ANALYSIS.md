@@ -48,6 +48,11 @@ Verify an existing directory without network access:
 portfolio-analyzer model-verify --model-dir C:\Models\Qwen2.5-1.5B-Instruct
 ```
 
+The verifier recognizes manifests emitted by the immediately preceding approved downloader, which
+included the acquisition timestamp in its manifest digest. It canonicalizes that identity in
+memory only after the legacy digest validates and every allowlisted file passes the current size,
+SHA-256, configuration, and safety checks; it does not weaken or skip artifact verification.
+
 `analyze` independently performs the same verification before publication. It never downloads or
 repairs a missing or modified file.
 

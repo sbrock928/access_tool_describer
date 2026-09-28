@@ -26,6 +26,9 @@ from portfolio_analyzer.semantic.model_store import (
     QWEN_MODEL,
     ModelManifest,
     VerifiedModel,
+    _legacy_manifest_digest,
+    _manifest_digest,
+    _validated_manifest_digest,
 )
 
 
@@ -173,6 +176,22 @@ def _verified_model(path: Path) -> VerifiedModel:
             manifest_sha256="a" * 64,
         ),
     )
+
+
+def test_previous_downloader_manifest_digest_is_recognized_and_canonicalized() -> None:
+    manifest = _verified_model(Path("model")).manifest
+    canonical = _manifest_digest(manifest)
+    manifest.manifest_sha256 = _legacy_manifest_digest(manifest)
+
+    assert _validated_manifest_digest(manifest) == canonical
+
+
+def test_unrecognized_model_manifest_digest_still_fails_closed() -> None:
+    manifest = _verified_model(Path("model")).manifest
+    manifest.manifest_sha256 = "b" * 64
+
+    with pytest.raises(ValueError, match="manifest hash mismatch"):
+        _validated_manifest_digest(manifest)
 
 
 def _runtime(path: Path) -> ResolvedQwenRuntime:
