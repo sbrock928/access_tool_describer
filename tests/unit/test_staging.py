@@ -4,7 +4,11 @@ import pytest
 
 from portfolio_analyzer.config import AnalyzerSettings
 from portfolio_analyzer.models import ArtifactStatus, InventoryRecord
-from portfolio_analyzer.staging.copying import ArtifactStager, _fsync_directory
+from portfolio_analyzer.staging.copying import (
+    ArtifactStager,
+    _fsync_directory,
+    _safe_os_error,
+)
 from portfolio_analyzer.staging.validation import (
     UnsafeArtifactError,
     assert_trusted_staged_artifact,
@@ -147,3 +151,13 @@ def test_unsupported_directory_fsync_does_not_fail_staging_barrier(
     _fsync_directory(tmp_path)
 
     assert closed == [42]
+
+
+def test_safe_os_error_reports_operation_and_codes_without_sensitive_text() -> None:
+    error = OSError(13, "denied at C:\\sensitive\\source.accdb")
+
+    message = _safe_os_error("copy_file_contents", error)
+
+    assert "operation=copy_file_contents" in message
+    assert "errno=13" in message
+    assert "sensitive" not in message

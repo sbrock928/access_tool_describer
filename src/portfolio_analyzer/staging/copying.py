@@ -69,8 +69,10 @@ class ArtifactStager:
         )
         target_dir = self.settings.staged_tools_dir / euc_directory_name(record.tool_name)
         temporary: Path | None = None
+        operation = "prepare_destination"
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
+            operation = "validate_source"
             if source.is_symlink():
                 raise StagingValidationError("Symbolic-link sources are not allowed")
             if not source.is_file():
@@ -85,7 +87,9 @@ class ArtifactStager:
                 raise StagingValidationError(
                     "Only .accdb and .mdb primary artifacts may be staged"
                 )
+            operation = "read_source_metadata"
             source_stat_before = source.stat()
+            operation = "hash_source"
             source_sha256 = sha256_file(source)
             target = (
                 target_dir
@@ -94,17 +98,24 @@ class ArtifactStager:
                 / source_sha256
                 / (relative_path or Path(filename))
             )
+            operation = "prepare_artifact_destination"
             target.parent.mkdir(parents=True, exist_ok=True)
             stage_root = self.settings.staged_tools_dir.resolve()
             if not target.parent.resolve().is_relative_to(stage_root):
                 raise StagingValidationError("Unsafe staged destination")
+            operation = "create_temporary_file"
             descriptor, temporary_name = tempfile.mkstemp(
                 prefix=f".{filename}.", suffix=".tmp", dir=target.parent
             )
             os.close(descriptor)
             temporary = Path(temporary_name)
-            shutil.copy2(source, temporary)
+            # Copy bytes only. copy2 additionally applies source filesystem metadata,
+            # which mapped/network drives can reject even when the file is readable.
+            operation = "copy_file_contents"
+            shutil.copyfile(source, temporary)
+            operation = "verify_source_stability"
             source_stat = source.stat()
+            operation = "verify_staged_metadata"
             target_stat = temporary.stat()
             if (
                 source_stat.st_size != source_stat_before.st_size
@@ -113,11 +124,14 @@ class ArtifactStager:
                 raise StagingValidationError("Source file changed while it was being staged")
             if target_stat.st_size != source_stat.st_size:
                 raise StagingValidationError("Staged file size differs from source")
+            operation = "hash_staged_file"
             target_sha256 = sha256_file(temporary)
             if target_sha256 != source_sha256:
                 raise StagingValidationError("Staged file hash differs from source")
+            operation = "sync_staged_file"
             with temporary.open("rb") as staged_file:
                 os.fsync(staged_file.fileno())
+            operation = "publish_staged_file"
             os.replace(temporary, target)
             temporary = None
             _fsync_directory(target.parent)
@@ -153,16 +167,28 @@ class ArtifactStager:
                 filename=filename,
                 extension=source.suffix.lower(),
                 status=ArtifactStatus.FAILED,
-                error=f"Staging copy failed safely ({type(exc).__name__})",
+                error=_safe_os_error(operation, exc),
                 is_primary=is_primary,
             )
         finally:
             if temporary is not None:
-                temporary.unlink(missing_ok=True)
+                with suppress(OSError):
+                    temporary.unlink(missing_ok=True)
 
 
 class StagingValidationError(OSError):
     """A safe staging failure message that contains no source or workspace path."""
+
+
+def _safe_os_error(operation: str, error: OSError) -> str:
+    """Describe an OS failure without persisting paths or exception text."""
+    details = [f"operation={operation}", f"type={type(error).__name__}"]
+    if error.errno is not None:
+        details.append(f"errno={error.errno}")
+    winerror = getattr(error, "winerror", None)
+    if isinstance(winerror, int):
+        details.append(f"winerror={winerror}")
+    return f"Staging copy failed safely ({', '.join(details)})"
 
 
 def _fsync_directory(path: Path) -> None:
