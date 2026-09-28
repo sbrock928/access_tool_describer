@@ -277,6 +277,19 @@ deterministic clustering, architecture synthesis, and final state writing. Every
 the preceding step and total run. `--force` deliberately regenerates the selected application's IR
 and profile.
 
+To inspect completed application profiles before a long production run finishes, generate an
+explicitly labeled checkpoint preview:
+
+```powershell
+portfolio-analyzer report --workspace .\workspace --semantic-mode preview
+```
+
+Preview files are written under `workspace/reports/checkpoint_preview/`, leaving normal reports
+untouched. They include only the semantic application profiles saved so far and are labeled with
+their processed/total coverage. Portfolio clustering, target architecture, and the migration
+roadmap are unavailable until the semantic run completes. Because checkpoint writes are atomic,
+the preview command may run while semantic analysis continues.
+
 ### Quick test mode
 
 Use quick mode for an end-to-end smoke test of IR construction, profile synthesis, evidence gating,
@@ -338,10 +351,11 @@ portfolio-analyzer import-review --workspace .\workspace `
   --workbook .\workspace\reports\Portfolio_Analysis.xlsx
 ```
 
-`report --semantic-mode auto` includes only current compatible semantic data; `require` fails if it
-is absent, partial, stale, or incompatible; `off` produces deterministic-only reports. The report
-manifest records semantic provenance and output checksums without persisting an absolute local model
-path or workstation username.
+`report --semantic-mode auto` includes only current compatible completed semantic data; `preview`
+accepts a compatible in-progress checkpoint and writes it to a separate preview directory;
+`require` fails if semantic data is absent, partial, stale, or incompatible; `off` produces
+deterministic-only reports. The report manifest records semantic provenance and output checksums
+without persisting an absolute local model path or workstation username.
 
 ## Behavior profiles (schema v8)
 

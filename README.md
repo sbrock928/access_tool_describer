@@ -68,6 +68,16 @@ portfolio-analyzer semantic --workspace .\workspace
 portfolio-analyzer report --workspace .\workspace --semantic-mode require
 ```
 
+For a clearly labeled report from an in-progress semantic checkpoint, run:
+
+```powershell
+portfolio-analyzer report --workspace .\workspace --semantic-mode preview
+```
+
+Preview output is isolated under `workspace/reports/checkpoint_preview/` and includes only the
+applications checkpointed so far. Portfolio-wide clustering, target architecture, and roadmap
+results remain unavailable until semantic analysis completes.
+
 Run `semantic-init` first if the workspace has no semantic configuration. Model selection enables
 local profile generation on CPU and sets a 768-token profile budget; it preserves other settings.
 Use `--model granite` to select the existing Granite option. New default configurations remain

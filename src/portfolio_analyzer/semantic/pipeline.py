@@ -938,8 +938,12 @@ def semantic_state_is_current(
     inventory: list[InventoryRecord],
     artifacts: list[StagedArtifact],
     claims: list[Claim] | None = None,
+    *,
+    allow_in_progress: bool = False,
 ) -> bool:
-    if state.metadata.run_status != "complete":
+    if state.metadata.run_status != "complete" and not (
+        allow_in_progress and state.metadata.run_status == "in_progress"
+    ):
         return False
     if state.metadata.run_mode == "production" and any(
         profile.semantic_coverage is None or not profile.semantic_coverage.complete_code_coverage
@@ -997,6 +1001,28 @@ def semantic_state_is_current(
     state_hashes = sorted(
         artifact_hash for profile in state.applications for artifact_hash in profile.artifact_hashes
     )
+    if allow_in_progress and state.metadata.run_status == "in_progress":
+        current_hashes_by_tool: dict[str, list[str]] = defaultdict(list)
+        for artifact in artifacts:
+            if artifact.is_primary and artifact.sha256 is not None:
+                current_hashes_by_tool[artifact.tool_inventory_id].append(artifact.sha256)
+        profile_hashes_match = all(
+            sorted(profile.artifact_hashes)
+            == sorted(current_hashes_by_tool[profile.tool_inventory_id])
+            for profile in state.applications
+        )
+        profiles_with_ir = {
+            profile.tool_inventory_id
+            for profile in state.applications
+            if profile.application_ir_id is not None
+        }
+        return (
+            len(state_tools) == len(state.applications)
+            and state_tools <= current_tools
+            and ir_tools <= state_tools
+            and profiles_with_ir <= ir_tools
+            and profile_hashes_match
+        )
     return current_tools == state_tools == ir_tools and current_hashes == state_hashes
 
 

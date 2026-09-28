@@ -588,6 +588,7 @@ def test_pipeline_drops_unknown_citations_and_enforces_disposition_gates() -> No
 def test_default_profiles_are_deterministic_and_do_not_require_a_model() -> None:
     inventory, artifacts, extracted, evidence, coverage = _portfolio()
     settings = SemanticSettings()
+    checkpoints: list[Any] = []
 
     state = run_semantic_pipeline(
         settings,
@@ -599,6 +600,7 @@ def test_default_profiles_are_deterministic_and_do_not_require_a_model() -> None
         [],
         coverage,
         [],
+        checkpoint=checkpoints.append,
     )
 
     assert state.metadata.profile_model_generation is False
@@ -622,6 +624,15 @@ def test_default_profiles_are_deterministic_and_do_not_require_a_model() -> None
         for profile in state.applications
     )
     assert semantic_state_is_current(state, settings, inventory, artifacts, [])
+    assert not semantic_state_is_current(checkpoints[0], settings, inventory, artifacts, [])
+    assert semantic_state_is_current(
+        checkpoints[0],
+        settings,
+        inventory,
+        artifacts,
+        [],
+        allow_in_progress=True,
+    )
 
 
 def test_architecture_model_generation_is_explicitly_opt_in() -> None:

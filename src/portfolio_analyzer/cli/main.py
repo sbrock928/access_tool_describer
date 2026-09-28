@@ -1084,13 +1084,13 @@ def report(
     semantic_mode: str = typer.Option(
         "auto",
         "--semantic-mode",
-        help="Semantic reporting policy: auto, require, or off.",
+        help="Semantic reporting policy: auto, require, preview, or off.",
     ),
 ) -> None:
     """Create deterministic reports and compatible semantic intelligence when available."""
     semantic_mode = semantic_mode.casefold().strip()
-    if semantic_mode not in {"auto", "require", "off"}:
-        raise typer.BadParameter("--semantic-mode must be auto, require, or off")
+    if semantic_mode not in {"auto", "require", "preview", "off"}:
+        raise typer.BadParameter("--semantic-mode must be auto, require, preview, or off")
     settings = _settings(workspace)
     state_path = settings.analysis_dir / "staging_state.json"
     if not state_path.exists():
@@ -1144,6 +1144,7 @@ def report(
                     inventory,
                     artifacts,
                     claims,
+                    allow_in_progress=semantic_mode == "preview",
                 ):
                     semantic_state = (
                         state
@@ -1170,11 +1171,22 @@ def report(
                         or partial_profiles > 0
                         or bool(semantic_state.errors)
                     )
-                    semantic_status = (
-                        f"current: {len(complete_ids)}/{application_total} complete profiles; "
-                        f"{partial_profiles} partial; {failed_profiles} failed; "
+                    coverage_status = (
+                        f"{profile_total}/{application_total} profiles processed; "
+                        f"{len(complete_ids)} complete; {partial_profiles} partial; "
+                        f"{failed_profiles} failed; "
                         f"{len(semantic_state.errors)} recorded errors"
                     )
+                    if semantic_mode == "preview":
+                        semantic_status = (
+                            "PREVIEW — IN-PROGRESS CHECKPOINT; "
+                            f"{coverage_status}; portfolio clustering, target architecture, and "
+                            "roadmap are unavailable until semantic analysis completes"
+                            if semantic_state.metadata.run_status == "in_progress"
+                            else f"PREVIEW COPY — completed semantic state; {coverage_status}"
+                        )
+                    else:
+                        semantic_status = f"current: {coverage_status}"
                     if semantic_state.metadata.run_mode == "quick":
                         semantic_status = f"TEST ONLY — QUICK MODE; {semantic_status}"
                 else:
@@ -1193,8 +1205,40 @@ def report(
             raise typer.BadParameter(
                 f"Complete current semantic results are required but unavailable: {semantic_status}"
             )
+        if semantic_mode == "preview" and semantic_state is None:
+            raise typer.BadParameter(
+                "A compatible semantic checkpoint is required for preview reporting: "
+                f"{semantic_status}"
+            )
+    if semantic_mode == "preview" and semantic_state is not None:
+        preview_ids = {item.tool_inventory_id for item in semantic_state.applications}
+        inventory = [item for item in inventory if item.tool_inventory_id in preview_ids]
+        artifacts = [item for item in artifacts if item.tool_inventory_id in preview_ids]
+        evidence = [item for item in evidence if item.tool_inventory_id in preview_ids]
+        datasources = [item for item in datasources if item.tool_inventory_id in preview_ids]
+        dependencies = [item for item in dependencies if item.tool_inventory_id in preview_ids]
+        capabilities = [item for item in capabilities if item.tool_inventory_id in preview_ids]
+        coverage = [item for item in coverage if item.tool_inventory_id in preview_ids]
+        recommendations = build_recommendations(capabilities, datasources)
+        semantic_state = semantic_state.model_copy(
+            update={
+                "sources": [
+                    item for item in semantic_state.sources
+                    if item.tool_inventory_id in preview_ids
+                ],
+                "claims": [
+                    item for item in semantic_state.claims
+                    if item.tool_inventory_id in preview_ids
+                ],
+            }
+        )
+    report_dir = (
+        settings.reports_dir / "checkpoint_preview"
+        if semantic_mode == "preview"
+        else settings.reports_dir
+    )
     produced: list[Path] = []
-    workbook_path = settings.reports_dir / "Portfolio_Analysis.xlsx"
+    workbook_path = report_dir / "Portfolio_Analysis.xlsx"
     themes = build_portfolio_themes(
         semantic_state, recommendations, evidence, coverage, artifacts=artifacts,
         datasources=datasources,
@@ -1215,7 +1259,7 @@ def report(
         review_decisions=decisions,
     )
     produced.append(workbook_path)
-    pdf_path = settings.reports_dir / "Portfolio_Analysis.pdf"
+    pdf_path = report_dir / "Portfolio_Analysis.pdf"
     write_executive_pdf(
         pdf_path,
         inventory,
@@ -1231,7 +1275,7 @@ def report(
         semantic_status=semantic_status,
     )
     produced.append(pdf_path)
-    html_path = settings.reports_dir / "Portfolio_Intelligence.html"
+    html_path = report_dir / "Portfolio_Intelligence.html"
     write_intelligence_html(
         html_path,
         inventory,
@@ -1245,7 +1289,7 @@ def report(
     )
     produced.append(html_path)
     write_csv(
-        settings.reports_dir / "applications.csv",
+        report_dir / "applications.csv",
         [
             {
                 "euc_name": item.tool_name,
@@ -1263,7 +1307,7 @@ def report(
         ],
     )
     write_csv(
-        settings.reports_dir / "artifacts.csv",
+        report_dir / "artifacts.csv",
         [
             {
                 "euc_name": _euc_name(item.tool_inventory_id, application_names),
@@ -1285,7 +1329,7 @@ def report(
         ],
     )
     write_csv(
-        settings.reports_dir / "analysis_coverage.csv",
+        report_dir / "analysis_coverage.csv",
         [
             {
                 "euc_name": item.tool_name,
@@ -1319,7 +1363,7 @@ def report(
         ],
     )
     write_csv(
-        settings.reports_dir / "evidence.csv",
+        report_dir / "evidence.csv",
         [
             {
                 "euc_name": _euc_name(item.tool_inventory_id, application_names),
@@ -1345,7 +1389,7 @@ def report(
         ],
     )
     write_csv(
-        settings.reports_dir / "datasources.csv",
+        report_dir / "datasources.csv",
         [
             {
                 "euc_name": _euc_name(item.tool_inventory_id, application_names),
@@ -1375,7 +1419,7 @@ def report(
         ],
     )
     write_csv(
-        settings.reports_dir / "dependencies.csv",
+        report_dir / "dependencies.csv",
         [
             {
                 "euc_name": _euc_name(item.tool_inventory_id, application_names),
@@ -1399,7 +1443,7 @@ def report(
         ],
     )
     write_csv(
-        settings.reports_dir / "capabilities.csv",
+        report_dir / "capabilities.csv",
         [
             {
                 "euc_name": _euc_name(item.tool_inventory_id, application_names),
@@ -1419,7 +1463,7 @@ def report(
         ],
     )
     write_csv(
-        settings.reports_dir / "recommendations.csv",
+        report_dir / "recommendations.csv",
         [
             {
                 "category": item.category,
@@ -1445,7 +1489,7 @@ def report(
         ],
     )
     produced.extend(
-        settings.reports_dir / name
+        report_dir / name
         for name in (
             "applications.csv",
             "artifacts.csv",
@@ -1462,28 +1506,28 @@ def report(
         ("theme_locations.csv", THEME_LOCATION_HEADERS,
          theme_location_rows(themes, application_names)),
     ):
-        theme_path = settings.reports_dir / filename
+        theme_path = report_dir / filename
         write_csv(theme_path, rows, headers=headers)
         produced.append(theme_path)
     if semantic_state is not None:
         produced.extend(
             write_semantic_datasets(
-                settings.reports_dir,
+                report_dir,
                 semantic_state,
                 application_names,
             )
         )
-        mermaid_path = settings.reports_dir / "Target_Architecture.md"
+        mermaid_path = report_dir / "Target_Architecture.md"
         write_architecture_mermaid(mermaid_path, semantic_state)
         produced.append(mermaid_path)
-    manifest_path = settings.reports_dir / "report_manifest.json"
+    manifest_path = report_dir / "report_manifest.json"
     write_report_manifest(
         manifest_path,
         produced,
         semantic_state,
         semantic_status=semantic_status,
     )
-    typer.echo(f"Reports written to {settings.reports_dir}")
+    typer.echo(f"Reports written to {report_dir}")
     typer.echo(f"Semantic coverage: {semantic_status}")
 
 
