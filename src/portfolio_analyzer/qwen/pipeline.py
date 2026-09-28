@@ -625,8 +625,9 @@ def analyze_application_two_stage(
     """Interpret all units, then synthesize all valid results with explicit failure state."""
 
     source_bundle_sha256 = evidence_bundle_fingerprint(bundle)
-    plans = build_logical_units(bundle)
     progress = _provider_progress(provider)
+    progress.detail(f"Application {bundle.application_id}: building logical-unit plans")
+    plans = build_logical_units(bundle)
     kinds: dict[str, int] = {}
     for plan in plans:
         kinds[plan.kind.value] = kinds.get(plan.kind.value, 0) + 1

@@ -493,6 +493,10 @@ def analyze(
                             )
                         continue
 
+                    progress.basic(
+                        f"Application {application_index}/{total_applications} "
+                        "inference started"
+                    )
                     result = analyze_application_two_stage(
                         bundle,
                         provider,

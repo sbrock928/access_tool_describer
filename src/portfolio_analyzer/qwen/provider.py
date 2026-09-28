@@ -256,6 +256,7 @@ class LocalQwenProvider:
     ) -> dict[str, Any]:
         """Generate one object without truncating any caller-supplied prompt content."""
 
+        self.progress.detail(f"Preparing prompt for {schema_name}...")
         inputs, prompt_tokens, budget = self._prepare_prompt(
             system=system,
             user=user,
@@ -269,6 +270,10 @@ class LocalQwenProvider:
                 f"({budget.prompt_tokens} + {budget.reserved_output_tokens} > "
                 f"{budget.context_tokens}); split the logical unit before inference"
             )
+        self.progress.detail(
+            f"Prompt ready for {schema_name}; tokens={prompt_tokens}; "
+            f"reserved_output={max_output_tokens}; context={budget.context_tokens}"
+        )
         tokenizer = self._tokenizer
         model = self._model
         torch = self._torch
