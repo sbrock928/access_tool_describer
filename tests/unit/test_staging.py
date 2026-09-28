@@ -4,7 +4,7 @@ import pytest
 
 from portfolio_analyzer.config import AnalyzerSettings
 from portfolio_analyzer.models import ArtifactStatus, InventoryRecord
-from portfolio_analyzer.staging.copying import ArtifactStager
+from portfolio_analyzer.staging.copying import ArtifactStager, _fsync_directory
 from portfolio_analyzer.staging.validation import (
     UnsafeArtifactError,
     assert_trusted_staged_artifact,
@@ -128,3 +128,22 @@ def test_euc_folder_name_is_windows_safe_and_readable(tmp_path: Path) -> None:
     assert artifact.local_staged_path.relative_to(settings.staged_tools_dir).parts[0] == (
         "Finance_ Month_End"
     )
+
+
+def test_unsupported_directory_fsync_does_not_fail_staging_barrier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    closed: list[int] = []
+    monkeypatch.setattr("portfolio_analyzer.staging.copying.os.open", lambda *_args: 42)
+
+    def unsupported_fsync(_descriptor: int) -> None:
+        raise OSError("directory fsync is unsupported")
+
+    monkeypatch.setattr("portfolio_analyzer.staging.copying.os.fsync", unsupported_fsync)
+    monkeypatch.setattr(
+        "portfolio_analyzer.staging.copying.os.close", lambda descriptor: closed.append(descriptor)
+    )
+
+    _fsync_directory(tmp_path)
+
+    assert closed == [42]

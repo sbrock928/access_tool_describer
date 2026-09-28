@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -165,11 +166,21 @@ class StagingValidationError(OSError):
 
 
 def _fsync_directory(path: Path) -> None:
+    """Best-effort directory durability barrier.
+
+    POSIX filesystems generally support fsync on a directory descriptor. Windows
+    commonly rejects either opening a directory this way or syncing its handle.
+    The staged file itself has already been fsynced, hash checked, and atomically
+    moved before this helper runs, so lack of directory-fsync support must not
+    turn a successful verified copy into a staging failure.
+    """
+    descriptor: int | None = None
     try:
         descriptor = os.open(path, os.O_RDONLY)
+        os.fsync(descriptor)
     except OSError:
         return
-    try:
-        os.fsync(descriptor)
     finally:
-        os.close(descriptor)
+        if descriptor is not None:
+            with suppress(OSError):
+                os.close(descriptor)
