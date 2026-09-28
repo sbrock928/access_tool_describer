@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import re
+from pathlib import Path, PurePosixPath
 
 from openpyxl import load_workbook
 
@@ -44,13 +45,26 @@ def load_inventory(path: Path) -> list[InventoryRecord]:
             raise InventoryValidationError(
                 f"Row {row_number} lacks INVENTORY_ID, EUCTNAME, FILE_NAME, or FULLPATH"
             )
+        inventory_filename = str(filename).strip()
+        source_value = str(filepath).strip()
+        _validate_source_locator(source_value, row_number)
+        source_basename = source_value.replace("\\", "/").rsplit("/", 1)[-1]
+        if (
+            not inventory_filename
+            or inventory_filename != inventory_filename.replace("\\", "/").rsplit("/", 1)[-1]
+            or inventory_filename.casefold() != source_basename.casefold()
+        ):
+            raise InventoryValidationError(
+                f"Row {row_number} FILE_NAME '{inventory_filename}' does not match "
+                f"the FULLPATH basename '{source_basename}'"
+            )
         records.append(
             InventoryRecord(
                 tool_inventory_id=str(tool_id).strip(),
                 tool_name=str(tool_name).strip(),
-                inventory_filename=str(filename).strip(),
+                inventory_filename=inventory_filename,
                 stated_description=_optional_string(values["DESCRIPTION"]),
-                filepath=Path(str(filepath).strip()),
+                filepath=Path(source_value),
                 original_values=values,
             )
         )
@@ -62,6 +76,23 @@ def _optional_string(value: object) -> str | None:
     if value is None or str(value).strip() == "":
         return None
     return str(value)
+
+
+def _validate_source_locator(value: str, row_number: int) -> None:
+    normalized = value.replace("\\", "/")
+    without_unc_prefix = normalized.removeprefix("//")
+    if (
+        "\x00" in normalized
+        or ".." in PurePosixPath(without_unc_prefix).parts
+        or not (
+            normalized.startswith("/")
+            or normalized.startswith("//")
+            or re.match(r"^[A-Za-z]:/", normalized)
+        )
+    ):
+        raise InventoryValidationError(
+            f"Row {row_number} FULLPATH must be an absolute, traversal-free source path"
+        )
 
 
 def _validate_unique_identifiers_and_names(records: list[InventoryRecord]) -> None:

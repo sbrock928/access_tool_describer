@@ -6,7 +6,7 @@ import platform
 from pathlib import Path
 
 from portfolio_analyzer.config import AnalyzerSettings
-from portfolio_analyzer.models import StagedArtifact
+from portfolio_analyzer.models import VerifiedStagedArtifact
 from portfolio_analyzer.staging.validation import assert_trusted_staged_artifact
 
 
@@ -15,7 +15,7 @@ class WindowsAccessUnavailable(RuntimeError):
 
 
 def validate_access_extraction_request(
-    artifact: StagedArtifact, destination: Path, settings: AnalyzerSettings
+    artifact: VerifiedStagedArtifact, destination: Path, settings: AnalyzerSettings
 ) -> Path:
     if platform.system() != "Windows":
         raise WindowsAccessUnavailable("Access extraction requires Windows with Microsoft Access")

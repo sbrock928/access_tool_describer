@@ -1,11 +1,27 @@
 # Windows Setup
 
-Use 64-bit Python and the same Office/Access bitness. Install Python 3.13, Microsoft Access, and `pywin32`, then run `pip install -e ".[dev,windows]"`. Run Access integration tests only on an isolated workstation with a synthetic database:
+Use Python 3.13 and Microsoft Access/ACE with matching bitness. Install the Windows and development
+extras:
+
+```powershell
+pip install -e ".[dev,windows]"
+```
+
+Run extraction under a low-privilege identity on an isolated workstation or worker with no
+production credentials. Before enabling SaveAsText export, the launcher must attest that a non-low
+Access macro policy and outbound-network blocking are active; the runtime independently rejects an
+administrator token. Otherwise the mandatory DAO lane still runs and export coverage is marked
+partial.
+
+Run the synthetic integration suite only in that isolated environment:
 
 ```powershell
 pytest -m windows_access
 ```
 
-The analyzer does not authenticate to external data sources. Use an account without production access and ensure the staging workspace is local and writable.
+The integration boundary must demonstrate no AutoExec/startup marker, DNS/TCP activity, credential
+prompt, orphan Access process, stuck Shift key, unsafe export path, or raw export leak.
 
-References: [AutomationSecurity](https://learn.microsoft.com/en-us/office/vba/api/Access.Application.AutomationSecurity), [Access startup/AutoExec behavior](https://support.microsoft.com/en-us/access/create-a-macro-that-runs-when-you-open-a-database), [OpenCurrentDatabase](https://learn.microsoft.com/en-us/office/vba/api/access.application.opencurrentdatabase), and [SaveAsText](https://learn.microsoft.com/en-us/office/client-developer/access/desktop-database-reference/application-save-as-text).
+Microsoft references: [AutomationSecurity](https://learn.microsoft.com/en-us/office/vba/api/Access.Application.AutomationSecurity),
+[AllowBypassKey](https://support.microsoft.com/en-us/access/allowbypasskey-property), and
+[QueryDef.Connect](https://learn.microsoft.com/en-us/office/client-developer/access/desktop-database-reference/querydef-connect-property-dao).

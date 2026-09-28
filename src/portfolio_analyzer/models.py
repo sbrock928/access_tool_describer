@@ -1,19 +1,20 @@
-"""Stable, platform-independent domain models."""
+"""Small boundary models used before data enters the strict V2 contracts."""
 
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Self, cast
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-
-def _stable_identifier(prefix: str, *values: object) -> str:
-    payload = "\x1f".join("" if value is None else str(value) for value in values)
-    return f"{prefix}_{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:20]}"
+from portfolio_analyzer.library_identity import (
+    ApprovedLibraryReference,
+    LibraryInjectionStatus,
+)
+from portfolio_analyzer.redaction import redact_sensitive_text
+from portfolio_analyzer.v2.identity import normalize_source_identity, stable_id
 
 
 class Confidence(StrEnum):
@@ -26,10 +27,11 @@ class ArtifactStatus(StrEnum):
     STAGED = "staged"
     FAILED = "failed"
     SKIPPED = "skipped"
+    SKIPPED_UNSUPPORTED_FORMAT = "skipped_unsupported_format"
 
 
 class InventoryRecord(BaseModel):
-    """A row preserved from the authoritative inventory workbook."""
+    """One authoritative inventory row, retained only through staging."""
 
     model_config = ConfigDict(frozen=True)
     tool_inventory_id: str
@@ -41,8 +43,9 @@ class InventoryRecord(BaseModel):
 
 
 class StagedArtifact(BaseModel):
-    """Provenance token for an artifact eligible for extraction."""
+    """Verified local capability token passed across the Access extraction boundary."""
 
+    artifact_id: str = ""
     tool_inventory_id: str
     original_source_path: Path
     local_staged_path: Path | None = None
@@ -55,450 +58,134 @@ class StagedArtifact(BaseModel):
     error: str | None = None
     is_primary: bool = True
 
-
-class Evidence(BaseModel):
-    evidence_id: str = ""
-    rule_id: str | None = None
-    tool_inventory_id: str
-    artifact_path: str
-    object_type: str
-    object_name: str
-    location: str | None = None
-    text: str
-    inference: str | None = None
-    confidence: Confidence = Confidence.HIGH
-
     @model_validator(mode="after")
-    def assign_stable_identifiers(self) -> Evidence:
-        if not self.evidence_id:
-            self.evidence_id = _stable_identifier(
-                "ev",
+    def assign_artifact_id(self) -> StagedArtifact:
+        if not self.artifact_id:
+            self.artifact_id = stable_id(
+                "artifact",
                 self.tool_inventory_id,
-                self.artifact_path,
-                self.object_type,
-                self.object_name,
-                self.location,
-                self.text,
-                self.inference,
+                normalize_source_identity(str(self.original_source_path)),
             )
-        if self.rule_id is None and self.inference:
-            self.rule_id = _stable_identifier("rule", self.inference.casefold())
         return self
 
 
-class Datasource(BaseModel):
+class VerifiedStagedArtifact(BaseModel):
+    """Source-free, hash-pinned capability accepted by the extraction worker."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    artifact_id: str
     tool_inventory_id: str
-    platform: str
-    server: str | None = None
-    database: str | None = None
-    schema_name: str | None = None
-    object_name: str | None = None
-    operation: str = "UNKNOWN"
-    connection_summary: str | None = None
-    confidence: Confidence = Confidence.MEDIUM
-    evidence: list[Evidence] = Field(default_factory=list)
+    local_staged_path: Path
+    filename: str
+    extension: Literal[".accdb", ".mdb"]
+    size_bytes: int
+    sha256: str
+    status: Literal[ArtifactStatus.STAGED] = ArtifactStatus.STAGED
+
+    @classmethod
+    def from_staged(cls, artifact: StagedArtifact) -> Self:
+        if (
+            artifact.status != ArtifactStatus.STAGED
+            or artifact.local_staged_path is None
+            or artifact.size_bytes is None
+            or artifact.sha256 is None
+        ):
+            raise ValueError("artifact is not a complete verified staging result")
+        extension = artifact.extension.casefold()
+        if extension not in {".accdb", ".mdb"}:
+            raise ValueError("artifact is not an eligible Access primary")
+        return cls(
+            artifact_id=artifact.artifact_id,
+            tool_inventory_id=artifact.tool_inventory_id,
+            local_staged_path=artifact.local_staged_path,
+            filename=artifact.filename,
+            extension=cast(Literal[".accdb", ".mdb"], extension),
+            size_bytes=artifact.size_bytes,
+            sha256=artifact.sha256,
+        )
 
 
-class Dependency(BaseModel):
-    tool_inventory_id: str
-    source: str
-    target: str
-    dependency_type: str
-    operation: str = "UNKNOWN"
-    confidence: Confidence = Confidence.MEDIUM
-    evidence: list[Evidence] = Field(default_factory=list)
+class AccessExtractedObject(BaseModel):
+    """Immediately sanitized object returned by the isolated Access worker."""
 
-
-class ExtractedObject(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     object_type: str
     name: str
     definition: str | None = None
     properties: dict[str, str] = Field(default_factory=dict)
 
+    @field_validator("name", "definition")
+    @classmethod
+    def sanitize_extracted_text(cls, value: str | None) -> str | None:
+        return redact_sensitive_text(value) if value is not None else None
 
-class ExtractedApplication(BaseModel):
+    @field_validator("properties")
+    @classmethod
+    def sanitize_extracted_properties(cls, value: dict[str, str]) -> dict[str, str]:
+        output: dict[str, str] = {}
+        for key, item in value.items():
+            assignment = redact_sensitive_text(f"{key}={item}")
+            output[key] = assignment.split("=", 1)[1]
+        return output
+
+
+class AccessExtractionResult(BaseModel):
+    """Source-free, sanitized result crossing the isolated worker boundary."""
+
+    model_config = ConfigDict(extra="forbid")
     tool_inventory_id: str
+    artifact_id: str = ""
     staged_path: Path
     extractor_version: str
-    objects: list[ExtractedObject] = Field(default_factory=list)
+    approved_libraries: list[ApprovedLibraryReference] = Field(default_factory=list)
+    injected_libraries: list[ApprovedLibraryReference] = Field(default_factory=list)
+    library_injection_status: LibraryInjectionStatus = (
+        LibraryInjectionStatus.NOT_CONFIGURED
+    )
+    objects: list[AccessExtractedObject] = Field(default_factory=list)
     extraction_errors: list[str] = Field(default_factory=list)
+    coverage_status: Literal["complete", "partial"] = "complete"
+    derived_copy_sha256: str | None = None
+    tabledef_enumerated_count: int = Field(default=0, ge=0)
+    tabledef_succeeded_count: int = Field(default=0, ge=0)
+    tabledef_failed_count: int = Field(default=0, ge=0)
+    querydef_enumerated_count: int = Field(default=0, ge=0)
+    querydef_succeeded_count: int = Field(default=0, ge=0)
+    querydef_failed_count: int = Field(default=0, ge=0)
 
-
-class CapabilityFinding(BaseModel):
-    tool_inventory_id: str
-    capability: str
-    layer: str
-    confidence: Confidence
-    evidence: list[Evidence] = Field(default_factory=list)
-
-
-class SimilarityRelationship(BaseModel):
-    source_tool_id: str
-    target_tool_id: str
-    score: float
-    reasons: list[str]
-    confidence: Confidence
-
-
-class Recommendation(BaseModel):
-    """An evidence-backed modernization opportunity, not an automatic decision."""
-
-    category: str
-    title: str
-    rationale: str
-    affected_tool_ids: list[str]
-    confidence: Confidence
-    evidence: list[Evidence] = Field(default_factory=list)
-
-
-class AnalysisCoverage(BaseModel):
-    """Per-application pipeline coverage used to qualify absence-of-evidence claims."""
-
-    tool_inventory_id: str
-    tool_name: str
-    inventory_filename: str = ""
-    staging_status: str
-    extraction_status: str
-    analysis_status: str
-    extracted_object_count: int = 0
-    extraction_warning_count: int = 0
-    evidence_count: int = 0
-    datasource_count: int = 0
-    dependency_count: int = 0
-    capability_count: int = 0
-    notes: list[str] = Field(default_factory=list)
-
-
-class Claim(BaseModel):
-    """Owner-supplied context kept distinct from observed technical evidence."""
-
-    claim_id: str = ""
-    tool_inventory_id: str
-    field: str
-    value: str
-    source: str
+    @field_validator("extraction_errors")
+    @classmethod
+    def sanitize_extraction_errors(cls, value: list[str]) -> list[str]:
+        return [redact_sensitive_text(item) for item in value]
 
     @model_validator(mode="after")
-    def assign_stable_identifier(self) -> Claim:
-        if not self.claim_id:
-            self.claim_id = _stable_identifier(
-                "claim", self.tool_inventory_id, self.field, self.value, self.source
-            )
+    def validate_dao_coverage(self) -> AccessExtractionResult:
+        if self.tabledef_enumerated_count != (
+            self.tabledef_succeeded_count + self.tabledef_failed_count
+        ):
+            raise ValueError("TableDef coverage counts are inconsistent")
+        if self.querydef_enumerated_count != (
+            self.querydef_succeeded_count + self.querydef_failed_count
+        ):
+            raise ValueError("QueryDef coverage counts are inconsistent")
+        libraries = {item.library_id: item for item in self.approved_libraries}
+        if len(libraries) != len(self.approved_libraries):
+            raise ValueError("approved library identities must be unique")
+        self.approved_libraries = [libraries[key] for key in sorted(libraries)]
+        injected = {item.library_id: item for item in self.injected_libraries}
+        if len(injected) != len(self.injected_libraries):
+            raise ValueError("injected library identities must be unique")
+        if not set(injected).issubset(libraries):
+            raise ValueError("injected libraries must be configured approved libraries")
+        self.injected_libraries = [injected[key] for key in sorted(injected)]
+        if not libraries:
+            if self.library_injection_status != LibraryInjectionStatus.NOT_CONFIGURED:
+                raise ValueError("library injection status requires configured libraries")
+        elif self.library_injection_status == LibraryInjectionStatus.NOT_CONFIGURED:
+            raise ValueError("configured libraries require an explicit injection status")
+        if self.library_injection_status == LibraryInjectionStatus.INJECTED:
+            if set(injected) != set(libraries):
+                raise ValueError("injected status requires every configured library")
+        elif injected:
+            raise ValueError("non-injected status cannot contain injected libraries")
         return self
-
-
-class SemanticSource(BaseModel):
-    """A bounded, redacted source segment or deterministic inventory record."""
-
-    source_id: str
-    tool_inventory_id: str
-    artifact_hash: str
-    object_type: str
-    object_name: str
-    location: str | None = None
-    excerpt: str
-    content_sha256: str
-    model_eligible: bool = True
-    segment_index: int = Field(default=1, ge=1)
-    segment_count: int = Field(default=1, ge=1)
-    ui_properties: dict[str, str] = Field(default_factory=dict)
-
-
-class BehaviorFact(BaseModel):
-    """A static behavior and the objects/evidence that support it, not an execution trace."""
-
-    action: str
-    artifact_hash: str = ""
-    description: str
-    object_type: str
-    object_name: str
-    targets: list[str] = Field(default_factory=list)
-    datasource_scope: Literal["local", "external", "unresolved", "not_applicable"] = (
-        "not_applicable"
-    )
-    evidence_ids: list[str] = Field(default_factory=list)
-
-
-class SemanticApplicationIR(BaseModel):
-    """Deterministic, auditable application facts supplied to the local model once."""
-
-    ir_id: str
-    tool_inventory_id: str
-    ir_version: str
-    input_fingerprint: str
-    source_ids: list[str] = Field(default_factory=list)
-    evidence_ids: list[str] = Field(default_factory=list)
-    code_object_count: int = Field(ge=0)
-    code_segment_count: int = Field(ge=0)
-    object_type_counts: dict[str, int] = Field(default_factory=dict)
-    object_names_by_type: dict[str, list[str]] = Field(default_factory=dict)
-    inventory_object_type_counts: dict[str, int] = Field(default_factory=dict)
-    inventory_object_names_by_type: dict[str, list[str]] = Field(default_factory=dict)
-    inventory_source_ids: list[str] = Field(default_factory=list)
-    behavior_facts: list[BehaviorFact] = Field(default_factory=list)
-    procedure_names: list[str] = Field(default_factory=list)
-    sql_operations: dict[str, int] = Field(default_factory=dict)
-    referenced_objects: list[str] = Field(default_factory=list)
-    identifier_terms: dict[str, int] = Field(default_factory=dict)
-    string_literals: dict[str, int] = Field(default_factory=dict)
-    technical_signals: dict[str, int] = Field(default_factory=dict)
-    signal_objects: dict[str, list[str]] = Field(default_factory=dict)
-    datasource_signatures: list[str] = Field(default_factory=list)
-    observed_inference_counts: dict[str, int] = Field(default_factory=dict)
-    model_input_sha256: str = ""
-    model_input_characters: int = Field(default=0, ge=0)
-    model_input_item_counts: dict[str, int] = Field(default_factory=dict)
-    model_input_omitted_counts: dict[str, int] = Field(default_factory=dict)
-
-
-class SemanticCoverage(BaseModel):
-    """Auditable deterministic inspection coverage for one application."""
-
-    inventory_objects: int = Field(ge=0)
-    code_objects_available: int = Field(ge=0)
-    code_objects_inspected: int = Field(ge=0)
-    code_segments_available: int = Field(ge=0)
-    code_segments_inspected: int = Field(ge=0)
-    object_type_inventory: dict[str, int] = Field(default_factory=dict)
-    object_type_inspected: dict[str, int] = Field(default_factory=dict)
-    model_input_kind: Literal["deterministic_application_ir", "none"] = (
-        "deterministic_application_ir"
-    )
-    complete_code_coverage: bool = False
-
-
-class SemanticFinding(BaseModel):
-    finding_id: str = ""
-    tool_inventory_id: str
-    category: str
-    label: str
-    description: str = ""
-    confidence: Confidence = Confidence.LOW
-    evidence_ids: list[str] = Field(default_factory=list)
-    claim_ids: list[str] = Field(default_factory=list)
-    review_status: Literal["pending", "accepted", "edited", "rejected"] = "pending"
-
-    @model_validator(mode="after")
-    def assign_stable_identifier(self) -> SemanticFinding:
-        if not self.finding_id:
-            self.finding_id = _stable_identifier(
-                "sf", self.tool_inventory_id, self.category, self.label.casefold()
-            )
-        return self
-
-
-class ObjectSemanticSummary(BaseModel):
-    source_id: str
-    summary: str
-    business_terms: list[str] = Field(default_factory=list)
-    workflows: list[str] = Field(default_factory=list)
-    data_entities: list[str] = Field(default_factory=list)
-    evidence_ids: list[str] = Field(default_factory=list)
-    claim_ids: list[str] = Field(default_factory=list)
-
-
-class ApplicationRole(BaseModel):
-    """An independently supported role; several can apply to the same application."""
-
-    role: str
-    rationale: str
-    evidence_ids: list[str] = Field(default_factory=list)
-
-
-class ThemeLocation(BaseModel):
-    tool_inventory_id: str
-    object_type: str
-    object_name: str
-    artifact: str
-    location: str = ""
-    observation: str
-    evidence_id: str
-
-
-class PortfolioTheme(BaseModel):
-    theme_id: str
-    title: str
-    category: str
-    observed_pattern: str
-    proposed_solution: str
-    alternative_options: list[str] = Field(default_factory=list)
-    grouping_basis: list[str] = Field(default_factory=list)
-    generation_method: str = "evidence_discovery"
-    affected_tool_ids: list[str]
-    locations: list[ThemeLocation] = Field(default_factory=list)
-    next_steps: list[str] = Field(default_factory=list)
-    validation_questions: list[str] = Field(default_factory=list)
-    confidence: Confidence = Confidence.MEDIUM
-    coverage_note: str = ""
-
-
-class SemanticApplicationProfile(BaseModel):
-    tool_inventory_id: str
-    tool_name: str
-    summary: str
-    business_purpose: str
-    primary_archetype: str
-    roles: list[ApplicationRole] = Field(default_factory=list)
-    proposed_disposition: str
-    confidence: Confidence
-    purpose_provenance: str = "unconfirmed"
-    purpose_claim_ids: list[str] = Field(default_factory=list)
-    observed_behavior: list[str] = Field(default_factory=list)
-    inputs: list[str] = Field(default_factory=list)
-    outputs: list[str] = Field(default_factory=list)
-    secondary_capabilities: list[str] = Field(default_factory=list)
-    classification_rationale: str = ""
-    classification_evidence_ids: list[str] = Field(default_factory=list)
-    generation_method: Literal["deterministic", "local_model"] = "local_model"
-    findings: list[SemanticFinding] = Field(default_factory=list)
-    object_summaries: list[ObjectSemanticSummary] = Field(default_factory=list)
-    application_ir_id: str | None = None
-    semantic_coverage: SemanticCoverage | None = None
-    open_questions: list[str] = Field(default_factory=list)
-    evidence_ids: list[str] = Field(default_factory=list)
-    claim_ids: list[str] = Field(default_factory=list)
-    artifact_hashes: list[str] = Field(default_factory=list)
-    input_fingerprint: str
-    semantic_version: str
-    model_repo_id: str
-    model_revision: str
-    model_manifest_sha256: str
-    status: Literal["complete", "partial", "failed"] = "complete"
-    error: str | None = None
-
-
-class SimilarityEdge(BaseModel):
-    source_tool_id: str
-    target_tool_id: str
-    overall_similarity: float = Field(ge=0.0, le=1.0)
-    category_scores: dict[str, float] = Field(default_factory=dict)
-    shared_features: dict[str, list[str]] = Field(default_factory=dict)
-    shared_capabilities: list[str] = Field(default_factory=list)
-    shared_datasources: list[str] = Field(default_factory=list)
-
-
-class PortfolioCluster(BaseModel):
-    cluster_id: str
-    label: str
-    application_ids: list[str]
-    shared_capabilities: list[str] = Field(default_factory=list)
-    shared_data_domains: list[str] = Field(default_factory=list)
-    rationale: str = ""
-    confidence: Confidence = Confidence.LOW
-    evidence_ids: list[str] = Field(default_factory=list)
-
-
-class ArchitectureComponent(BaseModel):
-    component_id: str
-    track: Literal["vendor_neutral", "microsoft"]
-    name: str
-    component_type: str
-    description: str
-    platform_service: str | None = None
-    application_ids: list[str] = Field(default_factory=list)
-    cluster_ids: list[str] = Field(default_factory=list)
-    evidence_ids: list[str] = Field(default_factory=list)
-    claim_ids: list[str] = Field(default_factory=list)
-    confidence: Confidence = Confidence.LOW
-    review_status: Literal["pending", "accepted", "edited", "rejected"] = "pending"
-
-
-class ArchitectureRelation(BaseModel):
-    relation_id: str
-    track: Literal["vendor_neutral", "microsoft"]
-    source_component_id: str
-    target_component_id: str
-    relationship: str
-    description: str = ""
-    evidence_ids: list[str] = Field(default_factory=list)
-    confidence: Confidence = Confidence.LOW
-
-
-class ApplicationTargetMapping(BaseModel):
-    mapping_id: str
-    tool_inventory_id: str
-    disposition: Literal[
-        "retain/remediate",
-        "wrap/integrate",
-        "replatform",
-        "rebuild",
-        "consolidate",
-        "retire candidate",
-        "investigate",
-    ]
-    target_component_ids: list[str] = Field(default_factory=list)
-    wave: int = Field(ge=0, le=4)
-    rationale: str
-    prerequisites: list[str] = Field(default_factory=list)
-    evidence_ids: list[str] = Field(default_factory=list)
-    claim_ids: list[str] = Field(default_factory=list)
-    confidence: Confidence = Confidence.LOW
-    review_status: Literal["pending", "accepted", "edited", "rejected"] = "pending"
-
-
-class MigrationWave(BaseModel):
-    wave: int = Field(ge=0, le=4)
-    name: str
-    purpose: str
-    application_ids: list[str] = Field(default_factory=list)
-    prerequisites: list[str] = Field(default_factory=list)
-
-
-class ReviewDecision(BaseModel):
-    proposal_id: str
-    decision: Literal["Accept", "Edit", "Reject"]
-    edited_value: str | None = None
-    reviewer: str | None = None
-    notes: str | None = None
-    reviewed_at: datetime | None = None
-
-
-class TargetArchitecture(BaseModel):
-    title: str = "Proposed modular target architecture"
-    summary: str = ""
-    components: list[ArchitectureComponent] = Field(default_factory=list)
-    relations: list[ArchitectureRelation] = Field(default_factory=list)
-    mappings: list[ApplicationTargetMapping] = Field(default_factory=list)
-    migration_waves: list[MigrationWave] = Field(default_factory=list)
-    open_questions: list[str] = Field(default_factory=list)
-
-
-class SemanticRunMetadata(BaseModel):
-    run_mode: Literal["production", "quick"] = "production"
-    run_status: Literal["in_progress", "complete"] = "complete"
-    max_objects_per_application: int | None = None
-    semantic_version: str
-    semantic_schema_version: str
-    prompt_version: str
-    static_analysis_version: str
-    deterministic_similarity_version: str
-    model_repo_id: str
-    model_revision: str
-    model_manifest_sha256: str
-    local_model_identifier: str
-    model_architecture: str
-    model_license: str
-    inference_library: str
-    inference_library_version: str
-    generation_parameters: dict[str, object] = Field(default_factory=dict)
-    clustering_parameters: dict[str, object] = Field(default_factory=dict)
-    approved_services: list[str] = Field(default_factory=list)
-    profile_model_generation: bool = False
-    architecture_model_generation: bool = False
-    context_hash: str = ""
-    generated_at: datetime
-    input_fingerprint: str
-
-
-class SemanticPortfolioState(BaseModel):
-    metadata: SemanticRunMetadata
-    sources: list[SemanticSource] = Field(default_factory=list)
-    observed_evidence_ids: list[str] = Field(default_factory=list)
-    claims: list[Claim] = Field(default_factory=list)
-    application_irs: list[SemanticApplicationIR] = Field(default_factory=list)
-    applications: list[SemanticApplicationProfile] = Field(default_factory=list)
-    similarity_edges: list[SimilarityEdge] = Field(default_factory=list)
-    clusters: list[PortfolioCluster] = Field(default_factory=list)
-    architecture: TargetArchitecture = Field(default_factory=TargetArchitecture)
-    discovered_themes: list[PortfolioTheme] = Field(default_factory=list)
-    errors: dict[str, str] = Field(default_factory=dict)

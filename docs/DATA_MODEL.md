@@ -1,19 +1,34 @@
-# Data Model
+# V2 Data Model
 
-The primary immutable provenance values are tool inventory ID, original source path, local staged path, SHA-256, size, and source timestamp. `StagedArtifact` is the capability token required for extraction.
+All V2 contracts are strict Pydantic 2 models with unknown fields forbidden and explicit schema
+versions.
 
-Evidence has source object, location, text, inference, and confidence. Datasources and dependencies retain evidence IDs. Presentation reports are generated from these normalized facts rather than becoming a system of record.
+- `StageIndex` records eligible artifacts, unsupported rows, failures, opaque source identity,
+  staged-relative path, size, and SHA-256.
+- `ApplicationEvidenceBundle` is the canonical technical record: artifacts, Access objects,
+  QueryDefs, TableDefs, connections, datasource identities, data access, dependency nodes/edges,
+  evidence, owner claims, coverage, and unresolved references.
+- `LogicalUnitInterpretation` and `ApplicationInterpretation` contain only evidence-cited Qwen
+  interpretations and model/prompt/schema provenance.
+- `PortfolioCandidate` records deterministic membership and basis. `PortfolioAnalysis` contains
+  model-authored explanations and proposals for those candidates.
+- `PortfolioReportModel` is the only renderer input. HTML, Excel, PDF, and normalized CSV use the
+  same record IDs and counts.
 
+`application_id` is the inventory identity. `artifact_id` derives from the application and opaque
+canonical source identity; the artifact SHA-256 is its version. Object, connection, target, and
+edge IDs are artifact-scoped. Evidence IDs include artifact identity, artifact hash, fact identity,
+and sanitized canonical payload—not raw paths or credentials.
 
-`SemanticApplicationProfile.roles` stores independent `ApplicationRole` records (role, rationale,
-evidence IDs). `BehaviorFact.artifact_hash` scopes cross-object role rules to an extracted artifact.
-`PortfolioTheme` is discovered during semantic analysis and persisted in
-`SemanticPortfolioState.discovered_themes`. Reports reuse these groups and can also discover groups
-from static evidence when no semantic state exists. It records a proposed solution, affected applications, next steps, validation
-questions, confidence and coverage qualifications. Its `ThemeLocation` records point to the precise
-application, artifact, object, source location and evidence ID. Themes do not partition the portfolio.
+Staged binaries are version-addressed by `artifact_id` and content SHA-256 and are published by
+verified atomic replacement. A later version therefore does not mutate the binary named by an
+earlier run manifest; unreferenced versions may remain as harmless orphaned state.
 
-`PortfolioTheme.grouping_basis` identifies the actual repeated patterns. `alternative_options`
-compares candidate responses to the shared evidence. `generation_method` distinguishes evidence
-discovery from optional model interpretation. Group IDs include membership and pattern identities;
-input order does not affect them. Duplicate observations cannot inflate application counts.
+Raw connection strings, password values, prompts, and raw SaveAsText exports are never persisted
+or hashed. Review decisions are an overlay tied to the originating stable analysis fingerprint,
+proposal ID, and evidence IDs.
+
+Optional reviewed owner input is loaded from `source_inventory/owner_context.csv`. Its strict
+columns are `application_id`, `business_owner`, `technical_owner`, `business_purpose`,
+`criticality`, `user_band`, `lifecycle_intent`, `data_sensitivity`, `pain_points`, and
+`target_constraints`. These values become `OwnerClaim` records; they never become observed facts.

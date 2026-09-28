@@ -1,125 +1,158 @@
 # Reports
 
-The primary deliverable is `Portfolio_Intelligence.html`, a self-contained offline report with no
-CDN or network dependency. It includes coverage, search, application drill-down, an observed
-dependency network, evidence-supported reuse candidates, both architecture tracks, and migration waves.
-Drill-down keeps observed sources, owner claims, and semantic proposals in visibly separate
-sections and identifies whether each profile used deterministic rules or the optional local model.
-The embedded content-security policy disables all network sources.
+Reporting is a pure projection of one immutable `PortfolioReportModel`. Renderers do not reopen
+Access, parse source definitions, infer lineage, create portfolio membership, call Qwen, or join
+older state. This keeps identifiers, counts, qualifications, and review status consistent across
+HTML, Excel, PDF, and CSV.
 
-`Portfolio_Analysis.xlsx` retains the original detailed sheets and adds a dashboard, Application
-Portfolio, Target Architecture, App-Target Crosswalk, Migration Roadmap, Semantic Findings, Review
-Queue, and Method & Provenance. The dashboard charts coverage, overlapping roles, clusters, dependency
-hotspots, and migration waves. Review Queue decisions are constrained to `Accept`, `Edit`, or
-`Reject`.
+## Publish a report
 
-`Portfolio_Analysis.pdf` is a concise executive and architecture brief. Raw evidence remains in the
-workbook and normalized CSV files so oversized evidence does not make the PDF unreadable.
+Normal publication requires current, completed extraction and analysis for every eligible Access
+application plus a current portfolio interpretation:
 
-Semantic runs add `semantic_applications.csv`, `semantic_findings.csv`,
-`portfolio_clusters.csv`, `similarity_edges.csv`, `architecture_components.csv`,
-`architecture_relations.csv`,
-`application_target_map.csv`, `migration_waves.csv`, `architecture_model.json`, and portable
-`Target_Architecture.md` Mermaid diagrams. `report_manifest.json` includes output checksums and
-semantic provenance.
+```powershell
+portfolio-analyzer report --workspace .\workspace
+```
 
-Quick semantic runs are never presented as production results. The Excel summary and executive PDF
-carry a prominent `TEST ONLY` warning, the HTML semantic status identifies quick mode, and the
-report manifest records the run mode, object limit, effective generation bounds, and completion
-status. Production-required reporting rejects quick state.
+The command refuses missing, failed, stale, or in-progress analysis. Optional `SaveAsText` omissions
+do not necessarily block reporting: completed analysis over partial evidence is allowed, but every
+format qualifies the conclusion and suppresses an unsupported absence claim for that coverage area.
 
-Excel is the primary detailed report. It includes portfolio and per-application deterministic and
-semantic code coverage, including modeled/eligible segment counts, along with applications,
-artifacts, datasources, dependencies, capabilities, recommendations, evidence, and staging errors.
-Coverage distinguishes a completed analysis with zero findings from an application that was never
-analyzed or whose extraction was incomplete.
+For a diagnostic report when required analysis is incomplete, opt in explicitly:
 
-The PDF is an executive and architecture overview. Its rankings aggregate applications and
-evidence rather than depending on input order. Extraction warnings qualify the conclusions and
-populate the manual-review queue.
+```powershell
+portfolio-analyzer report --workspace .\workspace --allow-partial
+```
 
-CSV exports provide normalized datasets for applications, artifacts, analysis coverage, evidence,
-datasources, dependencies, capabilities, and recommendations. Files retain their headers even when
-there are no records. Spreadsheet-bound text is escaped when it could otherwise be interpreted as
-a formula.
+This report:
 
-Stated inventory descriptions remain claims and are never blended into observed findings.
-All application labels and normalized CSV keys use `EUCTNAME`; numeric inventory IDs remain internal
-and are omitted from report outputs.
-Reports ignore stale analysis checkpoints from older rule versions or different staged hashes.
-When an EUC has multiple listed Access applications, coverage and application reports include the
-primary filename beside the repeated EUC name so each application remains identifiable.
+- includes only completed applications;
+- lists every omitted application and logical unit with its stage and reason;
+- suppresses portfolio-wide absence claims;
+- carries the V2 partial watermark in every format; and
+- publishes with `.partial` filenames without replacing the latest complete pointer.
 
-Application drill-downs and the Application Portfolio sheet include observed behavior, known inputs,
-outputs/write targets, secondary capabilities, purpose provenance, and the classification rationale
-with citations. The HTML portfolio table leads with observed behavior; owner claims remain separate.
-The executive PDF includes up to six alphabetical application behavior examples, with the complete
-portfolio retained in HTML and Excel.
+Partial reporting does not turn a failed interpretation into a deterministic substitute.
 
-The Application Behavior and Behavior Sources sheets, and matching `application_behaviors.csv` and
-`behavior_sources.csv` datasets, connect behavior facts to redacted source excerpts and root UI
-properties. `semantic_applications.csv` appends the new profile fields; `semantic_application_irs.csv`
-appends full inventory counts/names, source IDs, and behavior counts. Existing columns remain intact.
+## Publication layout
 
+Every report is an immutable run:
 
-## Overlapping roles and discovered groups
+```text
+workspace/reports/
+  latest.json
+  runs/<run_id>/
+    portfolio.html               # complete run
+    portfolio.xlsx
+    portfolio.pdf
+    portfolio.csv.zip
+    manifest.json
+```
 
-Roles remain independent descriptors in the overview, role filter and application portfolio. They
-are not modernization groups. **Themes & solutions** discovers groups from the portfolio itself:
+Partial runs use `portfolio.partial.*`. The renderer writes and fsyncs every format, validates it,
+leak-scans it, records its size and SHA-256, and writes `manifest.json` last. The run becomes visible
+only through that manifest. `reports/latest.json` is atomically updated only for a complete,
+successfully reloaded and verified run. A crash or validation failure leaves the previous complete
+run readable.
 
-- matching complete query/VBA definitions, preserving identifiers and literal values;
-- the same confirmed external datasource identity (platform, server, database and schema);
-- repeated extracted observations, including labels never previously encountered by the tool.
+## Information hierarchy
 
-No role-to-solution catalogue or fixed number of groups is used. A group needs evidence from at
-least two applications. Features with the same supporting application set are combined. Groups
-can overlap: A/B sharing one pattern and B/C sharing another do not automatically become A/B/C.
-Names, roles, local table names, and incomplete connection identities alone cannot create groups.
-An absence of groups means insufficient shared evidence, not an absence of modernization work.
+All formats distinguish these classes rather than blending them into a narrative:
 
-Each group shows the actual shared patterns, affected applications, cited objects, comparison
-options and validation questions. The options address the observed relationship (code reuse,
-shared data contracts or repeated implementation signals). They remain conservative design
-candidates; repeated technology alone does not establish common business requirements.
+1. observed static facts and technical lineage;
+2. owner-supplied claims;
+3. Qwen interpretations and cited proposals;
+4. human review decisions; and
+5. unresolved references, omissions, and coverage limitations.
 
-Excel's **Portfolio Themes** and **Theme Locations** sheets and `portfolio_themes.csv` /
-`theme_locations.csv` export the same groups. Theme exports include `grouping_basis`,
-`alternative_options` and `generation_method`. The PDF summarizes a leading option and an
-alternative. Full evidence remains in HTML, Excel and CSV.
+The report model contains application summaries, object/query/table/connection/datasource
+registries, normalized data access, dependency nodes and edges, concrete evidence, coverage,
+application profiles, overlapping portfolio candidates, portfolio findings, reviews, and structured
+omissions. Model claims and portfolio proposals must resolve to evidence included in the same
+model.
 
-Default architecture components come from the discovered groups. The optional architecture model
-receives these groups and can propose different names and designs, subject to evidence validation
-and the approved platform-service list. It does not use a role-to-product lookup table. Model
-proposals are shown separately from deterministic discoveries; every included application needs
-its own supporting references. Existing model defaults and generation limits remain unchanged.
+No report presents an unresolved DSN or a same-named object as a confirmed shared datasource.
+Consolidation, reuse, target architecture, sequencing, and retirement remain proposals. Retirement
+requires an owner lifecycle claim.
 
+## Lineage views
 
-## Capability discovery, reuse and dependency exploration
+Pass-through QueryDefs and linked TableDefs receive dedicated views. They preserve, where available:
 
-The overview exposes business capability and workflow interpretations from semantic findings,
-separately from technical roles. Applications can appear under several labels. Each label includes
-affected applications, evidence and owner-claim references, confidence and review state. Rejected
-or uncited findings are excluded. Labels are open vocabulary, with exact case-insensitive matching;
-this report does not silently merge different labels that might be synonyms. Model generation
-must be enabled to obtain model-authored labels; the report cannot invent missing interpretations.
-Existing semantic-findings CSV/Excel exports retain the same labels and descriptions.
+- application, artifact, and Access object IDs;
+- query/table name and normalized kind;
+- connection and datasource IDs;
+- direct `QueryDef.Connect` or `TableDef.Connect` provenance;
+- DSN and resolution status;
+- platform, driver, server, catalog/database, schema, and object;
+- READ/INSERT/UPDATE/DELETE/CREATE/EXECUTE operation; and
+- concrete evidence IDs and unresolved warnings.
 
-“Reuse candidates” replaces the misleading singleton consolidation chart. It shows shared evidence,
-affected applications, source locations, candidate solutions, alternatives and owner questions.
-Applications without evidence-supported overlap stay ungrouped. Pairwise semantic similarity is
-available separately and is not presented as a dependency or a deployment decision.
+Connection defaults and explicit SQL qualifiers remain separate cited facts. Raw connection strings,
+credentials, and unknown connection-property values never enter the report model.
 
-The dependency network aggregates references into one node per application and scoped resource.
-Confirmed server/database/schema identities and shared UNC files or endpoints can connect apps;
-local tables and unresolved names stay within their application/artifact scope. Selecting a linked
-resource retains referenced tables, source queries/forms, read/write operations, paths and evidence
-IDs. Static UI facts are joined through their artifact and linked-table alias when unambiguous.
-Runtime libraries and analysis staging files are hidden by default and never generate shared-service
-candidates. The graph includes all records, not only the first 100.
+## HTML
 
-Use the application selector, shared-resource toggle and search to isolate a manageable neighborhood.
-Application focus includes other consumers of its resources. Click a resource or line for evidence;
-click an application for its profile. Drag nodes, pan, zoom, or fit the view. Shared dependency
-reviews suggest comparing ownership, data writes, contracts and lifecycle requirements; they do not
-assert that a common database requires a microservice. Missing dependencies remain possible where
-extraction is incomplete or references are dynamic.
+`portfolio.html` is self-contained and works offline. Content is HTML-escaped and the document uses
+a deny-by-default Content Security Policy with no CDN, remote image, analytics, script, or network
+dependency. It emphasizes coverage, application summaries, facts and claims, interpretations,
+portfolio candidates/findings, lineage, reviews, and omissions with resolvable IDs.
+
+## Excel
+
+`portfolio.xlsx` is the detailed analyst artifact. Its sheets include method/provenance, applications,
+candidates and findings, observed facts, owner claims, application profiles, reviews, unresolved
+references, coverage, pass-through queries, linked tables, object/table/query/connection/datasource
+registries, data access, dependency nodes/edges, structured omissions, warnings, and an importable
+Review Queue.
+
+Every string that begins like an Excel formula is escaped before writing. The Review Queue includes
+the originating analysis fingerprint plus stable subject and evidence identities. Allowed decision
+values are constrained to the review contract; `import-review` independently validates every row.
+
+## PDF
+
+`portfolio.pdf` is an executive brief, not the evidence system of record. It includes the report and
+analysis identifiers, coverage qualifications, application summaries, leading candidates and
+proposals, lineage summaries, unresolved items, and evidence references. Detailed rows remain
+available in Excel and CSV. Partial PDFs place the watermark near the beginning of the document.
+
+## Normalized CSV bundle
+
+`portfolio.csv.zip` contains deterministic UTF-8 CSV tables with headers even when empty. It
+includes report identity; applications; observed facts; owner claims; profiles and profile-evidence
+links; reviews; unresolved references; coverage; pass-through and linked-table views; object, table,
+query, connection, and datasource registries; data access; dependency nodes and edges; omissions;
+warnings; candidates, membership, evidence, and basis links; and findings, application membership,
+and evidence links.
+
+The normalized relations make one-to-many membership explicit and avoid delimiter-packed fields
+where a relation is important for downstream analysis.
+
+## Cross-format validation and leak scanning
+
+Before publication, each renderer must expose the same canonical record-ID set. The publisher
+verifies report/application/candidate/finding counts, record IDs, file hashes, and parseability. It
+scans the report model and rendered HTML, XLSX, PDF, and CSV ZIP for connection strings, credential
+assignments, and URI user information. A match blocks the entire run;
+there is no best-effort partial format publication.
+
+Report timestamps and machine paths do not affect the stable report fingerprint. The run manifest
+does record generation time for operations, while the digest chain ties the output to staged
+artifacts, extraction snapshots, evidence bundles, interpretations, and review overlay.
+
+## Review overlay
+
+Analysts may enter decisions in the workbook and import them:
+
+```powershell
+portfolio-analyzer import-review --workspace .\workspace --workbook .\review-decisions.xlsx
+```
+
+The importer requires the exact originating analysis fingerprint and known proposal/evidence IDs.
+It rejects stale, unknown, duplicate, conflicting, malformed, or formula-bearing decisions. Reviews
+remain overlays and never mutate observed evidence or model output. A later report may carry a
+decision forward only when stable proposal identity and all supporting evidence identities still
+match. Failed or partial analysis runs retain the prior overlay only as dormant archival input.
+They never apply it to mismatched partial-report inputs; the report records that omission. The next
+complete analysis may carry matching decisions forward after identity revalidation.

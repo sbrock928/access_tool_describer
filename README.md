@@ -1,120 +1,141 @@
 # Access Portfolio Analyzer
 
-An evidence-driven, static-analysis system for a portfolio of Microsoft Access applications.
+Access Portfolio Analyzer is an evidence-first, offline analyzer for Microsoft Access estates. It
+stages verified local copies, extracts static Access metadata, builds a canonical evidence bundle,
+uses one pinned local Qwen model for interpretation, and renders a single report model as HTML,
+Excel, PDF, and normalized CSV.
 
-The system has one non-negotiable safety invariant: source applications are copied to a verified local workspace before any extraction or analysis. The original inventory path is never passed to an extractor.
+The production path is intentionally narrow:
 
-The input workbook must contain `INVENTORY_ID`, `EUCTNAME`, `FILE_NAME`, `FULLPATH`, and `DESCRIPTION`. `FULLPATH` is source-only; it is never an analysis path.
-An inventory ID/EUC may span multiple rows when it has multiple Access files. Each distinct
-`FULLPATH` becomes a primary artifact; shared files in the same application bundle are staged once.
+```text
+inventory -> verified staging -> static extraction -> evidence bundles
+          -> local Qwen interpretation -> portfolio candidates and interpretation
+          -> shared report model -> HTML / Excel / PDF / CSV
+```
 
-## Current capabilities
+Technical facts remain deterministic. Qwen can interpret and propose from existing identifiers, but
+it cannot create servers, databases, objects, operations, dependencies, evidence, or candidate
+membership.
 
-The repository provides inventory ingestion, safe local staging, provenance and hashing,
-deterministic SQL/VBA/connection/path analysis, evidence and dependency models, SQLite
-persistence, capability aggregation, and Excel/CSV/PDF/HTML reporting. An optional semantic
-layer adds grounded application profiles, explainable portfolio clusters, two target-architecture
-tracks, and migration waves. The Windows adapter performs metadata-only Access inspection behind
-a guarded interface; it is intentionally unavailable on non-Windows hosts.
+## Supported scope
 
-See [BUILD_SPEC.md](BUILD_SPEC.md), [docs/SAFETY.md](docs/SAFETY.md), and [docs/WINDOWS_SETUP.md](docs/WINDOWS_SETUP.md).
+- Primary artifacts: case-insensitive `.accdb` and `.mdb` only.
+- Explicitly unsupported primaries: `.accde`, `.mde`, `.adp`, spreadsheets, CSV files, and every
+  other format. Mixed inventories continue; unsupported rows are recorded as
+  `SKIPPED_UNSUPPORTED_FORMAT` and copy zero bytes.
+- One inventory/EUC ID is one application. Multiple eligible rows for that ID remain separate,
+  artifact-scoped components of its application bundle.
+- Excel workbooks, network files, libraries, and other resources are recorded only when static
+  Access evidence refers to them. They are not recursively staged or independently analyzed.
 
-## Quick start
+The inventory workbook must contain `INVENTORY_ID`, `EUCTNAME`, `FILE_NAME`, `FULLPATH`, and
+`DESCRIPTION`. `FILE_NAME` must agree with the basename and suffix of `FULLPATH`. The inventory ID
+is the authoritative `application_id`; `FULLPATH` is source-only and is never passed to extraction,
+analysis, or reporting.
+
+Reviewed owner context is optional and remains separate from observed evidence. Before the first
+`stage` command, place `owner_context.csv` in `workspace/source_inventory/` with exactly these
+columns:
+
+```text
+application_id,business_owner,technical_owner,business_purpose,criticality,user_band,lifecycle_intent,data_sensitivity,pain_points,target_constraints
+```
+
+Rows may leave claim fields blank, but may reference only applications in the inventory. Unknown
+columns, unknown application IDs, and repeated claims for the same application and field fail
+staging. Values are sanitized before entering the evidence bundle.
+
+## Install
+
+Python 3.13 and Microsoft Access/ACE DAO on Windows are required for real Access extraction. Install
+the development, Windows, and local-model dependencies through the organization's approved package
+source:
 
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e ".[dev,windows]"
+python -m pip install -e ".[dev,windows,semantic]"
+```
+
+Cross-platform development can exercise static fixtures and fake providers, but the real extractor
+fails closed outside Windows.
+
+## Production workflow
+
+Start with a fresh V2 workspace. Generated state from earlier architectures is deliberately not
+migrated.
+
+```powershell
 portfolio-analyzer stage --inventory .\tool_inventory.xlsx --workspace .\workspace
 portfolio-analyzer extract --workspace .\workspace
-portfolio-analyzer analyze --workspace .\workspace
+portfolio-analyzer analyze --workspace .\workspace --model-dir C:\Models\Qwen2.5-1.5B-Instruct
 portfolio-analyzer report --workspace .\workspace
 ```
 
-`extract` only considers successful staged artifacts and is the only command that opens Access. It persists
-snapshots under `workspace/extracted/`. `analyze --force` can be run repeatedly against those snapshots as
-rules evolve, without opening Access or the original source file again.
+The model directory may instead be configured as `[qwen].path` in
+`workspace/analyzer.toml`, or through `ACCESS_ANALYZER_MODEL_DIR`, in that precedence order. There
+is no implicit download and no model selector.
 
-`report` writes an Excel workbook, an executive PDF, and normalized CSV datasets. The reports make
-pipeline coverage explicit so zero findings are not confused with missing or incomplete analysis.
-See [docs/REPORTS.md](docs/REPORTS.md) and [docs/REFACTOR_PLAN.md](docs/REFACTOR_PLAN.md).
+`--application ID` narrows `extract` or `analyze`; `--force` recomputes the selected current
+application while preserving unrelated compatible state. Every mutating command holds an exclusive
+workspace lock. Commands checkpoint all requested applications and return nonzero if any required
+item fails.
 
-## Optional local semantic analysis
-
-Semantic analysis is opt-in and deterministic by default. It inspects all extracted code-bearing
-objects, builds one complete application IR, derives evidence-cited profiles, computes explainable
-similarity, and creates the target architecture without loading a model. It does not use embeddings
-or a vector database, and the normal deterministic path needs neither ML dependencies nor model
-weights.
+Normal reporting refuses missing, failed, stale, or in-progress analysis. If an operator explicitly
+needs a scoped diagnostic deliverable, use:
 
 ```powershell
-portfolio-analyzer semantic-init --workspace .\workspace
-portfolio-analyzer semantic --workspace .\workspace
-portfolio-analyzer semantic-check --workspace .\workspace
-portfolio-analyzer report --workspace .\workspace --semantic-mode auto
+portfolio-analyzer report --workspace .\workspace --allow-partial
 ```
 
-Local-model profiles can propose several business capabilities and workflows per application,
-using open-ended labels with evidence citations. For a Windows CPU workstation with 16 GB RAM,
-start a reviewed trial with the smaller **Qwen2.5 1.5B Instruct** preset. Its approximately 3.09 GB
-BF16 weights are smaller than Granite's approximately 5 GB weights; runtime memory and speed
-still need measurement on your hardware. This is not a measured accuracy recommendation.
+A partial report includes only completed applications, names every omitted application or unit and
+its reason, suppresses portfolio-wide absence claims, is visibly watermarked, and never replaces
+`reports/latest.json` for the latest complete report.
+
+## Administrative commands
 
 ```powershell
-python -m pip install -c requirements\semantic-py313.lock -e ".[semantic]"
-portfolio-analyzer semantic-model-select --workspace .\workspace --model qwen
-portfolio-analyzer semantic-model-download --workspace .\workspace
-portfolio-analyzer semantic --workspace .\workspace
-portfolio-analyzer report --workspace .\workspace --semantic-mode require
+portfolio-analyzer model-download --destination C:\Models\Qwen2.5-1.5B-Instruct
+portfolio-analyzer model-verify --model-dir C:\Models\Qwen2.5-1.5B-Instruct
+portfolio-analyzer quality-check --workspace .\workspace --gold-set .\reviewed-gold.csv
+portfolio-analyzer import-review --workspace .\workspace --workbook .\review-decisions.xlsx
 ```
 
-For a clearly labeled report from an in-progress semantic checkpoint, run:
+The quality gold set is a UTF-8 CSV with
+`application_id,expected_capabilities,expected_related_application_ids`. Separate multiple values
+inside either expectation field with `;` or `|`. Application IDs must refer to the current analysis;
+every related application needs its own row, and unlisted pairs among reviewed rows count as reviewed
+negatives. The command scores every reviewed profile pair, reports the frozen threshold and the
+best-F1 calibrated recommendation in its quality result, and fails if the reviewed set does not
+validate the frozen threshold. Evaluation never changes generation policy.
 
-```powershell
-portfolio-analyzer report --workspace .\workspace --semantic-mode preview
-```
+`model-download` is the only command permitted to use the network. It acquires the exact reviewed
+allowlist for `Qwen/Qwen2.5-1.5B-Instruct` at revision
+`989aa7980e4cf806f80c7fef2b1adb7bc71aa306`, verifies sizes and SHA-256 digests, rejects unexpected
+or executable artifacts, and writes a verification manifest. `model-verify` and `analyze`
+independently verify those local files before use.
 
-Preview output is isolated under `workspace/reports/checkpoint_preview/` and includes only the
-applications checkpointed so far. Portfolio-wide clustering, target architecture, and roadmap
-results remain unavailable until semantic analysis completes.
+## Outputs and review
 
-Run `semantic-init` first if the workspace has no semantic configuration. Model selection enables
-local profile generation on CPU and sets a 768-token profile budget; it preserves other settings.
-Use `--model granite` to select the existing Granite option. New default configurations remain
-model-free. Setting `[microsoft] model_generation = true` separately enables model-authored
-architecture proposals. Both models are pinned to immutable revisions with verified file sizes
-and SHA-256 hashes. Acquisition is the only network-enabled phase; inference has no hosted fallback.
+Reports are immutable runs under `workspace/reports/runs/<run_id>/`. A run contains:
 
-The report now shows overlapping capability interpretations, evidence-supported reuse candidates,
-and an interactive dependency network with resource/operation/source drill-down. Shared resources
-suggest boundary reviews, not automatic microservice deployment decisions.
+- a self-contained, CSP-restricted offline HTML report;
+- a detailed analyst workbook with evidence, lineage, coverage, and a review queue;
+- an executive PDF with evidence references; and
+- a normalized CSV bundle covering applications, claims, data access, dependencies, evidence,
+  coverage, and portfolio findings.
 
-After this upgrade, rerun `semantic` and `report` using saved extraction and analysis results.
-There is no new extraction or deterministic `analyze` requirement for these report/model changes.
+All formats are built from the same `PortfolioReportModel` and preserve the same IDs and counts.
+Dedicated pass-through and linked-table views retain connection provenance and DSN resolution
+without exposing raw connection strings. Owner claims, observed facts, model interpretations,
+human decisions, and unresolved items remain separate.
 
-Use `--semantic-mode require` in controlled production runs, or `off` for deterministic-only
-reporting. Reviewers can enter `Accept`, `Edit`, or `Reject` in the workbook's `Review Queue` and
-then run:
+Review import requires the originating analysis fingerprint. Stale, unknown, duplicate, or
+conflicting decisions are rejected, and decisions carry forward only when stable proposal and
+evidence identities still match. A failed or partial intervening analysis keeps the last overlay
+reachable but dormant; partial reports omit it explicitly, and a later complete run revalidates
+proposal and evidence identities before carrying any decision forward.
 
-```powershell
-portfolio-analyzer import-review --workspace .\workspace `
-  --workbook .\workspace\reports\Portfolio_Analysis.xlsx
-portfolio-analyzer report --workspace .\workspace
-```
-
-For a faster end-to-end smoke test, use `portfolio-analyzer semantic --workspace .\workspace
---quick`. Quick mode samples at most five representative objects per application. Normal mode
-covers all modules, queries, macros, and form/report code-behind and reduces those facts to one
-application IR. With the default configuration there are zero model calls; model-backed profiles
-make one call per application only when explicitly enabled.
-Quick-mode state and reports are marked `TEST ONLY`; `semantic-check`, `--semantic-mode require`,
-and review import reject quick results. Each application is checkpointed so an interrupted run can
-resume without regenerating completed profiles. Both modes print wall-clock timestamps plus
-per-step and total elapsed time for model calls and pipeline stages.
-
-See [docs/SEMANTIC_ANALYSIS.md](docs/SEMANTIC_ANALYSIS.md) for model setup, security boundaries,
-gold-set evaluation, review import, and reproducible reruns.
-
-Per-application folders under `workspace/staged_tools` and `workspace/extracted`, along with every
-application reference in generated reports, use the human-readable `EUCTNAME`. `INVENTORY_ID`
-remains an internal provenance key and is not exposed as the report label.
+See [BUILD_SPEC.md](BUILD_SPEC.md), [docs/SAFETY.md](docs/SAFETY.md),
+[docs/SEMANTIC_ANALYSIS.md](docs/SEMANTIC_ANALYSIS.md), [docs/REPORTS.md](docs/REPORTS.md), and
+[docs/WINDOWS_SETUP.md](docs/WINDOWS_SETUP.md).

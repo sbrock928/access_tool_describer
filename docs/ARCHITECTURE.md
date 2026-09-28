@@ -1,25 +1,31 @@
-# Architecture
+# V2 Architecture
 
-`inventory -> staging -> trusted local artifact -> Windows extraction -> deterministic analysis -> evidence store -> deterministic application profiles -> deterministic similarity -> reviewed architecture -> reports`
+The analyzer has one production path:
 
-The `access` package is the only Windows-specific layer. It receives `StagedArtifact`, never `Path` alone, and validates the artifact again before use. `parsing`, `lineage`, `capabilities`, `similarity`, `persistence`, and `reporting` are OS-independent.
+```text
+inventory
+→ verified local staging
+→ static Access extraction
+→ ApplicationEvidenceBundle
+→ logical-unit Qwen interpretation
+→ application synthesis
+→ deterministic overlap candidates
+→ Qwen portfolio interpretation
+→ PortfolioReportModel
+→ HTML / Excel / PDF / CSV
+```
 
-Deterministic facts (for example a SQL statement references `dbo.Deal`) are stored as evidence independently from interpretations (for example a report-generation capability). This permits later reclassification without re-extraction.
+Static code owns technical facts, identifiers, datasource resolution, and graph edges. The pinned
+local Qwen model interprets only supplied facts and must cite concrete evidence. It cannot invent
+applications, connections, objects, or candidate membership. Owner statements remain attributed
+claims; human decisions remain a review overlay.
 
-`INVENTORY_ID` remains the stable internal join and checkpoint key. Workspace application folders
-and report labels use `EUCTNAME`. EUC names are validated for case-insensitive uniqueness after
-Windows-safe normalization, preventing two applications from sharing a directory. On staging, an
-unambiguous legacy inventory-ID directory is renamed to its EUC name.
+Generated state is strict, versioned, canonical JSON. Immutable payloads are content-addressed;
+small manifests and atomic current pointers make a run visible only after referenced payloads have
+been fsynced and verified. Timestamps, host paths, and secrets do not participate in lineage
+fingerprints. There is no generated-state migration or runtime compatibility bridge.
 
-One inventory ID/EUC can contain multiple listed Access files. The staging state retains one
-inventory record per listed file, de-duplicates their shared bundle artifacts, and marks every
-listed Access file as primary. Extraction and analysis checkpoints distinguish those primaries by
-their SHA-256 values. Coverage reports show both the EUC name and primary filename.
-
-The optional semantic layer derives profiles deterministically from application IRs, evidence, and
-owner claims by default. Operators may explicitly enable one allowlisted instruct model loaded
-directly from an integrity-verified local directory; it summarizes and classifies bounded evidence
-without replacing static parsing. Portfolio similarity uses weighted Jaccard overlap across evidence-grounded capabilities,
-workflows, data domains, datasources, technical characteristics, object composition, and archetype.
-Each retained edge stores its category scores and shared features. No embeddings, vector database,
-model server, or network transport participate in analysis.
+Only staging reads original inventory paths. Downstream state contains opaque source identities,
+verified staged-relative paths, artifact hashes, and artifact-scoped object IDs. See
+[`ARCHITECTURE_REFACTOR_V2.md`](ARCHITECTURE_REFACTOR_V2.md) for the detailed assessment, threat
+boundary, contracts, and implementation rationale.

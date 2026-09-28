@@ -26,8 +26,3 @@ def euc_directory_name(euc_name: str) -> str:
     if stem in _RESERVED_WINDOWS_NAMES or component.casefold() in _RESERVED_WORKSPACE_NAMES:
         component = f"{component}_euc"
     return component
-
-
-def legacy_inventory_directory_name(inventory_id: str) -> str:
-    """Reproduce the pre-EUC workspace component for a safe one-time migration."""
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", inventory_id).strip("._") or "unnamed"

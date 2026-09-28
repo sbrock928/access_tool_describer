@@ -1,7 +1,32 @@
 # Access Extraction
 
-The Windows adapter is deliberately conservative. It validates the staged artifact, creates a hidden Access automation instance, requests forced macro security, and holds Shift while opening. Microsoft documents that this bypasses AutoExec and other startup options. It obtains schema/query metadata without executing QueryDefs. It never calls `DoCmd.OpenForm`, `DoCmd.OpenReport`, `Run`, `RunCode`, macro execution, or query execution. Forms, reports, macros, modules, and queries are exported with `Application.SaveAsText` for static parsing where supported.
+Extraction accepts only verified staged `.accdb` and `.mdb` artifacts. It never receives the
+original source path and never analyzes sibling files.
 
-Microsoft documents `SaveAsText` as exporting object definitions, `AutomationSecurity` as controlling programmatic-open security, and Shift as bypassing AutoExec and other startup options. `AutomationSecurityForceDisable` has no effect when the Access macro-security setting is Low, so the Shift bypass is an independent protection. If a database has `AllowBypassKey=False`, Access can ignore the Shift bypass; the extractor will record any resulting opening/export errors. The adapter deliberately does not set `DisplayAlerts`, because that is not a consistently writable Access automation property. Run the adapter only in an isolated Windows analysis environment, with a non-privileged account and no production credentials. Do not type during the brief global Shift-key bypass. See the Microsoft references in `WINDOWS_SETUP.md`.
+The mandatory lane opens the staged copy directly with ACE/DAO in read-only mode. It enumerates
+all QueryDefs, including `~sq*`, and TableDefs with property-level error isolation. It records DAO
+type, normalized query kind, sanitized connection metadata, returns-records behavior, timeout,
+parameters, table attributes, and source-table names. It never executes queries, opens recordsets,
+refreshes links, or enumerates fields on linked/pass-through objects.
 
-Before each opening, the extractor creates a minimal disposable working bundle containing only the target database. Place approved shared libraries in `workspace/staged_tools/shared_libraries` (for example, `EUC_AL.accdb`); those Access databases are added beside the working primary database. It does not copy the source folder or search other staged bundles, preventing each extraction from duplicating the whole staged estate. This supports shared project libraries without changing the original database or the hash-verified staged copy. When more than one distinct file with the same name occurs in `shared_libraries`, it is not selected automatically and extraction records a warning.
+The optional SaveAsText lane uses a second disposable copy. Before Access opens it, the worker:
+
+1. verifies the copy hash;
+2. sets and re-verifies `AllowBypassKey=True` through DAO;
+3. requires launcher attestations for a non-low macro policy and outbound-network isolation, and
+   independently verifies that the current Windows token is not an administrator token;
+4. holds Shift and requests forced automation security; and
+5. enforces hidden UI, timeout, process cleanup, and parent-side Shift release.
+
+If any required attestation or direct verification is unavailable, this lane is skipped and
+coverage is terminally partial.
+There is no less-safe fallback. The mutated disposable hash is recorded separately. Export names
+come from safe object IDs; raw exports are strictly decoded, sanitized, and deleted.
+
+Shared libraries default to none. `source_inventory/access_libraries.json` may map an application
+to reviewed `.accdb`/`.mdb` files already placed under `staged_tools/shared_libraries`. Every entry
+requires a SHA-256 and reason. Missing hashes, unsafe paths, filename collisions, changed bytes,
+and transitive discovery fail closed. A matching hash proves identity, not safety.
+
+Password-protected or encrypted databases fail without prompting. Run Windows extraction as a
+low-privilege account in an isolated worker environment without production credentials.

@@ -14,8 +14,6 @@ dependencies = [
   "openpyxl>=3.1.5",
   "pydantic>=2.10",
   "reportlab>=4.2",
-  "SQLAlchemy>=2.0",
-  "structlog>=24.4",
   "typer>=0.15",
 ]
 
@@ -38,7 +36,10 @@ packages = ["src/portfolio_analyzer"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
-markers = ["windows_access: requires Windows, Microsoft Access, and pywin32"]
+markers = [
+  "windows_access: requires Windows, Microsoft Access, and pywin32",
+  "local_qwen: requires the pinned local Qwen model and semantic dependencies",
+]
 
 [tool.ruff]
 target-version = "py313"

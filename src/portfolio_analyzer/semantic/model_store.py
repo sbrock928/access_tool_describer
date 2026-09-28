@@ -83,82 +83,6 @@ class ApprovedModel(BaseModel):
         return self
 
 
-# This is the original production model. It is published by IBM, Apache-2.0 licensed,
-# Transformers-native, approximately 5 GB in BF16, and has safetensors-only weights.
-# Sizes and SHA-256 values were independently reviewed against the pinned Hugging Face
-# revision on 2026-09-22. The two LFS digests are the publisher-hosted LFS object IDs.
-APPROVED_MODEL = ApprovedModel(
-    repo_id="ibm-granite/granite-3.3-2b-instruct",
-    revision="707f574c62054322f6b5b04b6d075f0a8f05e0f0",
-    local_identifier="granite-3.3-2b-instruct",
-    license="Apache-2.0",
-    architecture="GraniteForCausalLM",
-    model_type="granite",
-    artifacts=(
-        ApprovedArtifact(
-            path="README.md",
-            size_bytes=37026,
-            sha256="dd7a9d401b703f4d6136b70b575a8070b88d173f61804dad48fccc7949afe610",
-        ),
-        ApprovedArtifact(
-            path="added_tokens.json",
-            size_bytes=207,
-            sha256="bb33d55934aa82d29cc62f3d19cdbc60f315763f6ccee21bdfd8b3bde2f33d3b",
-        ),
-        ApprovedArtifact(
-            path="config.json",
-            size_bytes=787,
-            sha256="9202d328d8368958aab7dad89a8e6aa35c250b3a2eedd2d8850ee0bcceca65f6",
-        ),
-        ApprovedArtifact(
-            path="generation_config.json",
-            size_bytes=132,
-            sha256="9c95e80167f08fbeb1feba239e0749507c25d18ffab43ffa10887821eed21c38",
-        ),
-        ApprovedArtifact(
-            path="merges.txt",
-            size_bytes=441810,
-            sha256="303127a244b0078878156c17229f36d11b7a3a3f8e47b7cfdbb304ff46be5030",
-        ),
-        ApprovedArtifact(
-            path="model-00001-of-00002.safetensors",
-            size_bytes=4999999840,
-            sha256="12880d33c0ad4726af5cf8c07406905f9b496253c58ee46f52be8bde8ccf2254",
-        ),
-        ApprovedArtifact(
-            path="model-00002-of-00002.safetensors",
-            size_bytes=67121712,
-            sha256="a8757c5bf7627933e7fddbd9bab0533491b4dc0962820e0617f356ca1a379ffa",
-        ),
-        ApprovedArtifact(
-            path="model.safetensors.index.json",
-            size_bytes=29835,
-            sha256="32ea3f438335d51c8e630a83898ceb23bdffd34291a0eade07474211928fa243",
-        ),
-        ApprovedArtifact(
-            path="special_tokens_map.json",
-            size_bytes=801,
-            sha256="21ce694081bb9ae1bd4bc64549e72e0799ebb74705e6b650e3585d85b71ebdc1",
-        ),
-        ApprovedArtifact(
-            path="tokenizer.json",
-            size_bytes=3476578,
-            sha256="91168e938f05796aa6dcca7e485e4b30ab52785320c7a6391ecef86e6c84681e",
-        ),
-        ApprovedArtifact(
-            path="tokenizer_config.json",
-            size_bytes=9930,
-            sha256="f65a6a5a911424c85f157c40cfbdf06e025814c755480ba2e998d7fba1178664",
-        ),
-        ApprovedArtifact(
-            path="vocab.json",
-            size_bytes=776995,
-            sha256="80ab859339a2525fdfbda14bc39df02dffb824aefdaf86426217bbb146d17e01",
-        ),
-    ),
-)
-
-
 # Publisher metadata and small-file hashes verified at this immutable revision.
 # Weight SHA-256 is the publisher LFS object ID; verified again after acquisition.
 QWEN_MODEL = ApprovedModel(
@@ -217,11 +141,9 @@ QWEN_MODEL = ApprovedModel(
     ),
 )
 
-
 def approved_model(repo_id: str, revision: str) -> ApprovedModel:
-    for model in (APPROVED_MODEL, QWEN_MODEL):
-        if model.repo_id == repo_id and model.revision == revision:
-            return model
+    if QWEN_MODEL.repo_id == repo_id and QWEN_MODEL.revision == revision:
+        return QWEN_MODEL
     raise ValueError("repository and revision must match the approved-model allowlist")
 
 
@@ -296,7 +218,7 @@ def acquire_approved_model(
     model: ApprovedModel | None = None,
 ) -> ModelManifest:
     """Download only allowlisted files at the approved SHA, then verify and publish atomically."""
-    model = model or APPROVED_MODEL
+    model = model or QWEN_MODEL
     model = approved_model(model.repo_id, model.revision)
     if destination.exists():
         raise FileExistsError(
@@ -380,7 +302,7 @@ def verify_model_directory(directory: Path) -> VerifiedModel:
 
 
 def _build_manifest(directory: Path, model: ApprovedModel | None = None) -> ModelManifest:
-    model = model or APPROVED_MODEL
+    model = model or QWEN_MODEL
     records = [
         ModelFileRecord(
             path=name,
@@ -404,7 +326,10 @@ def _build_manifest(directory: Path, model: ApprovedModel | None = None) -> Mode
 
 
 def _manifest_digest(manifest: ModelManifest) -> str:
-    payload = manifest.model_dump(mode="json", exclude={"manifest_sha256"})
+    # Acquisition time is audit metadata, not model identity or cache invalidation input.
+    payload = manifest.model_dump(
+        mode="json", exclude={"manifest_sha256", "acquired_at"}
+    )
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -423,7 +348,7 @@ def _validate_file_inventory(
     include_manifest: bool,
     model: ApprovedModel | None = None,
 ) -> None:
-    model = model or APPROVED_MODEL
+    model = model or QWEN_MODEL
     allowed = set(model.expected_files)
     if include_manifest:
         allowed.add("model_manifest.json")
@@ -453,7 +378,7 @@ def _validate_approved_artifact_digests(
     model: ApprovedModel | None = None,
 ) -> None:
     """Reject upstream or transport bytes that differ from the reviewed artifact set."""
-    model = model or APPROVED_MODEL
+    model = model or QWEN_MODEL
     for artifact in model.artifacts:
         path = directory / artifact.path
         if path.stat().st_size != artifact.size_bytes:
@@ -466,7 +391,7 @@ def _validate_transformers_configuration(
     directory: Path,
     model: ApprovedModel | None = None,
 ) -> None:
-    model = model or APPROVED_MODEL
+    model = model or QWEN_MODEL
     config_path = directory / "config.json"
     try:
         config: dict[str, Any] = json.loads(config_path.read_text(encoding="utf-8"))
