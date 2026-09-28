@@ -5,6 +5,8 @@
 __pycache__/
 *.py[cod]
 *.xlsx
+*.json
+*.accdb
 *.safetensors
 models/
 workspace/
