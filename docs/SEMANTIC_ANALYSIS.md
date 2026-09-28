@@ -9,14 +9,14 @@ selector, embedding service, vector database, or reduced product mode.
 
 | Field | Approved value |
 | --- | --- |
-| Repository | `Qwen/Qwen2.5-1.5B-Instruct` |
-| Revision | `989aa7980e4cf806f80c7fef2b1adb7bc71aa306` |
+| Repository | `Qwen/Qwen2.5-0.5B-Instruct` |
+| Revision | `7ae557604adf67be50417f59c2c2f167def9a775` |
 | Architecture | `Qwen2ForCausalLM` |
 | Weight format | native safetensors |
 | License | Apache-2.0 |
 
-The [publisher model card](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct) describes the model;
-the [pinned file inventory](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/tree/989aa7980e4cf806f80c7fef2b1adb7bc71aa306)
+The [publisher model card](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct) describes the model;
+the [pinned file inventory](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/tree/7ae557604adf67be50417f59c2c2f167def9a775)
 is the version reviewed for this analyzer. Upstream scan labels are supporting evidence, not a
 security guarantee. The analyzer compiles an exact filename, size, and SHA-256 allowlist; approving
 another repository or revision requires a code and security review.
@@ -33,7 +33,7 @@ python -m pip install -c requirements\semantic-py313.lock -e ".[semantic]"
 During an explicitly approved connected acquisition window, run:
 
 ```powershell
-portfolio-analyzer model-download --destination C:\Models\Qwen2.5-1.5B-Instruct
+portfolio-analyzer model-download --destination C:\Models\Qwen2.5-0.5B-Instruct
 ```
 
 This is the only command allowed to access the network. It downloads only allowlisted model,
@@ -45,7 +45,7 @@ matches.
 Verify an existing directory without network access:
 
 ```powershell
-portfolio-analyzer model-verify --model-dir C:\Models\Qwen2.5-1.5B-Instruct
+portfolio-analyzer model-verify --model-dir C:\Models\Qwen2.5-0.5B-Instruct
 ```
 
 The verifier recognizes manifests emitted by the immediately preceding approved downloader, which
@@ -70,7 +70,7 @@ An explicit CLI path is useful for controlled runs. A workspace configuration ca
 schema_version = "access-analyzer-config-v2"
 
 [qwen]
-path = "C:/Models/Qwen2.5-1.5B-Instruct"
+path = "C:/Models/Qwen2.5-0.5B-Instruct"
 device = "cpu"
 cpu_threads = 4
 cpu_interop_threads = 1
@@ -147,7 +147,7 @@ After every eligible application is current, deterministic code creates overlapp
 - a shared external object;
 - a shared resolved file;
 - an exact normalized code duplicate; and
-- semantic-profile overlap above the frozen, versioned quality threshold.
+- semantic-profile overlap after a reviewed Qwen 0.5B gold set freezes a versioned threshold.
 
 These are review candidates, not clusters. Membership is not transitive and applications may appear
 in several candidates. Unresolved datasources and matching object names alone cannot merge
@@ -198,18 +198,18 @@ application must also have its own reviewed row. Among those rows, a listed pair
 positive and every unlisted pair is a reviewed negative, so a calibration set needs at least one of
 each. The analyzer does not create or infer a gold artifact.
 
-The command computes the same six-decimal Jaccard semantic score used by candidate generation for
-every pair of reviewed profiles. Its quality result records the frozen policy threshold and a
-diagnostic calibrated recommendation. The recommendation maximizes pair F1; ties prefer higher
-precision, then higher recall, then the higher threshold. The frozen threshold is validated when it
-attains the calibrated maximum F1, even if another boundary is the deterministic recommendation.
-Capability recall and the frozen-threshold pair F1 must also clear the fixed 0.70 release gates. A
-candidate set inconsistent with the frozen score boundary fails the check.
+The command computes the six-decimal Jaccard semantic score for every pair of reviewed profiles and
+records a diagnostic calibrated recommendation. The recommendation maximizes pair F1; ties prefer
+higher precision, then higher recall, then the higher threshold. Until a threshold is reviewed and
+frozen under a new policy version, the check fails and semantic-profile candidates remain disabled.
+Capability recall and the eventual frozen-threshold pair F1 must clear the fixed 0.70 release
+gates. A candidate set inconsistent with the active policy also fails the check.
 
 The broader automated suite separately tests schema validity, citation closure, valid abstention,
-and secret leakage. The V2 semantic retrieval threshold remains a frozen, versioned code-policy
-constant. Calibration is read-only: `quality-check` neither changes generation policy nor exposes an
-operator tuning control. A recommendation is evidence for a separately reviewed future policy
+and secret leakage. Semantic-profile candidates are currently disabled because no reviewed Qwen
+0.5B gold set has frozen a threshold. Calibration is read-only: `quality-check` neither changes
+generation policy nor exposes an operator tuning control. A recommendation is evidence for a
+separately reviewed future policy
 change, which still requires an approved calibration artifact and a new policy version.
 
 Excel review decisions remain overlays. Import them with:

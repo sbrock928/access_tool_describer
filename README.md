@@ -68,7 +68,7 @@ migrated.
 ```powershell
 portfolio-analyzer stage --inventory .\tool_inventory.xlsx --workspace .\workspace
 portfolio-analyzer extract --workspace .\workspace
-portfolio-analyzer analyze --workspace .\workspace --model-dir C:\Models\Qwen2.5-1.5B-Instruct
+portfolio-analyzer analyze --workspace .\workspace --model-dir C:\Models\Qwen2.5-0.5B-Instruct --verbose
 portfolio-analyzer report --workspace .\workspace
 ```
 
@@ -95,8 +95,8 @@ its reason, suppresses portfolio-wide absence claims, is visibly watermarked, an
 ## Administrative commands
 
 ```powershell
-portfolio-analyzer model-download --destination C:\Models\Qwen2.5-1.5B-Instruct
-portfolio-analyzer model-verify --model-dir C:\Models\Qwen2.5-1.5B-Instruct
+portfolio-analyzer model-download --destination C:\Models\Qwen2.5-0.5B-Instruct
+portfolio-analyzer model-verify --model-dir C:\Models\Qwen2.5-0.5B-Instruct
 portfolio-analyzer quality-check --workspace .\workspace --gold-set .\reviewed-gold.csv
 portfolio-analyzer import-review --workspace .\workspace --workbook .\review-decisions.xlsx
 ```
@@ -110,10 +110,19 @@ best-F1 calibrated recommendation in its quality result, and fails if the review
 validate the frozen threshold. Evaluation never changes generation policy.
 
 `model-download` is the only command permitted to use the network. It acquires the exact reviewed
-allowlist for `Qwen/Qwen2.5-1.5B-Instruct` at revision
-`989aa7980e4cf806f80c7fef2b1adb7bc71aa306`, verifies sizes and SHA-256 digests, rejects unexpected
+allowlist for `Qwen/Qwen2.5-0.5B-Instruct` at revision
+`7ae557604adf67be50417f59c2c2f167def9a775`, verifies sizes and SHA-256 digests, rejects unexpected
 or executable artifacts, and writes a verification manifest. `model-verify` and `analyze`
 independently verify those local files before use.
+
+`analyze` always prints safe high-level progress to stderr. Add `--verbose` for model-load timing,
+token budgets, cache results, retries, generation throughput, and a 15-second heartbeat. Progress
+messages never include prompts, generated text, object definitions, credentials, or filesystem
+paths.
+
+Semantic-profile similarity candidates are disabled pending reviewed Qwen 0.5B gold-set
+calibration. Endpoint, external-object, file, and exact-code candidates remain active; reports
+qualify this limitation and suppress semantic-similarity absence claims.
 
 ## Outputs and review
 

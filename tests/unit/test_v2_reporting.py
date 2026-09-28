@@ -12,7 +12,10 @@ import pytest
 from openpyxl import load_workbook
 
 import portfolio_analyzer.v2.reporting as reporting
-from portfolio_analyzer.v2.candidates import generate_portfolio_candidates
+from portfolio_analyzer.v2.candidates import (
+    SEMANTIC_SIMILARITY_DISABLED_WARNING,
+    generate_portfolio_candidates,
+)
 from portfolio_analyzer.v2.fingerprints import (
     evidence_bundle_fingerprint,
     interpretation_fingerprint,
@@ -112,6 +115,8 @@ def test_builder_is_self_contained_deterministic_and_uses_stable_lineage() -> No
     )
 
     assert report.status == ReportStatus.COMPLETE
+    assert SEMANTIC_SIMILARITY_DISABLED_WARNING in report.warnings
+    assert report.absence_claims_suppressed
     assert report.report_id == reordered.report_id
     assert report.analysis_fingerprint == reordered.analysis_fingerprint
     assert len(report.observed_facts) == 4

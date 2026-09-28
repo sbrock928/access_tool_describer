@@ -111,8 +111,8 @@ analysis-host evidence, not proof of production configuration.
 
 ## Interpretation contract
 
-The only supported model is `Qwen/Qwen2.5-1.5B-Instruct`, revision
-`989aa7980e4cf806f80c7fef2b1adb7bc71aa306`. Loading is local-only, safetensors-only, offline,
+The only supported model is `Qwen/Qwen2.5-0.5B-Instruct`, revision
+`7ae557604adf67be50417f59c2c2f167def9a775`. Loading is local-only, safetensors-only, offline,
 telemetry-disabled, and uses `trust_remote_code=False`. There is no hosted fallback, runtime model
 selection, prompt persistence, or deterministic semantic substitute.
 

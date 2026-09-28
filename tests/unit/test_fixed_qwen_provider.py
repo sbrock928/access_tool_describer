@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Mapping
 from contextlib import nullcontext
 from datetime import UTC, datetime
@@ -11,6 +12,7 @@ from typing import Any, Literal
 import pytest
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from portfolio_analyzer.progress import AnalysisProgressReporter, GenerationHeartbeat
 from portfolio_analyzer.qwen import (
     LocalQwenProvider,
     QwenOutputError,
@@ -186,6 +188,16 @@ def test_previous_downloader_manifest_digest_is_recognized_and_canonicalized() -
     assert _validated_manifest_digest(manifest) == canonical
 
 
+def test_approved_model_is_the_pinned_qwen_half_billion_manifest() -> None:
+    assert QWEN_MODEL.repo_id == "Qwen/Qwen2.5-0.5B-Instruct"
+    assert QWEN_MODEL.revision == "7ae557604adf67be50417f59c2c2f167def9a775"
+    weights = QWEN_MODEL.artifacts_by_path["model.safetensors"]
+    assert weights.size_bytes == 988_097_824
+    assert weights.sha256 == (
+        "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
+    )
+
+
 def test_unrecognized_model_manifest_digest_still_fails_closed() -> None:
     manifest = _verified_model(Path("model")).manifest
     manifest.manifest_sha256 = "b" * 64
@@ -286,7 +298,7 @@ def test_local_qwen_is_fixed_offline_deterministic_and_loaded_once(
         "use_safetensors": True,
         "dtype": "auto",
     }
-    assert model.to_calls == ["cpu"]
+    assert model.to_calls == []
     assert model.eval_calls == 1
     assert torch.thread_calls == [3]
     assert torch.interop_calls == [1]
@@ -310,6 +322,59 @@ def test_local_qwen_is_fixed_offline_deterministic_and_loaded_once(
         "DO_NOT_TRACK",
     ):
         assert os.environ[name] == "1"
+
+
+def test_verbose_provider_progress_is_content_free(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_runtime(
+        monkeypatch,
+        tmp_path,
+        responses=['{"answer":"SECRET output"}'],
+    )
+    messages: list[str] = []
+    provider = LocalQwenProvider(
+        _runtime(tmp_path),
+        progress=AnalysisProgressReporter(verbose=True, sink=messages.append),
+    )
+
+    provider.complete_json(
+        system="Analyze without exposing PWD=SECRET.",
+        user='{"private_definition":"SECRET input"}',
+        schema_name="Finding",
+        schema={"type": "object"},
+        max_output_tokens=32,
+    )
+
+    combined = "\n".join(messages)
+    assert "Loading tokenizer" in combined
+    assert "model weights" in combined
+    assert "Generation 1: starting Finding" in combined
+    assert "Generation 1: complete" in combined
+    assert "SECRET" not in combined
+    assert str(tmp_path) not in combined
+
+
+def test_generation_heartbeat_reports_and_stops_cleanly() -> None:
+    messages: list[str] = []
+    heartbeat = GenerationHeartbeat(
+        AnalysisProgressReporter(verbose=True, sink=messages.append),
+        generation_id=7,
+        interval_seconds=0.01,
+    )
+
+    heartbeat.start()
+    heartbeat.update(4)
+    time.sleep(0.025)
+    generated, elapsed = heartbeat.finish()
+    message_count = len(messages)
+    time.sleep(0.02)
+
+    assert generated == 4
+    assert elapsed > 0
+    assert any("Generation 7: running" in item for item in messages)
+    assert len(messages) == message_count
 
 
 def test_local_qwen_rejects_non_qwen_verified_identity(

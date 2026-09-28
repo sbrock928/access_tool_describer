@@ -86,9 +86,9 @@ class ApprovedModel(BaseModel):
 # Publisher metadata and small-file hashes verified at this immutable revision.
 # Weight SHA-256 is the publisher LFS object ID; verified again after acquisition.
 QWEN_MODEL = ApprovedModel(
-    repo_id="Qwen/Qwen2.5-1.5B-Instruct",
-    revision="989aa7980e4cf806f80c7fef2b1adb7bc71aa306",
-    local_identifier="qwen2.5-1.5b-instruct",
+    repo_id="Qwen/Qwen2.5-0.5B-Instruct",
+    revision="7ae557604adf67be50417f59c2c2f167def9a775",
+    local_identifier="qwen2.5-0.5b-instruct",
     license="Apache-2.0",
     architecture="Qwen2ForCausalLM",
     model_type="qwen2",
@@ -101,12 +101,12 @@ QWEN_MODEL = ApprovedModel(
         ApprovedArtifact(
             path="README.md",
             size_bytes=4917,
-            sha256="2e1bcd8bd964728a820be709fa0f7b9dd54817a94fd2254c535df70c5e67fada",
+            sha256="b19c806a904db6dc878a0462e70b551f6b7ac78dfbb88c2eb966ca2b9109ae15",
         ),
         ApprovedArtifact(
             path="config.json",
-            size_bytes=660,
-            sha256="98d2ff8cc47488d08a2b0b3acf4eb99ef210779b42bd48605f6b8e36acdbf670",
+            size_bytes=659,
+            sha256="18e18afcaccafade98daf13a54092927904649e1dd4eba8299ab717d5d94ff45",
         ),
         ApprovedArtifact(
             path="generation_config.json",
@@ -120,8 +120,8 @@ QWEN_MODEL = ApprovedModel(
         ),
         ApprovedArtifact(
             path="model.safetensors",
-            size_bytes=3087467144,
-            sha256="dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee",
+            size_bytes=988097824,
+            sha256="fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe",
         ),
         ApprovedArtifact(
             path="tokenizer.json",

@@ -9,7 +9,7 @@ define the implemented V2 replacement architecture.
 The reset deliberately does not preserve generated staging state, extraction snapshots, analysis
 state, semantic state, caches, SQLite rows, or report schemas. A new run starts from the inventory
 and source applications. The only supported inference model for this version is the approved,
-pinned `Qwen/Qwen2.5-1.5B-Instruct` model running locally.
+pinned `Qwen/Qwen2.5-0.5B-Instruct` model running locally.
 
 The governing design is:
 
@@ -594,10 +594,11 @@ It does not declare consolidation, reuse, or migration decisions. Qwen interpret
 into cited overlap, reuse, modernization, and migration findings. Singleton applications remain
 ungrouped unless evidence supports a portfolio relationship.
 
-The semantic threshold remains a frozen versioned generation policy. Read-only quality evaluation
-scores every pair in the supplied reviewed gold set and derives the best-F1 recommendation with
-deterministic conservative tie-breaking. The frozen threshold must attain that maximum F1; the
-evaluation records a recommendation but never mutates runtime policy or manufactures a gold set.
+Semantic-profile candidates remain disabled until the Qwen 0.5B policy is calibrated against a
+reviewed gold set. Read-only quality evaluation scores every pair in the supplied reviewed gold
+set and derives the best-F1 recommendation with deterministic conservative tie-breaking. The
+evaluation records a recommendation but never mutates runtime policy or manufactures a gold set;
+a later reviewed release must freeze the selected threshold under a new policy version.
 
 The local model's size makes object/application decomposition necessary. One Qwen call per
 application is not enough for a large estate, while one call per trivial object wastes runtime.
@@ -846,7 +847,7 @@ state and compatibility code are deleted rather than migrated.
 - The v2 primary format allowlist is `.accdb` and `.mdb`. Other Access formats are reported as
   unsupported until a separate extraction and coverage policy is approved.
 - Generated v1 state has no compatibility requirement and will be regenerated.
-- Qwen2.5-1.5B-Instruct is available locally for production analysis; production business
+- Qwen2.5-0.5B-Instruct is available locally for production analysis; production business
   interpretation does not have a model-free fallback.
 - Model acquisition is the only normal network-enabled phase. Extraction, inference, analysis,
   portfolio processing, and reporting are enforced offline.

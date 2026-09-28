@@ -3,6 +3,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+import pytest
 from openpyxl import Workbook, load_workbook
 from typer.testing import CliRunner
 
@@ -41,7 +42,12 @@ from portfolio_analyzer.v2.reporting import (
     load_report_publication,
 )
 from portfolio_analyzer.v2.review import ReviewOverlay
-from portfolio_analyzer.v2.state import RunPhase, RunStatus, V2StateStore
+from portfolio_analyzer.v2.state import (
+    RunPhase,
+    RunStatus,
+    StateIntegrityError,
+    V2StateStore,
+)
 from portfolio_analyzer.v2.workflow import (
     EXTRACTION_POLICY_VERSION,
     ExtractedArtifactSnapshot,
@@ -358,7 +364,10 @@ def test_v2_analyze_publishes_evidence_application_and_portfolio_chain(
     monkeypatch.setattr(
         "portfolio_analyzer.cli.v2.resolve_qwen_runtime", lambda *_a, **_k: object()
     )
-    monkeypatch.setattr("portfolio_analyzer.cli.v2.LocalQwenProvider", lambda _runtime: object())
+    monkeypatch.setattr(
+        "portfolio_analyzer.cli.v2.LocalQwenProvider",
+        lambda _runtime, **_kwargs: object(),
+    )
     monkeypatch.setattr("portfolio_analyzer.cli.v2._model_provenance", lambda _provider: provenance)
 
     def fake_application(bundle: Any, _provider: Any, **_kwargs: Any) -> ApplicationAnalysisResult:
@@ -412,13 +421,18 @@ def test_v2_analyze_publishes_evidence_application_and_portfolio_chain(
             str(workspace),
             "--model-dir",
             str(workspace),
+            "--verbose",
         ],
     )
 
     assert result.exit_code == 0, result.output
+    assert "Starting application 1/2" in result.output
+    assert "evidence ready" in result.output
+    assert "Portfolio candidates ready" in result.output
     store = V2StateStore(workspace)
     manifest = store.load_current_run(RunPhase.ANALYZE)
     assert manifest.status == RunStatus.COMPLETE
+    assert v2_cli._analysis_manifest_uses_current_model(store, manifest)
     assert manifest.portfolio_analysis is not None
     assert len(manifest.applications) == 2
     stage_manifest = store.load_current_run(RunPhase.STAGE)
@@ -430,6 +444,36 @@ def test_v2_analyze_publishes_evidence_application_and_portfolio_chain(
     assert record.interpretation is not None
     payload = store.load(record.interpretation, ApplicationAnalysisPayload)
     assert payload.interpretation is not None
+    historical_provenance = provenance.model_copy(
+        update={
+            "model_repo_id": "Qwen/Qwen2.5-1.5B-Instruct",
+            "model_revision": "989aa7980e4cf806f80c7fef2b1adb7bc71aa306",
+        }
+    )
+    historical_profile = ApplicationInterpretation.model_validate(
+        {
+            **payload.interpretation.model_dump(mode="python"),
+            "provenance": historical_provenance,
+            "interpretation_id": "",
+        }
+    )
+    historical_payload = payload.model_copy(
+        update={"interpretation": historical_profile}
+    )
+    historical_record = record.model_copy(
+        update={"interpretation": store.put(historical_payload)}
+    )
+    historical_manifest = manifest.model_copy(
+        update={
+            "applications": (
+                historical_record,
+                *manifest.applications[1:],
+            )
+        }
+    )
+    assert not v2_cli._analysis_manifest_uses_current_model(store, historical_manifest)
+    with pytest.raises(StateIntegrityError, match="obsolete model policy"):
+        v2_cli._load_complete_analysis(store, historical_manifest)
     portfolio = store.load(manifest.portfolio_analysis, PortfolioAnalysisPayload)
     assert portfolio.analysis is not None
     candidate_types = {item.candidate_type for item in portfolio.candidates}
@@ -474,6 +518,13 @@ def test_v2_analyze_publishes_evidence_application_and_portfolio_chain(
     assert report_manifest.status == RunStatus.COMPLETE
     assert report_manifest.parent_run_id == manifest.run_id
     assert report_manifest.report_publication is not None
+    assert report_manifest.report_model is not None
+    persisted_report = store.load(report_manifest.report_model, PortfolioReportModel)
+    assert persisted_report.absence_claims_suppressed
+    assert any(
+        "semantic-profile similarity candidates are disabled" in warning.casefold()
+        for warning in persisted_report.warnings
+    )
     assert set(manifest.input_references).issubset(report_manifest.input_references)
     state_publication = store.load(
         report_manifest.report_publication,

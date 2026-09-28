@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.metadata
 import platform
 import secrets
+import time
 from collections import defaultdict
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -20,6 +21,7 @@ from portfolio_analyzer.config import AnalyzerSettings
 from portfolio_analyzer.inventory.loader import load_inventory
 from portfolio_analyzer.models import VerifiedStagedArtifact
 from portfolio_analyzer.naming import euc_directory_name
+from portfolio_analyzer.progress import AnalysisProgressReporter
 from portfolio_analyzer.qwen.pipeline import (
     TWO_STAGE_PROMPT_VERSION,
     analyze_application_two_stage,
@@ -68,6 +70,7 @@ from portfolio_analyzer.v2.models import (
     ReportReviewRecord,
     ReportStatus,
     ReviewStatus,
+    is_current_model_provenance,
 )
 from portfolio_analyzer.v2.owner_context import load_owner_context
 from portfolio_analyzer.v2.quality import evaluate_quality
@@ -331,11 +334,22 @@ def analyze(
         readable=True,
         help="Verified local Qwen directory (overrides workspace config and environment).",
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show safe token, cache, batching, retry, and timing diagnostics.",
+    ),
 ) -> None:
     """Build canonical evidence, interpret every logical unit, and synthesize the portfolio."""
 
     workspace = workspace.resolve()
+    progress = AnalysisProgressReporter(
+        verbose=verbose,
+        sink=lambda message: typer.echo(message, err=True),
+    )
     try:
+        progress.basic("Preparing analysis runtime...")
         preflight_workspace(workspace)
         store = V2StateStore(workspace)
         runtime = resolve_qwen_runtime(
@@ -344,7 +358,7 @@ def analyze(
         )
         # Construction performs the independent allowlist/hash verification required before
         # analysis. The provider then lazily loads this same verified model once for the run.
-        provider = LocalQwenProvider(runtime)
+        provider = LocalQwenProvider(runtime, progress=progress)
         provenance = _model_provenance(provider)
         inference_cache = PersistentInferenceOutputCache(store.state_root)
         requested_failures: list[str] = []
@@ -378,9 +392,18 @@ def analyze(
             records: list[ApplicationRunRecord] = []
             bundles_by_application: dict[str, ApplicationEvidenceBundle] = {}
             analyses_by_application: dict[str, ApplicationAnalysisPayload] = {}
-            for staged_application in index.applications:
+            total_applications = len(index.applications)
+            for application_index, staged_application in enumerate(
+                index.applications, start=1
+            ):
                 application_id = staged_application.application_id
                 selected = application is None or application == application_id
+                application_started = time.monotonic()
+                if selected:
+                    progress.basic(
+                        f"Starting application {application_index}/{total_applications}: "
+                        f"{application_id}"
+                    )
                 extraction = extraction_by_application.get(application_id)
                 if extraction is None or extraction.status != RunStatus.COMPLETE:
                     reasons = (
@@ -407,6 +430,11 @@ def analyze(
                             errors=reasons if selected else (),
                         )
                     )
+                    if selected:
+                        progress.basic(
+                            f"Application {application_index}/{total_applications} failed "
+                            "preflight: extraction unavailable"
+                        )
                     continue
 
                 snapshots = tuple(
@@ -421,6 +449,11 @@ def analyze(
                     )
                     bundle_ref = store.put(bundle)
                     bundles_by_application[application_id] = bundle
+                    progress.detail(
+                        f"Application {application_id}: evidence ready; "
+                        f"artifacts={len(bundle.artifacts)}; objects={len(bundle.objects)}; "
+                        f"evidence={len(bundle.evidence)}"
+                    )
 
                     previous_record = previous_by_application.get(application_id)
                     reused = (
@@ -452,6 +485,12 @@ def analyze(
                         reused_record, payload = reused
                         records.append(reused_record)
                         analyses_by_application[application_id] = payload
+                        if selected:
+                            reuse_elapsed = time.monotonic() - application_started
+                            progress.basic(
+                                f"Application {application_index}/{total_applications} reused "
+                                f"current analysis; elapsed={reuse_elapsed:.1f}s"
+                            )
                         continue
 
                     result = analyze_application_two_stage(
@@ -486,6 +525,14 @@ def analyze(
                             errors=errors,
                         )
                     )
+                    progress.detail(
+                        f"Application {application_index}/{total_applications} "
+                        f"checkpoint written; status={status.value}"
+                    )
+                    progress.basic(
+                        f"Application {application_index}/{total_applications} "
+                        f"{status.value}; elapsed={time.monotonic() - application_started:.1f}s"
+                    )
                 except Exception as exc:
                     safe_error = redact_sensitive_text(str(exc))
                     requested_failures.append(f"{application_id}: {safe_error}")
@@ -498,6 +545,12 @@ def analyze(
                             errors=(safe_error,),
                         )
                     )
+                    if selected:
+                        progress.basic(
+                            f"Application {application_index}/{total_applications} failed; "
+                            f"elapsed={time.monotonic() - application_started:.1f}s; "
+                            f"error_type={type(exc).__name__}"
+                        )
 
             portfolio_ref: ContentReference | None = None
             portfolio_payload: PortfolioAnalysisPayload | None = None
@@ -506,6 +559,8 @@ def analyze(
             )
             portfolio_warning: tuple[str, ...] = ()
             if all_current:
+                portfolio_started = time.monotonic()
+                progress.basic("Starting portfolio candidate generation and synthesis...")
                 ordered_bundles = tuple(
                     bundles_by_application[item.application_id] for item in records
                 )
@@ -521,6 +576,9 @@ def analyze(
                     candidates = generate_portfolio_candidates(
                         ordered_bundles, profiles
                     )
+                    progress.detail(
+                        f"Portfolio candidates ready; count={len(candidates)}"
+                    )
                     portfolio_result = analyze_portfolio_candidates(
                         candidates,
                         profiles,
@@ -534,6 +592,10 @@ def analyze(
                         candidates=candidates,
                         application_profile_sha256s=profile_hashes,
                     )
+                    progress.basic(
+                        "Portfolio synthesis complete; "
+                        f"elapsed={time.monotonic() - portfolio_started:.1f}s"
+                    )
                 except Exception as exc:
                     reason = "portfolio synthesis failed safely: " + redact_sensitive_text(
                         str(exc)
@@ -545,6 +607,11 @@ def analyze(
                         analysis=None,
                         batch_count=0,
                         reason=reason,
+                    )
+                    progress.basic(
+                        "Portfolio synthesis failed; "
+                        f"elapsed={time.monotonic() - portfolio_started:.1f}s; "
+                        f"error_type={type(exc).__name__}"
                     )
                 portfolio_ref = store.put(portfolio_payload)
                 if portfolio_payload.status != "complete":
@@ -578,6 +645,8 @@ def analyze(
             )
             if (
                 previous_overlay is not None
+                and previous is not None
+                and _analysis_manifest_uses_current_model(store, previous)
                 and status == RunStatus.COMPLETE
                 and portfolio_payload is not None
                 and portfolio_payload.analysis is not None
@@ -614,7 +683,10 @@ def analyze(
                             schema_name=REVIEW_OVERLAY_SCHEMA_VERSION,
                         ),
                     )
-            elif previous_overlay_reference is not None:
+            elif (
+                previous_overlay_reference is not None
+                and status != RunStatus.COMPLETE
+            ):
                 # Keep the last reviewed decisions reachable across failed/partial runs.
                 # They are dormant until a later complete analysis proves that the same
                 # proposal and concrete evidence identities still exist.
@@ -633,6 +705,7 @@ def analyze(
                 errors=tuple(requested_failures),
             )
             store.publish_run(manifest)
+            progress.basic("Analysis run manifest published successfully.")
     except typer.Exit:
         raise
     except Exception as exc:
@@ -908,6 +981,11 @@ def quality_check(
         typer.echo(f"Capability recall: {result.capability_recall:.3f}.")
     if result.related_pair_f1 is not None:
         typer.echo(f"Semantic-pair F1: {result.related_pair_f1:.3f}.")
+    if result.calibrated_semantic_threshold is not None:
+        typer.echo(
+            "Calibrated semantic-threshold recommendation: "
+            f"{result.calibrated_semantic_threshold:.6f}."
+        )
     if not result.passed:
         for reason in result.reasons:
             typer.echo(f"FAILED: {reason}", err=True)
@@ -1035,6 +1113,10 @@ def _load_complete_analysis(
         bundle = store.load(record.evidence_bundle, ApplicationEvidenceBundle)
         payload = store.load(record.interpretation, ApplicationAnalysisPayload)
         profile = _required_profile(payload)
+        if not is_current_model_provenance(profile.provenance):
+            raise StateIntegrityError(
+                f"analysis uses an obsolete model policy for {record.application_id}"
+            )
         if profile.source_bundle_sha256 != evidence_bundle_fingerprint(bundle):
             raise StateIntegrityError(
                 f"analysis evidence fingerprint mismatch for {record.application_id}"
@@ -1044,6 +1126,8 @@ def _load_complete_analysis(
     portfolio = store.load(manifest.portfolio_analysis, PortfolioAnalysisPayload)
     if portfolio.status != "complete" or portfolio.analysis is None:
         raise StateIntegrityError("current portfolio synthesis is incomplete")
+    if not is_current_model_provenance(portfolio.analysis.provenance):
+        raise StateIntegrityError("current portfolio uses an obsolete model policy")
     expected_hashes = tuple(
         sorted(interpretation_fingerprint(item) for item in profiles)
     )
@@ -1115,13 +1199,16 @@ def _report_analysis_inputs(
             if _bundle_matches_stage_application(bundle, application, stage_index):
                 payload = store.load(record.interpretation, ApplicationAnalysisPayload)
                 profile = _required_profile(payload)
-                if profile.source_bundle_sha256 != evidence_bundle_fingerprint(bundle):
-                    raise StateIntegrityError(
-                        f"analysis evidence fingerprint mismatch for {application_id}"
-                    )
-                included_bundles.append(bundle)
-                included_profiles.append(profile)
-                continue
+                if not is_current_model_provenance(profile.provenance):
+                    analysis_is_current = False
+                else:
+                    if profile.source_bundle_sha256 != evidence_bundle_fingerprint(bundle):
+                        raise StateIntegrityError(
+                            f"analysis evidence fingerprint mismatch for {application_id}"
+                        )
+                    included_bundles.append(bundle)
+                    included_profiles.append(profile)
+                    continue
             analysis_is_current = False
 
         excluded.append(application_id)
@@ -1171,7 +1258,13 @@ def _report_analysis_inputs(
         expected_hashes = tuple(
             sorted(interpretation_fingerprint(item) for item in included_profiles)
         )
-        if candidate.application_profile_sha256s == expected_hashes:
+        if (
+            candidate.application_profile_sha256s == expected_hashes
+            and (
+                candidate.analysis is None
+                or is_current_model_provenance(candidate.analysis.provenance)
+            )
+        ):
             partial_portfolio = candidate
         if candidate.status != "complete" and candidate.reason:
             omissions.append(
@@ -1186,6 +1279,36 @@ def _report_analysis_inputs(
         partial_portfolio,
         tuple(omissions),
         tuple(sorted(excluded)),
+    )
+
+
+def _analysis_manifest_uses_current_model(
+    store: V2StateStore, manifest: RunManifest
+) -> bool:
+    """Gate review carry-forward without authorizing historical model output.
+
+    A failed portfolio synthesis may have no model-authored portfolio payload at
+    all.  In that case the current application interpretations are sufficient to
+    keep a dormant overlay reachable; proposal/evidence identity matching still
+    decides whether any decision can be carried into the next complete run.
+    """
+    profiles: list[ApplicationInterpretation] = []
+    for record in manifest.applications:
+        if record.interpretation is None:
+            return False
+        payload = store.load(record.interpretation, ApplicationAnalysisPayload)
+        if payload.interpretation is None:
+            return False
+        profiles.append(payload.interpretation)
+    if not profiles or not all(
+        is_current_model_provenance(profile.provenance) for profile in profiles
+    ):
+        return False
+    if manifest.portfolio_analysis is None:
+        return True
+    portfolio = store.load(manifest.portfolio_analysis, PortfolioAnalysisPayload)
+    return portfolio.analysis is None or is_current_model_provenance(
+        portfolio.analysis.provenance
     )
 
 

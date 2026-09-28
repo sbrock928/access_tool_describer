@@ -80,8 +80,8 @@ safety.
 
 ## Local Qwen boundary
 
-The only inference model is `Qwen/Qwen2.5-1.5B-Instruct` at immutable revision
-`989aa7980e4cf806f80c7fef2b1adb7bc71aa306`. `model-download` is the only network-capable command
+The only inference model is `Qwen/Qwen2.5-0.5B-Instruct` at immutable revision
+`7ae557604adf67be50417f59c2c2f167def9a775`. `model-download` is the only network-capable command
 and accepts an explicit destination. It downloads an exact file allowlist, rejects symlinks,
 unexpected files, remote-code declarations, custom executable code, and pickle-capable weights,
 then verifies code-reviewed sizes and SHA-256 digests before publishing `model_manifest.json`.

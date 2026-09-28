@@ -21,18 +21,22 @@ from portfolio_analyzer.v2.models import (
     ResolutionStatus,
 )
 
-CANDIDATE_POLICY_VERSION = "portfolio-candidates-v2"
+CANDIDATE_POLICY_VERSION = "portfolio-candidates-v3"
+SEMANTIC_SIMILARITY_DISABLED_WARNING = (
+    "Semantic-profile similarity candidates are disabled pending reviewed "
+    "Qwen 0.5B gold-set calibration; related absence claims are suppressed."
+)
 
 
 @dataclass(frozen=True, slots=True)
 class CandidatePolicy:
     version: str
-    semantic_overlap_min_score: float
+    semantic_overlap_min_score: float | None
 
 
 FROZEN_CANDIDATE_POLICY = CandidatePolicy(
     version=CANDIDATE_POLICY_VERSION,
-    semantic_overlap_min_score=0.5,
+    semantic_overlap_min_score=None,
 )
 
 
@@ -57,10 +61,14 @@ def generate_portfolio_candidates(
         *_shared_object_candidates(bundles, policy.version),
         *_shared_file_candidates(bundles, policy.version),
         *_exact_code_candidates(bundles, policy.version),
-        *_semantic_overlap_candidates(
-            tuple(profile_by_application.values()),
-            policy.semantic_overlap_min_score,
-            policy.version,
+        *(
+            _semantic_overlap_candidates(
+                tuple(profile_by_application.values()),
+                policy.semantic_overlap_min_score,
+                policy.version,
+            )
+            if policy.semantic_overlap_min_score is not None
+            else ()
         ),
     ]
     unique = {candidate.candidate_id: candidate for candidate in candidates}

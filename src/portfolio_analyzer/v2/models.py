@@ -30,8 +30,8 @@ PARTIAL_REPORT_WATERMARK: Literal[
 ] = (
     "PARTIAL REPORT - coverage omissions present; portfolio-wide absence claims are suppressed."
 )
-QWEN_REPO_ID = "Qwen/Qwen2.5-1.5B-Instruct"
-QWEN_REVISION = "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
+QWEN_REPO_ID = "Qwen/Qwen2.5-0.5B-Instruct"
+QWEN_REVISION = "7ae557604adf67be50417f59c2c2f167def9a775"
 
 _RAW_CONNECTION_ASSIGNMENT = re.compile(
     r"(?i)(?:^|[;\"'])\s*(?:(?:ODBC|OLEDB)\s*[:;]\s*)?"
@@ -947,12 +947,11 @@ class ApplicationEvidenceBundle(StrictModel):
 
 
 class ModelProvenance(StrictModel):
-    model_repo_id: Literal["Qwen/Qwen2.5-1.5B-Instruct"] = (
-        "Qwen/Qwen2.5-1.5B-Instruct"
-    )
-    model_revision: Literal["989aa7980e4cf806f80c7fef2b1adb7bc71aa306"] = (
-        "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
-    )
+    # Historical provenance must remain readable so incompatible payloads can be
+    # rejected cleanly instead of making a workspace unreadable. Runtime model
+    # authorization remains fixed in semantic.model_store and qwen.provider.
+    model_repo_id: NonEmptyString = QWEN_REPO_ID
+    model_revision: NonEmptyString = QWEN_REVISION
     model_manifest_sha256: Sha256
     prompt_version: NonEmptyString
     output_schema_version: NonEmptyString
@@ -970,6 +969,14 @@ class ModelProvenance(StrictModel):
             tuple(sorted(self.generation_parameters, key=lambda item: item.name)),
         )
         return self
+
+
+def is_current_model_provenance(value: ModelProvenance) -> bool:
+    """Return whether persisted provenance belongs to the sole approved runtime model."""
+    return (
+        value.model_repo_id == QWEN_REPO_ID
+        and value.model_revision == QWEN_REVISION
+    )
 
 
 class InterpretiveFinding(StrictModel):

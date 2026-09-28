@@ -15,6 +15,7 @@ from typing import Any, Literal, Protocol, Self
 
 from pydantic import model_validator
 
+from portfolio_analyzer.progress import AnalysisProgressReporter
 from portfolio_analyzer.qwen.provider import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     BudgetedQwenJsonProvider,
@@ -625,6 +626,17 @@ def analyze_application_two_stage(
 
     source_bundle_sha256 = evidence_bundle_fingerprint(bundle)
     plans = build_logical_units(bundle)
+    progress = _provider_progress(provider)
+    kinds: dict[str, int] = {}
+    for plan in plans:
+        kinds[plan.kind.value] = kinds.get(plan.kind.value, 0) + 1
+    kind_summary = ", ".join(
+        f"{kind}={count}" for kind, count in sorted(kinds.items())
+    ) or "none"
+    progress.detail(
+        f"Application {bundle.application_id}: planned {len(plans)} logical unit(s); "
+        f"{kind_summary}"
+    )
     unit_results = _analyze_logical_units(
         bundle,
         plans,
@@ -639,6 +651,14 @@ def analyze_application_two_stage(
         result.interpretation
         for result in unit_results
         if result.interpretation is not None
+    )
+    completed_units = sum(
+        item.status in {InterpretationRunStatus.COMPLETE, InterpretationRunStatus.ABSTAINED}
+        for item in unit_results
+    )
+    progress.detail(
+        f"Application {bundle.application_id}: logical units complete; "
+        f"successful={completed_units}; total={len(unit_results)}"
     )
     if plans and not valid:
         return ApplicationAnalysisResult(
@@ -1035,6 +1055,9 @@ def _generate_application_request(
     if cache is not None:
         cached = cache.get(request.cache_key)
         if cached is not None:
+            _provider_progress(provider).detail(
+                "Application synthesis cache hit"
+            )
             grounded = request.response_type.model_validate(cached)
             return (
                 ApplicationInterpretation.model_validate(
@@ -1042,6 +1065,7 @@ def _generate_application_request(
                 ),
                 None,
             )
+        _provider_progress(provider).detail("Application synthesis cache miss")
     budget_failure = _prompt_budget_failure(
         provider,
         system=request.system,
@@ -1514,6 +1538,7 @@ def _generate_portfolio_analysis(
     if cache is not None:
         cached = cache.get(cache_key)
         if cached is not None:
+            _provider_progress(provider).detail("Portfolio synthesis cache hit")
             grounded = response_type.model_validate(cached)
             return (
                 PortfolioAnalysis.model_validate(
@@ -1522,6 +1547,7 @@ def _generate_portfolio_analysis(
                 None,
                 cache_key,
             )
+        _provider_progress(provider).detail("Portfolio synthesis cache miss")
     user = canonical_json_bytes(payload).decode("utf-8")
     budget_failure = _prompt_budget_failure(
         provider,
@@ -2116,12 +2142,19 @@ def _analyze_logical_unit_batch(
     if cache is not None:
         cached = cache.get(request.cache_key)
         if cached is not None:
+            _provider_progress(provider).detail(
+                f"Logical-unit batch cache hit; units={len(units)}"
+            )
             grounded = request.response_type.model_validate(cached)
             interpretations = tuple(
                 LogicalUnitInterpretation.model_validate(
                     _sanitize_generated_payload(item.model_dump(mode="python"))
                 )
                 for item in grounded.interpretations
+            )
+        else:
+            _provider_progress(provider).detail(
+                f"Logical-unit batch cache miss; units={len(units)}"
             )
     if interpretations is None:
         user = canonical_json_bytes(request.payload).decode("utf-8")
@@ -2493,6 +2526,9 @@ def _generate_unit_interpretation(
     if cache is not None:
         cached = cache.get(cache_key)
         if cached is not None:
+            _provider_progress(provider).detail(
+                f"Logical-unit cache hit; kind={plan.kind.value}"
+            )
             grounded = response_type.model_validate(cached)
             return (
                 LogicalUnitInterpretation.model_validate(
@@ -2501,6 +2537,9 @@ def _generate_unit_interpretation(
                 None,
                 cache_key,
             )
+        _provider_progress(provider).detail(
+            f"Logical-unit cache miss; kind={plan.kind.value}"
+        )
     user = canonical_json_bytes(payload).decode("utf-8")
     budget_failure = _prompt_budget_failure(
         provider,
@@ -2531,6 +2570,13 @@ def _generate_unit_interpretation(
     if cache is not None:
         cache.put(cache_key, interpretation.model_dump(mode="json"))
     return interpretation, None, cache_key
+
+
+def _provider_progress(
+    provider: BudgetedQwenJsonProvider,
+) -> AnalysisProgressReporter:
+    value = getattr(provider, "progress", None)
+    return value if isinstance(value, AnalysisProgressReporter) else AnalysisProgressReporter()
 
 
 def _unit_response_model(

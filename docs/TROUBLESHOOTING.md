@@ -94,7 +94,7 @@ connection strings into logs or issue reports.
 Configure the local directory in this order:
 
 ```powershell
-portfolio-analyzer analyze --workspace .\workspace --model-dir C:\Models\Qwen2.5-1.5B-Instruct
+portfolio-analyzer analyze --workspace .\workspace --model-dir C:\Models\Qwen2.5-0.5B-Instruct --verbose
 ```
 
 or set `[qwen].path` in `workspace/analyzer.toml`, or set `ACCESS_ANALYZER_MODEL_DIR`. A relative
@@ -105,8 +105,8 @@ mismatch, unsafe weight format, or remote-code declaration, quarantine that dire
 new directory during an approved connected window and verify it:
 
 ```powershell
-portfolio-analyzer model-download --destination C:\Models\Qwen2.5-1.5B-Instruct-new
-portfolio-analyzer model-verify --model-dir C:\Models\Qwen2.5-1.5B-Instruct-new
+portfolio-analyzer model-download --destination C:\Models\Qwen2.5-0.5B-Instruct-new
+portfolio-analyzer model-verify --model-dir C:\Models\Qwen2.5-0.5B-Instruct-new
 ```
 
 `model-download` is the only network-capable command. `analyze` never repairs model content or uses
@@ -169,8 +169,9 @@ not carry forward.
 case-insensitive capability recall and semantic-overlap pair precision/recall/F1 against the two
 fixed 0.70 release gates. Schema validity and citation closure are enforced while analysis payloads
 are loaded, while abstention and leakage remain test-suite concerns rather than gold-set metrics.
-It also scores every reviewed profile pair and verifies that the frozen semantic threshold achieves
-the calibrated maximum F1. Every related application needs a reviewed row, and the reviewed rows
+It also scores every reviewed profile pair and recommends a semantic threshold. Semantic-profile
+candidates remain disabled until that recommendation is reviewed and frozen in a later policy.
+Every related application needs a reviewed row, and the reviewed rows
 must contain both related and non-related pairs. The diagnostic recommendation maximizes F1, then
 precision, recall, and threshold in that order; it never mutates policy. Verify that the gold set
 belongs to the current contract rather than tuning the frozen threshold at runtime to make a check

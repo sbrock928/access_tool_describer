@@ -49,19 +49,13 @@ def test_candidates_are_deterministic_overlapping_and_evidence_backed() -> None:
     assert tuple(item.candidate_id for item in candidates) == tuple(
         item.candidate_id for item in reordered
     )
-    assert {item.candidate_type for item in candidates} == set(PortfolioCandidateType)
-    assert len(candidates) == 5
+    assert {item.candidate_type for item in candidates} == (
+        set(PortfolioCandidateType) - {PortfolioCandidateType.SEMANTIC_OVERLAP}
+    )
+    assert len(candidates) == 4
     assert all(item.application_ids == ("app-1", "app-2") for item in candidates)
     assert all(item.evidence_ids for item in candidates)
-    assert all(
-        item.basis_ids
-        for item in candidates
-        if item.candidate_type != PortfolioCandidateType.SEMANTIC_OVERLAP
-    )
-    assert next(
-        item for item in candidates
-        if item.candidate_type == PortfolioCandidateType.SEMANTIC_OVERLAP
-    ).basis_ids == ()
+    assert all(item.basis_ids for item in candidates)
 
 
 def test_semantic_threshold_and_profile_scope_are_strict() -> None:
@@ -81,7 +75,8 @@ def test_semantic_threshold_and_profile_scope_are_strict() -> None:
             (first,),
             (_profile(first).model_copy(update={"application_id": "app-unknown"}),),
         )
-    assert FROZEN_CANDIDATE_POLICY.version == "portfolio-candidates-v2"
+    assert FROZEN_CANDIDATE_POLICY.version == "portfolio-candidates-v3"
+    assert FROZEN_CANDIDATE_POLICY.semantic_overlap_min_score is None
     with pytest.raises(FrozenInstanceError):
         FROZEN_CANDIDATE_POLICY.semantic_overlap_min_score = 0.1  # type: ignore[misc]
 

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from portfolio_analyzer.v2.candidates import (
+    FROZEN_CANDIDATE_POLICY,
+    SEMANTIC_SIMILARITY_DISABLED_WARNING,
+)
 from portfolio_analyzer.v2.fingerprints import (
     analysis_fingerprint,
     evidence_bundle_fingerprint,
@@ -79,6 +83,8 @@ def build_portfolio_report_model(
     entries: list[ReportApplicationEntry] = []
     partial_reasons: list[str] = []
     coverage_qualifications: list[str] = []
+    if FROZEN_CANDIDATE_POLICY.semantic_overlap_min_score is None:
+        coverage_qualifications.append(SEMANTIC_SIMILARITY_DISABLED_WARNING)
     structured_omissions = list(omissions)
     accepted_profiles: list[ApplicationProfile] = []
     for application_id, bundle in sorted(bundle_by_application.items()):

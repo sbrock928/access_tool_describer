@@ -52,24 +52,16 @@ def test_quality_check_scores_frozen_capabilities_and_semantic_pairs(
             ),
         ),
     )
-    candidates = cast(
-        Any,
-        (
-            SimpleNamespace(
-                candidate_type=PortfolioCandidateType.SEMANTIC_OVERLAP,
-                application_ids=("app-a", "app-b"),
-            ),
-        ),
-    )
+    candidates = cast(Any, ())
 
     result = evaluate_quality(gold, bundles, profiles, candidates)
 
-    assert result.passed
+    assert not result.passed
     assert result.capability_recall == 1.0
-    assert result.related_pair_f1 == 1.0
-    assert result.frozen_semantic_threshold == 0.5
+    assert result.related_pair_f1 is None
+    assert result.frozen_semantic_threshold is None
     assert result.calibrated_semantic_threshold == 1.0
-    assert result.frozen_threshold_validated
+    assert not result.frozen_threshold_validated
     assert result.calibration_tie_break == CALIBRATION_TIE_BREAK
     assert result.reviewed_semantic_pairs == 3
     assert tuple(item.score for item in result.semantic_pair_scores) == (1.0, 0.0, 0.0)
@@ -114,11 +106,11 @@ def test_quality_check_fails_when_gold_does_not_validate_frozen_threshold(
     result = evaluate_quality(gold, bundles, profiles, ())
 
     assert not result.passed
-    assert result.related_pair_f1 == 0.0
+    assert result.related_pair_f1 is None
     assert result.calibrated_pair_f1 == 1.0
     assert result.calibrated_semantic_threshold == 0.333333
     assert not result.frozen_threshold_validated
-    assert any("does not validate frozen semantic threshold" in item for item in result.reasons)
+    assert any("does not validate a frozen semantic threshold" in item for item in result.reasons)
 
 
 def test_calibration_tie_break_prefers_precision_then_conservative_threshold() -> None:

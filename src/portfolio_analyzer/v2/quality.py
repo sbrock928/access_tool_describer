@@ -19,7 +19,7 @@ from portfolio_analyzer.v2.models import (
     PortfolioCandidateType,
 )
 
-QUALITY_POLICY_VERSION = "qwen-quality-v3"
+QUALITY_POLICY_VERSION = "qwen-quality-v4"
 GOLD_APPLICATION_ID = "application_id"
 GOLD_CAPABILITIES = "expected_capabilities"
 GOLD_RELATED_APPLICATIONS = "expected_related_application_ids"
@@ -46,7 +46,7 @@ class SemanticPairScore:
 class QualityResult:
     policy_version: str
     candidate_policy_version: str
-    frozen_semantic_threshold: float
+    frozen_semantic_threshold: float | None
     calibrated_semantic_threshold: float | None
     frozen_threshold_validated: bool
     calibration_tie_break: str
@@ -153,7 +153,11 @@ def evaluate_quality(
         for source_id, target_id in combinations(sorted(seen), 2)
     )
     frozen_threshold = FROZEN_CANDIDATE_POLICY.semantic_overlap_min_score
-    frozen_evaluation = _evaluate_threshold(pair_scores, frozen_threshold)
+    frozen_evaluation = (
+        _evaluate_threshold(pair_scores, frozen_threshold)
+        if frozen_threshold is not None
+        else None
+    )
     calibrated_evaluation = _calibrate_threshold(pair_scores)
     semantic_candidate_pairs = {
         _ordered_pair(source_id, target_id)
@@ -166,8 +170,10 @@ def evaluate_quality(
     reviewed_negative_pairs = len(pair_scores) - len(expected_pairs)
     calibration_ready = bool(expected_pairs) and reviewed_negative_pairs > 0
     frozen_threshold_validated = bool(
-        calibration_ready
+        frozen_evaluation is not None
+        and calibration_ready
         and calibrated_evaluation is not None
+        and frozen_evaluation is not None
         and frozen_evaluation.f1 is not None
         and calibrated_evaluation.f1 is not None
         and isclose(
@@ -178,6 +184,11 @@ def evaluate_quality(
         )
     )
     reasons: list[str] = []
+    if frozen_threshold is None:
+        reasons.append(
+            "semantic similarity is disabled pending reviewed Qwen 0.5B "
+            "gold-set calibration"
+        )
     if not rows:
         reasons.append("gold set contains no reviewed applications")
     if rows and not pair_scores:
@@ -194,14 +205,20 @@ def evaluate_quality(
             f"{MIN_CAPABILITY_RECALL:.3f}"
         )
     if (
-        frozen_evaluation.f1 is not None
+        frozen_evaluation is not None
+        and frozen_evaluation.f1 is not None
         and frozen_evaluation.f1 < MIN_RELATED_PAIR_F1
     ):
         reasons.append(
             f"semantic-pair F1 {frozen_evaluation.f1:.3f} is below "
             f"{MIN_RELATED_PAIR_F1:.3f}"
         )
-    if semantic_candidate_pairs != set(frozen_evaluation.predicted_pairs):
+    expected_frozen_pairs = (
+        set(frozen_evaluation.predicted_pairs)
+        if frozen_evaluation is not None
+        else set()
+    )
+    if semantic_candidate_pairs != expected_frozen_pairs:
         reasons.append(
             "semantic candidates do not match scores selected by the frozen threshold"
         )
@@ -212,8 +229,8 @@ def evaluate_quality(
             else ""
         )
         reasons.append(
-            f"reviewed gold set does not validate frozen semantic threshold "
-            f"{frozen_threshold:.6f}{recommendation}"
+            "reviewed gold set does not validate a frozen semantic threshold"
+            f"{recommendation}"
         )
     return QualityResult(
         policy_version=QUALITY_POLICY_VERSION,
@@ -232,12 +249,26 @@ def evaluate_quality(
         expected_capabilities=expected_capabilities,
         matched_capabilities=matched_capabilities,
         expected_related_pairs=len(expected_pairs),
-        predicted_related_pairs=len(frozen_evaluation.predicted_pairs),
-        matched_related_pairs=len(frozen_evaluation.matched_pairs),
+        predicted_related_pairs=(
+            len(frozen_evaluation.predicted_pairs)
+            if frozen_evaluation is not None
+            else 0
+        ),
+        matched_related_pairs=(
+            len(frozen_evaluation.matched_pairs)
+            if frozen_evaluation is not None
+            else 0
+        ),
         capability_recall=capability_recall,
-        related_pair_precision=frozen_evaluation.precision,
-        related_pair_recall=frozen_evaluation.recall,
-        related_pair_f1=frozen_evaluation.f1,
+        related_pair_precision=(
+            frozen_evaluation.precision if frozen_evaluation is not None else None
+        ),
+        related_pair_recall=(
+            frozen_evaluation.recall if frozen_evaluation is not None else None
+        ),
+        related_pair_f1=(
+            frozen_evaluation.f1 if frozen_evaluation is not None else None
+        ),
         calibrated_pair_precision=(
             calibrated_evaluation.precision
             if calibrated_evaluation is not None

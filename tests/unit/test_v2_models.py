@@ -43,6 +43,7 @@ from portfolio_analyzer.v2.models import (
     ReportModel,
     ReportStatus,
     ResolutionStatus,
+    is_current_model_provenance,
 )
 
 NOW = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
@@ -410,7 +411,7 @@ def test_interpretation_portfolio_and_report_contracts_are_cited_and_qwen_only()
         portfolio_analysis_sha256=canonical_sha256(portfolio),
     )
 
-    assert provenance.model_repo_id == "Qwen/Qwen2.5-1.5B-Instruct"
+    assert provenance.model_repo_id == "Qwen/Qwen2.5-0.5B-Instruct"
     assert logical.interpretation_id.startswith("unit_interpretation_")
     assert application.interpretation_id.startswith("application_interpretation_")
     assert portfolio.portfolio_analysis_id.startswith("portfolio_analysis_")
@@ -433,6 +434,20 @@ def test_interpretation_portfolio_and_report_contracts_are_cited_and_qwen_only()
                 "report_id": "",
             }
         )
+
+
+def test_historical_model_provenance_is_readable_but_not_current() -> None:
+    historical = ModelProvenance(
+        model_repo_id="Qwen/Qwen2.5-1.5B-Instruct",
+        model_revision="989aa7980e4cf806f80c7fef2b1adb7bc71aa306",
+        model_manifest_sha256=DIGEST_A,
+        prompt_version="historical-prompts",
+        output_schema_version="historical-contracts",
+        inference_library_version="transformers-historical",
+    )
+
+    assert not is_current_model_provenance(historical)
+    assert is_current_model_provenance(_provenance())
 
 
 def _artifact(*, source: str) -> ArtifactEvidence:

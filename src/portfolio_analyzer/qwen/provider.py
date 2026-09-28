@@ -11,6 +11,7 @@ import json
 import os
 import re
 import threading
+import time
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
@@ -18,6 +19,11 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ValidationError
 
+from portfolio_analyzer.progress import (
+    AnalysisProgressReporter,
+    GenerationHeartbeat,
+    TokenProgressCriteria,
+)
 from portfolio_analyzer.runtime import ResolvedQwenRuntime
 from portfolio_analyzer.semantic.model_store import (
     QWEN_MODEL,
@@ -132,9 +138,13 @@ def generate_validated_json[ResponseModelT: BaseModel](
     issues: list[OutputValidationIssue] = []
     current_system = system
     current_user = user
+    progress = _provider_progress(provider)
 
     for attempt in (1, 2):
         typed_attempt: Literal[1, 2] = attempt
+        progress.detail(
+            f"Structured generation {requested_schema_name}: attempt {attempt}/2"
+        )
         try:
             candidate = provider.complete_json(
                 system=current_system,
@@ -144,6 +154,9 @@ def generate_validated_json[ResponseModelT: BaseModel](
                 max_output_tokens=max_output_tokens,
             )
         except QwenOutputError as exc:
+            progress.detail(
+                f"Structured generation {requested_schema_name}: malformed JSON"
+            )
             issue = OutputValidationIssue(
                 attempt=typed_attempt,
                 kind="json",
@@ -154,12 +167,18 @@ def generate_validated_json[ResponseModelT: BaseModel](
             try:
                 validated = response_model.model_validate(candidate)
             except ValidationError as exc:
+                progress.detail(
+                    f"Structured generation {requested_schema_name}: schema validation failed"
+                )
                 issue = OutputValidationIssue(
                     attempt=typed_attempt,
                     kind="schema",
                     details=_validation_details(exc),
                 )
             else:
+                progress.detail(
+                    f"Structured generation {requested_schema_name}: validation succeeded"
+                )
                 return StructuredGenerationSuccess(value=validated, attempts=typed_attempt)
 
         issues.append(issue)
@@ -178,19 +197,33 @@ def generate_validated_json[ResponseModelT: BaseModel](
 class LocalQwenProvider:
     """Load the one approved Qwen model once and generate strict JSON objects offline."""
 
-    def __init__(self, runtime: ResolvedQwenRuntime) -> None:
+    def __init__(
+        self,
+        runtime: ResolvedQwenRuntime,
+        *,
+        progress: AnalysisProgressReporter | None = None,
+    ) -> None:
         self.runtime = runtime
+        self.progress = progress or AnalysisProgressReporter()
         _enable_offline_mode()
         if runtime.device == "cpu":
             os.environ.setdefault("OMP_NUM_THREADS", str(runtime.cpu_threads))
             os.environ.setdefault("MKL_NUM_THREADS", str(runtime.cpu_threads))
+        self.progress.basic("Verifying approved Qwen 0.5B model files...")
+        verification_started = time.monotonic()
         self.verified: VerifiedModel = verify_model_directory(runtime.model_dir)
         _require_exact_qwen(self.verified)
+        self.progress.basic(
+            "Approved Qwen model verified; "
+            f"elapsed={time.monotonic() - verification_started:.1f}s"
+        )
         self._load_lock = threading.Lock()
         self._tokenizer: Any = None
         self._model: Any = None
         self._torch: Any = None
+        self._transformers: Any = None
         self._device: str | None = None
+        self._generation_count = 0
 
     def measure_prompt(
         self,
@@ -239,7 +272,14 @@ class LocalQwenProvider:
         tokenizer = self._tokenizer
         model = self._model
         torch = self._torch
-        if tokenizer is None or model is None or torch is None or self._device is None:
+        transformers = self._transformers
+        if (
+            tokenizer is None
+            or model is None
+            or torch is None
+            or transformers is None
+            or self._device is None
+        ):
             raise QwenProviderError("Local Qwen provider did not initialize")
 
         try:
@@ -250,6 +290,13 @@ class LocalQwenProvider:
                 "num_beams": 1,
                 "use_cache": True,
             }
+            self._generation_count += 1
+            generation_id = self._generation_count
+            heartbeat = GenerationHeartbeat(self.progress, generation_id)
+            criteria_type = getattr(transformers, "StoppingCriteriaList", list)
+            generation["stopping_criteria"] = criteria_type(
+                [TokenProgressCriteria(prompt_tokens, heartbeat)]
+            )
             eos_token_id = getattr(tokenizer, "eos_token_id", None)
             pad_token_id = getattr(tokenizer, "pad_token_id", None)
             if eos_token_id is not None:
@@ -263,11 +310,32 @@ class LocalQwenProvider:
             cuda = getattr(torch, "cuda", None)
             if cuda is not None and hasattr(cuda, "manual_seed_all"):
                 cuda.manual_seed_all(0)
-            with torch.inference_mode():
-                output = model.generate(**device_inputs, **generation)
+            self.progress.detail(
+                f"Generation {generation_id}: starting {schema_name}; "
+                f"prompt_tokens={prompt_tokens}; reserved_output_tokens={max_output_tokens}; "
+                f"context_tokens={budget.context_tokens}"
+            )
+            heartbeat.start()
+            try:
+                with torch.inference_mode():
+                    output = model.generate(**device_inputs, **generation)
+            except Exception as exc:
+                self.progress.detail(
+                    f"Generation {generation_id}: failed; error_type={type(exc).__name__}"
+                )
+                raise
+            finally:
+                _generated_so_far, elapsed = heartbeat.finish()
             sequence = output[0]
             if len(sequence) < prompt_tokens:
                 raise QwenOutputError("Local model returned an invalid token sequence")
+            generated_tokens = len(sequence) - prompt_tokens
+            heartbeat.update(generated_tokens)
+            rate = generated_tokens / elapsed if elapsed > 0 else 0.0
+            self.progress.detail(
+                f"Generation {generation_id}: complete; generated_tokens={generated_tokens}; "
+                f"elapsed={elapsed:.1f}s; speed={rate:.2f} tokens/s"
+            )
             text = tokenizer.decode(sequence[prompt_tokens:], skip_special_tokens=True)
             return parse_json_object(text)
         except (QwenPromptBudgetError, QwenOutputError):
@@ -359,11 +427,18 @@ class LocalQwenProvider:
                     with suppress(RuntimeError):
                         torch.set_num_interop_threads(self.runtime.cpu_interop_threads)
                 local_path = str(self.verified.directory)
+                load_started = time.monotonic()
+                self.progress.detail("Loading tokenizer...")
                 tokenizer = auto_tokenizer.from_pretrained(
                     local_path,
                     local_files_only=True,
                     trust_remote_code=False,
                 )
+                self.progress.detail(
+                    f"Tokenizer loaded; elapsed={time.monotonic() - load_started:.1f}s"
+                )
+                weights_started = time.monotonic()
+                self.progress.basic("Loading Qwen 0.5B model weights...")
                 model = auto_model.from_pretrained(
                     local_path,
                     local_files_only=True,
@@ -371,17 +446,48 @@ class LocalQwenProvider:
                     use_safetensors=True,
                     dtype="auto",
                 )
-                model.to(device)
+                self.progress.detail(
+                    f"Model weights loaded; elapsed={time.monotonic() - weights_started:.1f}s"
+                )
+                device_started = time.monotonic()
+                self.progress.detail(f"Preparing model for {device} execution...")
+                if device != "cpu":
+                    self.progress.detail(f"Moving model to {device}...")
+                    model.to(device)
+                else:
+                    self.progress.detail(
+                        "Model loaded directly on CPU; redundant CPU transfer skipped"
+                    )
+                self.progress.detail(
+                    f"Model device preparation complete for {device}; "
+                    f"elapsed={time.monotonic() - device_started:.1f}s"
+                )
+                evaluation_started = time.monotonic()
+                self.progress.detail("Enabling model evaluation mode...")
                 model.eval()
+                self.progress.detail(
+                    "Model evaluation mode enabled; "
+                    f"elapsed={time.monotonic() - evaluation_started:.1f}s"
+                )
+                self.progress.basic(
+                    f"Qwen 0.5B model ready on {device}; "
+                    f"elapsed={time.monotonic() - load_started:.1f}s"
+                )
             except Exception as exc:
                 raise QwenProviderError(
                     "The integrity-verified Qwen model could not be loaded locally"
                 ) from exc
 
             self._torch = torch
+            self._transformers = transformers
             self._tokenizer = tokenizer
             self._model = model
             self._device = device
+
+
+def _provider_progress(provider: QwenJsonProvider) -> AnalysisProgressReporter:
+    value = getattr(provider, "progress", None)
+    return value if isinstance(value, AnalysisProgressReporter) else AnalysisProgressReporter()
 
 
 def parse_json_object(value: str) -> dict[str, Any]:

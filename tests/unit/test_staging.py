@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import IO, Any, cast
 
 import pytest
 
@@ -173,10 +174,11 @@ def test_stager_opens_verified_temporary_file_writable_for_fsync(
     open_modes: list[str] = []
     original_open = Path.open
 
-    def recording_open(path: Path, mode: str = "r", *args: object, **kwargs: object):
+    def recording_open(path: Path, *args: Any, **kwargs: Any) -> IO[Any]:
+        mode = str(args[0] if args else kwargs.get("mode", "r"))
         if path.suffix == ".tmp":
             open_modes.append(mode)
-        return original_open(path, mode, *args, **kwargs)
+        return cast(IO[Any], original_open(path, *args, **kwargs))
 
     monkeypatch.setattr(Path, "open", recording_open)
 
