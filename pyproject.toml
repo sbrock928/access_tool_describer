@@ -21,6 +21,12 @@ dependencies = [
 
 [project.optional-dependencies]
 windows = ["pywin32>=308; platform_system == 'Windows'"]
+semantic = [
+  "huggingface-hub==1.32.0",
+  "safetensors==0.8.0",
+  "torch==2.14.0",
+  "transformers==5.17.0",
+]
 dev = ["mypy>=1.14", "pytest>=8.3", "ruff>=0.8"]
 
 [project.scripts]

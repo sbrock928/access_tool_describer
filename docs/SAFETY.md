@@ -11,3 +11,21 @@ Only the inventory-listed primary `.accdb` is eligible for extraction; copied si
 supporting artifacts and are never opened as that tool's primary database.
 
 The extractor calls `assert_trusted_staged_artifact` to reject unstaged paths, paths outside `workspace/staged_tools`, missing files, and hash mismatches. This guard is tested.
+
+## Semantic model boundary
+
+Semantic interpretation consumes only extracted snapshots and normalized evidence after the staging
+boundary above. It never opens an Access file or executes VBA, SQL, macros, queries, model output,
+or shell commands.
+
+The default semantic profile and architecture path is deterministic and does not require or load
+model files. The explicit `semantic-model-download` command is the only semantic operation allowed
+to use the network. It requests one approved Hugging Face repository at one immutable commit through
+`huggingface_hub`, downloads an exact file allowlist, rejects executable and pickle-capable artifact
+formats, requires every file to match a code-reviewed size and SHA-256, and creates a SHA-256
+manifest. Only when `[profile] model_generation` or `[microsoft] model_generation` is enabled do
+`semantic-check` and `semantic` verify both the approved digests and manifest before loading
+safetensors with `trust_remote_code=False` and `local_files_only=True`. They have no hosted
+provider, automatic dependency installation, or automatic repair/download path. Prompt inputs
+remain bounded, path/secret-redacted, delimited as untrusted data, and outputs must pass schema and
+evidence-reference validation.

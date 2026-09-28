@@ -1,6 +1,6 @@
 # Architecture
 
-`inventory -> staging -> trusted local artifact -> Windows extraction -> deterministic analysis -> evidence store -> portfolio analysis -> reports`
+`inventory -> staging -> trusted local artifact -> Windows extraction -> deterministic analysis -> evidence store -> deterministic application profiles -> deterministic similarity -> reviewed architecture -> reports`
 
 The `access` package is the only Windows-specific layer. It receives `StagedArtifact`, never `Path` alone, and validates the artifact again before use. `parsing`, `lineage`, `capabilities`, `similarity`, `persistence`, and `reporting` are OS-independent.
 
@@ -15,3 +15,11 @@ One inventory ID/EUC can contain multiple listed Access files. The staging state
 inventory record per listed file, de-duplicates their shared bundle artifacts, and marks every
 listed Access file as primary. Extraction and analysis checkpoints distinguish those primaries by
 their SHA-256 values. Coverage reports show both the EUC name and primary filename.
+
+The optional semantic layer derives profiles deterministically from application IRs, evidence, and
+owner claims by default. Operators may explicitly enable one allowlisted instruct model loaded
+directly from an integrity-verified local directory; it summarizes and classifies bounded evidence
+without replacing static parsing. Portfolio similarity uses weighted Jaccard overlap across evidence-grounded capabilities,
+workflows, data domains, datasources, technical characteristics, object composition, and archetype.
+Each retained edge stores its category scores and shared features. No embeddings, vector database,
+model server, or network transport participate in analysis.
