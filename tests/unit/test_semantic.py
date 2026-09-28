@@ -881,28 +881,43 @@ def test_schema_failure_is_isolated_per_application() -> None:
 
 def test_profile_generation_repairs_overlong_bounded_output() -> None:
     class OverlongProvider(FakeProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.expected_evidence_ids: list[str] = []
+
         def complete_json(self, **kwargs: Any) -> dict[str, Any]:
             output = super().complete_json(**kwargs)
             if kwargs["schema_name"] != "semantic_application_profile":
                 return output
             payload = json.loads(kwargs["user"].split("\n", 1)[1].rsplit("\n", 1)[0])
-            allowed = list(payload["allowed_evidence_refs"])
-            assert len(allowed) >= 3
+            allowed = payload["allowed_evidence_refs"]
+            allowed_identifiers = list(allowed.values())
+            assert len(allowed_identifiers) >= 3
+            source_identifier = next(
+                identifier for identifier in allowed_identifiers if identifier.startswith("src_")
+            )
+            other_identifiers = [
+                identifier for identifier in allowed_identifiers
+                if identifier != source_identifier
+            ]
+            selected_identifiers = [source_identifier, *other_identifiers[:2]]
+            self.expected_evidence_ids = selected_identifiers[:2]
             output["p"] = "p" * 300
             output["f"][0].update(
                 {
                     "l": "l" * 150,
                     "r": "r" * 250,
-                    "e": ["E999", *allowed[:3], allowed[0]],
+                    "e": ["src_invented", *selected_identifiers, source_identifier],
                 }
             )
             output["q"] = ["one", "two", "three"]
             return output
 
     inventory, artifacts, extracted, evidence, coverage = _portfolio()
+    provider = OverlongProvider()
     state = run_semantic_pipeline(
         _settings(),
-        OverlongProvider(),
+        provider,
         inventory[:1],
         artifacts[:1],
         extracted[:1],
@@ -918,6 +933,7 @@ def test_profile_generation_repairs_overlong_bounded_output() -> None:
     assert len(profile.findings[0].label) == 120
     assert len(profile.findings[0].description) == 220
     assert len(profile.findings[0].evidence_ids) == 2
+    assert set(profile.findings[0].evidence_ids) == set(provider.expected_evidence_ids)
     assert profile.open_questions == ["one", "two"]
 
 

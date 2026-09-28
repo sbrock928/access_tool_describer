@@ -89,7 +89,7 @@ class _FindingResponse(BaseModel):
         default_factory=list,
         alias="e",
         max_length=2,
-        description="Evidence citation keys from allowed_evidence_refs",
+        description="Evidence citation keys or exact mapped IDs from allowed_evidence_refs",
     )
     claim_refs: list[str] = Field(
         default_factory=list,
@@ -1085,7 +1085,7 @@ def _profile_application(
             "over generic reporting or integration. Explain each interpretation and cite "
             "the operations or owner claims supporting it. Do not invent domains from "
             "object names or force a minimum number of capabilities. "
-            "Cite only allowed citation keys, "
+            "Cite only allowed citation keys or their exact mapped IDs, "
             "abstain when evidence is "
             "insufficient, and return only schema-conforming JSON."
         ),
@@ -1251,14 +1251,14 @@ def _normalize_profile_response(
             finding,
             "e",
             "evidence_refs",
-            allowed=frozenset(evidence_refs),
+            references=evidence_refs,
             limit=2,
         )
         _filter_citation_refs(
             finding,
             "o",
             "claim_refs",
-            allowed=frozenset(claim_refs),
+            references=claim_refs,
             limit=1,
         )
         findings.append(finding)
@@ -1289,16 +1289,20 @@ def _filter_citation_refs(
     alias: str,
     name: str,
     *,
-    allowed: frozenset[str],
+    references: dict[str, str],
     limit: int,
 ) -> None:
     key = _response_key(value, alias, name)
     if key is None or not isinstance(value[key], list):
         return
+    keys_by_identifier = {identifier: reference for reference, identifier in references.items()}
     filtered: list[str] = []
     for item in value[key]:
-        if isinstance(item, str) and item in allowed and item not in filtered:
-            filtered.append(item)
+        if not isinstance(item, str):
+            continue
+        reference = item if item in references else keys_by_identifier.get(item)
+        if reference is not None and reference not in filtered:
+            filtered.append(reference)
         if len(filtered) == limit:
             break
     value[key] = filtered
@@ -1837,9 +1841,11 @@ def _bounded_profile_payload(
     evidence_refs: dict[str, str]
     claim_refs: dict[str, str]
     while True:
-        allowed_evidence = {application_ir.ir_id} | {
-            item["evidence_id"] for item in payload["observed_findings"]
-        }
+        allowed_evidence = (
+            {application_ir.ir_id}
+            | {item["evidence_id"] for item in payload["observed_findings"]}
+            | _profile_payload_source_ids(payload)
+        )
         allowed_claims = {item["claim_id"] for item in payload["owner_claims"]}
         evidence_refs = {f"E{index}": value for index, value in enumerate(sorted(allowed_evidence))}
         claim_refs = {f"C{index}": value for index, value in enumerate(sorted(allowed_claims))}
@@ -1879,6 +1885,25 @@ def _bounded_profile_payload(
         }
     )
     return payload, evidence_refs, claim_refs, updated_ir
+
+
+def _profile_payload_source_ids(payload: dict[str, Any]) -> set[str]:
+    """Return only source IDs visibly present in the bounded model input."""
+    application_ir = payload["deterministic_application_ir"]
+    source_ids = {
+        reference
+        for role in application_ir["supported_roles"]
+        for reference in role.get("evidence_ids", [])
+        if isinstance(reference, str)
+    }
+    for serialized in application_ir["indexes"]["behaviors"]["items"]:
+        behavior = json.loads(serialized)
+        source_ids.update(
+            reference
+            for reference in behavior.get("evidence_ids", [])
+            if isinstance(reference, str)
+        )
+    return source_ids
 
 
 def _append_indexes_round_robin(
