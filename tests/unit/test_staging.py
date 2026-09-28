@@ -161,3 +161,26 @@ def test_safe_os_error_reports_operation_and_codes_without_sensitive_text() -> N
     assert "operation=copy_file_contents" in message
     assert "errno=13" in message
     assert "sensitive" not in message
+
+
+def test_stager_opens_verified_temporary_file_writable_for_fsync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.accdb"
+    source.write_bytes(b"source")
+    settings = AnalyzerSettings(workspace=tmp_path / "workspace")
+    settings.ensure_workspace()
+    open_modes: list[str] = []
+    original_open = Path.open
+
+    def recording_open(path: Path, mode: str = "r", *args: object, **kwargs: object):
+        if path.suffix == ".tmp":
+            open_modes.append(mode)
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", recording_open)
+
+    artifact = ArtifactStager(settings).stage_primary(record(source))
+
+    assert artifact.status == ArtifactStatus.STAGED
+    assert "r+b" in open_modes

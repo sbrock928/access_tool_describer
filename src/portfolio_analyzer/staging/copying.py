@@ -129,7 +129,11 @@ class ArtifactStager:
             if target_sha256 != source_sha256:
                 raise StagingValidationError("Staged file hash differs from source")
             operation = "sync_staged_file"
-            with temporary.open("rb") as staged_file:
+            # Windows implements fsync through _commit, which rejects a descriptor
+            # reopened read-only with EBADF (errno 9). The temporary file is owned
+            # by the workspace, so reopen it read/write solely for the durability
+            # barrier; no data is modified here.
+            with temporary.open("r+b") as staged_file:
                 os.fsync(staged_file.fileno())
             operation = "publish_staged_file"
             os.replace(temporary, target)
