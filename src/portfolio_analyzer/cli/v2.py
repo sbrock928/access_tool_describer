@@ -838,17 +838,55 @@ def _estimate_workspace(
     }
 
 
+@app.command("evaluate-applications")
+def evaluate_applications_command(
+    workspace: Path = typer.Option(..., exists=True, file_okay=False),
+    evaluation_dir: Path = typer.Option(..., help="Separate local evaluation directory."),
+    model_dir: Path = typer.Option(..., exists=True, file_okay=False),
+    experiment: str = typer.Option("contract-private", help="baseline or contract-private"),
+    threads: int = typer.Option(4, min=1, max=4),
+    application: str | None = typer.Option(None, help="Optional staged application ID."),
+    resume: bool = typer.Option(False, help="Reuse this evaluation's own checkpoints."),
+    max_inference_calls_per_application: int | None = typer.Option(None, min=1),
+) -> None:
+    """Evaluate extracted applications in isolation; keep detailed artifacts local."""
+    from portfolio_analyzer.qwen.application_evaluation import evaluate_applications
+
+    typer.echo("Evaluating local extraction; detailed artifacts stay in the evaluation directory.")
+    try:
+        report, code = evaluate_applications(
+            workspace=workspace, evaluation_dir=evaluation_dir, model_dir=model_dir,
+            experiment=experiment, threads=threads, application=application, resume=resume,
+            max_calls=max_inference_calls_per_application, progress=typer.echo,
+        )
+    except KeyboardInterrupt:
+        typer.echo("Evaluation interrupted before application processing.")
+        raise typer.Exit(code=130) from None
+    except Exception:
+        typer.echo("Evaluation setup failed; check extraction, separate paths, policy and runtime. "
+                   "No source analysis was published; no exception content displayed.")
+        raise typer.Exit(code=1) from None
+    from portfolio_analyzer.qwen.benchmark_summary import _summarize_applications
+
+    typer.echo(_summarize_applications(json.dumps(report).encode("utf-8")))
+    typer.echo("Use benchmark-summary on the new metrics-NNNN.json file. "
+               "LOCAL-REVIEW and state files contain application content and must stay local.")
+    if code:
+        raise typer.Exit(code=code)
+
+
 @app.command("benchmark-summary")
 def benchmark_summary(
     report_path: Path = typer.Option(..., "--input", exists=True, dir_okay=False, readable=True),
 ) -> None:
-    """Summarize microbenchmark validity, timing, and safe per-attempt field diagnostics."""
+    """Summarize synthetic microbenchmarks or isolated application evaluation metrics."""
     from portfolio_analyzer.qwen.benchmark_summary import summarize_micro_benchmark
 
     try:
         summary = summarize_micro_benchmark(report_path)
     except (OSError, ValueError):
-        typer.echo("Expected a valid microbenchmark matrix report; no report contents displayed.")
+        typer.echo("Expected valid benchmark or application evaluation metrics; "
+                   "no report contents displayed.")
         raise typer.Exit(code=1) from None
     typer.echo(summary)
 

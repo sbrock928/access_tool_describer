@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from statistics import median
 from typing import Literal
@@ -28,17 +29,21 @@ class _Shape(_SafeRecord):
     missing_required_keys: int = Field(ge=0)
 
 
-class _Generation(_SafeRecord):
+class _GenerationStatistics(_SafeRecord):
+    application: int | None = Field(default=None, ge=1)
     attempt: Literal[1, 2]
     generation_seconds: float = Field(ge=0, allow_inf_nan=False)
     outcome: Literal["interrupted", "runtime_failure", "json_valid", "invalid", "valid"]
-    validation_issues: list[_Issue] | None = None
-    response_shape: _Shape | None = None
-    secret_canary_detected: bool | None = None
     prompt_tokens: int | None = Field(default=None, ge=0)
     generated_tokens: int | None = Field(default=None, ge=0)
     first_token_seconds: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     decode_tokens_per_second: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+class _Generation(_GenerationStatistics):
+    validation_issues: list[_Issue] | None = None
+    response_shape: _Shape | None = None
+    secret_canary_detected: bool | None = None
 
 
 class _Metrics(_SafeRecord):
@@ -73,7 +78,13 @@ class _Matrix(_SafeRecord):
 
 def summarize_micro_benchmark(path: Path) -> str:
     """Validate numeric/fixed-label data before rendering; ignore all other report keys."""
-    report = _Matrix.model_validate_json(path.read_bytes())
+    raw = path.read_bytes()
+    document = json.loads(raw)
+    if isinstance(document, dict) and document.get("schema_version") == (
+        "application-evaluation-metrics-v1"
+    ):
+        return _summarize_applications(raw)
+    report = _Matrix.model_validate_json(raw)
     lines = [
         "Timed requests only; warm-up excluded. ValidRequests counts final schema outcomes.",
         "MedianGenSeconds includes initial and repair generation time per request.",
@@ -149,3 +160,73 @@ def summarize_micro_benchmark(path: Path) -> str:
                     f"{event.attempt:7} {event.outcome:7} {diagnostics}"
                 )
     return "\n".join(lines + details)
+
+
+class _Application(_SafeRecord):
+    application: int = Field(ge=1)
+    status: Literal["pending", "complete", "partial", "failed"]
+    units_expected: int | None = Field(default=None, ge=0)
+    units_completed: int | None = Field(default=None, ge=0)
+    units_abstained: int | None = Field(default=None, ge=0)
+    units_failed: int | None = Field(default=None, ge=0)
+    elapsed_seconds: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+class _ApplicationMetrics(_SafeRecord):
+    # Application schemas have different field names; their diagnostics are not rendered here.
+    generations: list[_GenerationStatistics]
+    peak_working_set_bytes: int | None = Field(default=None, ge=0)
+
+
+class _ApplicationEvaluation(_SafeRecord):
+    schema_version: Literal["application-evaluation-metrics-v1"]
+    experiment: Literal["baseline", "contract-private"]
+    cache_scenario: Literal["cold", "resumed"]
+    outcome: Literal["complete", "failed", "interrupted", "call_limit"]
+    applications_selected: int = Field(ge=1)
+    applications_remaining: int = Field(ge=0)
+    applications: list[_Application]
+    metrics: _ApplicationMetrics
+
+
+def _summarize_applications(raw: bytes) -> str:
+    report = _ApplicationEvaluation.model_validate_json(raw)
+    lines = [f"Application evaluation: {report.experiment}; cache={report.cache_scenario}; "
+             f"outcome={report.outcome}",
+             "App Status Units Complete Abstained Failed Seconds Calls Repairs "
+             "PromptTokens OutputTokens"]
+    for app in report.applications:
+        events = [event for event in report.metrics.generations
+                  if event.application == app.application]
+        def count(value: int | None) -> str:
+            return str(value) if value is not None else "unknown"
+
+        def tokens(values: list[int | None]) -> str:
+            return str(sum(value for value in values if value is not None)) if all(
+                value is not None for value in values
+            ) else "unknown"
+
+        seconds = f"{app.elapsed_seconds:.2f}" if app.elapsed_seconds is not None else "incomplete"
+        lines.append(
+            f"{app.application} {app.status} {count(app.units_expected)} "
+            f"{count(app.units_completed)} {count(app.units_abstained)} {count(app.units_failed)} "
+            f"{seconds} {len(events)} {sum(event.attempt == 2 for event in events)} "
+            f"{tokens([e.prompt_tokens for e in events])} "
+            f"{tokens([e.generated_tokens for e in events])}"
+        )
+    events = report.metrics.generations
+    for label, values in (
+        ("MedianFirstTokenSeconds", [e.first_token_seconds for e in events]),
+        ("MedianDecodeTokensPerSecond", [e.decode_tokens_per_second for e in events]),
+    ):
+        known = [value for value in values if value is not None]
+        value = f"{median(known):.2f}" if known and len(known) == len(values) else "unmeasured"
+        lines.append(f"{label}={value}")
+    lines.extend([
+        f"PeakWorkingSetBytes={report.metrics.peak_working_set_bytes or 'unmeasured'}",
+        f"ApplicationsRemaining={report.applications_remaining}",
+        "Semantic quality review required. Extraction and portfolio synthesis excluded.",
+        "Cold first-application time includes lazy loading; recorded separately in JSON.",
+        "Only metrics files are exportable. LOCAL-REVIEW and state artifacts must stay local.",
+    ])
+    return "\n".join(lines)

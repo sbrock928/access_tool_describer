@@ -220,3 +220,45 @@ Second-round Windows speed, validity, and privacy effects are **unmeasured**. Th
 experiments cannot replace deterministic input redaction or establish production security.
 Application performance, semantic quality calibration, and later batching/runtime gates
 remain outstanding; no production inference behavior has been promoted.
+
+## Confirmation and application evaluation
+
+The operator's confirmation screenshot (four threads, three repetitions of the same
+three micro cases) reports:
+
+| Metric | baseline | contract-private |
+| --- | ---: | ---: |
+| Final valid requests | 3/9 | 9/9 |
+| Requests with canary detections | 3 | 0 |
+| Generation calls | 18 | 15 |
+| Repair calls | 9 | 6 |
+| Prompt tokens | 34,890 | 35,721 |
+| Generated tokens | 660 | 297 |
+| Median generation seconds including repair | 53.65 | 54.26 |
+| Median first-token seconds (prefill proxy) | 22.47 | 25.24 |
+| Median decode tokens/second | 7.49 | 7.09 |
+| Peak working set bytes | 1,750,437,888 | 1,776,455,680 |
+
+This confirms synthetic response validity on three repeated inputs, not production
+semantics or a runtime improvement. Prompt trials stop here. No candidate is promoted.
+
+`evaluate-applications` now permits baseline versus contract-private comparisons on
+current extracted enterprise applications in separate local directories. It pins stage
+and extraction identities, uses the unchanged application pipeline and grounding checks,
+checks exact unit accounting, and stores validated audit/evidence artifacts for local
+review. It never publishes an analysis or portfolio manifest. All production reads are
+read-only; inference caches and writer locks belong to the evaluation directory.
+
+Fresh directories provide cold caches. Explicit resume checks source, selection, model/
+policy provenance and thread identity before reading evaluation checkpoints. Interrupted
+runs retain completed inference outputs and produce a new metadata-only attempt report;
+remaining application counts are explicit. Resume timings must not be compared with cold
+runs as though cache conditions matched. Extraction is reused and excluded; portfolio
+synthesis is deliberately not evaluated by this command. The first application includes
+lazy loading, with loading and verification also recorded as separate timing phases.
+
+Application runtime/quality results are still **unmeasured**. Complete schema/grounding
+validation does not adjudicate unsupported claims, capability recall or appropriate
+abstention. The reviewed quality-check/calibration limitation is unchanged. Only metrics
+files can be exported under local policy; evidence, cache and LOCAL-REVIEW artifacts
+contain application data and must remain inside the enterprise boundary.

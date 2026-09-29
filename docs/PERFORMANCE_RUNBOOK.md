@@ -235,3 +235,63 @@ of the input; it does not expose those names. `named_wrapper=true` means the res
 an extra key equal to the code-owned schema name containing an object. These are structural
 observations, not claims about why the model produced them. Missing diagnostics in old
 reports cannot be reconstructed. Share only the metadata summary if local policy permits.
+
+## Application-level validation on the four staged applications
+
+The confirmation screen passed all nine timed synthetic requests for contract-private
+with no exact-canary detections. This justifies application evaluation, not promotion.
+Use the current extracted workspace. No additional apps need staging, and this command
+does not re-extract Access files or change current production analysis.
+
+After installing the update, run baseline and candidate as two separate commands. Replace
+`C:\Models\Qwen2.5-0.5B-Instruct` and `.\workspace` with your existing paths. Each evaluation
+directory must be NEW and outside both the source workspace and model directory:
+
+```powershell
+portfolio-analyzer evaluate-applications --workspace .\workspace --model-dir C:\Models\Qwen2.5-0.5B-Instruct --evaluation-dir .\eval-baseline --experiment baseline --threads 4
+portfolio-analyzer evaluate-applications --workspace .\workspace --model-dir C:\Models\Qwen2.5-0.5B-Instruct --evaluation-dir .\eval-candidate --experiment contract-private --threads 4
+```
+
+Each invocation uses a fresh process and its own cold cache, prints progress by opaque
+application ordinal, and prints its comparison summary at the end. A failed application
+can produce exit code 1; retain and compare its measurements rather than discarding it.
+Both commands must use the same extraction, application selection, threads and environment.
+For a smaller initial evaluation, add the same `--application ID` to both commands using
+an existing staged application ID. Do not change staging/extraction between evaluations.
+These are full application runs, not small microbenchmarks; their duration is unmeasured.
+
+Ctrl+C retains inference checkpoints and exits 130. An optional
+`--max-inference-calls-per-application 20` stops before exceeding the ceiling (exit 2),
+including repair and reduction calls. Resume the SAME command and directory with `--resume`;
+remove the ceiling to finish. Resume never bypasses cache integrity checks. Changing the
+policy, model/provenance, source snapshots, selected applications or threads requires a
+new directory. Failed and interrupted runs publish no production completion.
+
+Every attempt writes a new metadata-only `metrics-0001.json`, `metrics-0002.json`, etc.
+To redisplay either summary:
+
+```powershell
+portfolio-analyzer benchmark-summary --input .\eval-baseline\metrics-0001.json
+portfolio-analyzer benchmark-summary --input .\eval-candidate\metrics-0001.json
+```
+
+Compare application time, expected/completed/abstained/failed units, calls, repairs, prompt
+and generated tokens, first-token latency, decode throughput and peak working set. JSON
+reports retain phase distributions and cache counters. Do not compare a resumed warm run
+against a cold run as a policy speedup. The first application's time includes lazy model
+loading; the separate loading phase documents that cost. Extraction and portfolio synthesis
+are excluded. Application ordinals match the pinned inventory order.
+
+**Keep detailed artifacts local.** `LOCAL-REVIEW-0001.json` maps application IDs to evidence
+and validated analysis references. Each reference's `relative_path` is beneath the evaluation
+`.portfolio_analyzer_v2` directory. These artifacts and inference caches contain application
+content; only the metrics reports/console summaries are intended for metadata export.
+Use the evidence and analysis audit records to review every unit's coverage, citation closure,
+capability recall, abstention appropriateness, unsupported claims and sensitive information.
+Passing structural checks alone does not satisfy semantic review. Existing quality-check
+requirements remain in force; this command does not calibrate or bypass them.
+
+Designate a typical application locally before interpreting the ten-minute target, and
+report larger apps separately. Record source identity and cache scenario when comparing
+metrics; review results inside the enterprise environment. There is no automatic promotion
+or production report publication from evaluation directories.
