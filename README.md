@@ -94,6 +94,11 @@ its reason, suppresses portfolio-wide absence claims, is visibly watermarked, an
 
 ## Administrative commands
 
+For CPU cost estimates, metadata-only profiling, safe call limits, and synthetic thread
+benchmarks, follow the [offline performance runbook](docs/PERFORMANCE_RUNBOOK.md).
+The [performance review](docs/PERFORMANCE_OPTIMIZATION.md) separates verified architecture
+from measurements still required on Windows.
+
 ```powershell
 portfolio-analyzer model-download --destination C:\Models\Qwen2.5-0.5B-Instruct
 portfolio-analyzer model-verify --model-dir C:\Models\Qwen2.5-0.5B-Instruct

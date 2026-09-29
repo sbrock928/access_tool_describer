@@ -838,6 +838,37 @@ def _estimate_workspace(
     }
 
 
+@app.command("benchmark-inference")
+def benchmark_inference(
+    model_dir: Path = typer.Option(..., exists=True, file_okay=False, readable=True),
+    output: Path = typer.Option(..., help="New metadata-only JSON result file."),
+    threads: str = typer.Option("1,2,3,4", help="CPU thread settings, each in a fresh process."),
+    repetitions: int = typer.Option(3, min=1, max=10),
+    suite: str = typer.Option("micro", help="micro or application"),
+    workload: str = typer.Option("mixed", help="mixed, procedures, oversized, or duplicates"),
+) -> None:
+    """Benchmark synthetic evidence offline without touching production analysis state."""
+    from portfolio_analyzer.qwen.benchmark import run_matrix
+
+    try:
+        counts = tuple(dict.fromkeys(int(value.strip()) for value in threads.split(",")))
+        typer.echo("Starting offline CPU benchmark; results include warm-up and timed runs.")
+        success = run_matrix(
+            model_dir=model_dir, threads=counts, repetitions=repetitions,
+            output=output, suite=suite, workload=workload,
+        )
+    except KeyboardInterrupt:
+        typer.echo("Benchmark interrupted; completed thread-setting results retained.")
+        raise typer.Exit(code=130) from None
+    except (OSError, ValueError):
+        typer.echo("Benchmark failed: check options, local dependencies, and output location.")
+        raise typer.Exit(code=1) from None
+    if not success:
+        typer.echo("Benchmark worker failed; verify the local model and semantic dependencies.")
+        raise typer.Exit(code=1)
+    typer.echo("Benchmark measurements written. Synthetic results require quality review.")
+
+
 @app.command()
 def report(
     workspace: Path = typer.Option(..., file_okay=False),

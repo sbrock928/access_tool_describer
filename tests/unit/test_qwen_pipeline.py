@@ -1319,3 +1319,42 @@ def test_estimate_includes_chunk_reductions_and_synthesis_bounds() -> None:
     ]
     assert estimate["cold_calls_min_if_successful"] <= len(stages)
     assert estimate["cold_calls_max_with_repairs"] >= len(stages)
+
+
+def test_synthetic_application_benchmark_uses_isolated_caches_and_resumes(
+    tmp_path: Any, monkeypatch: Any,
+) -> None:
+    from types import SimpleNamespace
+
+    from portfolio_analyzer.qwen import benchmark
+
+    provider = _PipelineProvider()
+    original = provider.complete_json
+
+    def complete(**kwargs: Any) -> dict[str, Any]:
+        provider.performance.begin_generation(
+            user=kwargs["user"], prompt_tokens=100, output_limit=kwargs["max_output_tokens"],
+        )
+        return original(**kwargs)
+
+    provider.complete_json = complete
+    provider.verified = SimpleNamespace(manifest=SimpleNamespace(manifest_sha256="a" * 64))
+
+    def create(_runtime: Any, *, progress: Any) -> Any:
+        provider.progress = progress
+        provider.performance = progress.performance
+        return provider
+
+    monkeypatch.setattr(benchmark, "LocalQwenProvider", create)
+    monkeypatch.setattr("portfolio_analyzer.cli.v2._model_provenance", lambda _p: _provenance())
+    value = benchmark.run_worker(tmp_path, 4, 1, "application", "mixed")
+    runs = value["runs"]
+    assert len(runs) == 8
+    assert runs[0]["completed"]
+    assert runs[1]["metrics"]["generations"] == []
+    assert runs[2]["metrics"]["outcome"] == "call_limit"
+    assert runs[3]["completed"]
+    assert runs[3]["metrics"]["cache"]["hits"] == 1
+    assert runs[0]["warmup"] is True
+    assert runs[4]["warmup"] is False
+    assert list(tmp_path.iterdir()) == []

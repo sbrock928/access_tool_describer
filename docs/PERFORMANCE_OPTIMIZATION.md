@@ -88,3 +88,20 @@ and its absent reviewed calibration remain unchanged.
 The recommended architecture is deterministic extraction, compact grounded semantic
 interpretation, complete synthesis, immediate checkpoints, and a verified local CPU
 runtime. Inference-policy changes remain gated on Windows measurements.
+
+## Delivered measurement foundation
+
+The instrumentation/estimate/checkpoint increment and the isolated synthetic benchmark
+increment are implemented. Follow [PERFORMANCE_RUNBOOK.md](PERFORMANCE_RUNBOOK.md) to
+collect the Windows baseline. Local validation: Ruff passed; mypy passed for 55 source
+files; 249 tests passed with Windows Access and real-model smoke tests skipped.
+These checks establish implementation behavior, not an inference speedup.
+
+Synthetic fixture planning produces 6 mixed-workflow units, 30 procedure-workload units,
+7 oversized-workload units, and 12 duplicate-workload units. Actual tokenizer-fitted
+chunks, tokens, validity, and timings remain unmeasured until the approved model runs.
+
+No compact-prompt, repair-prompt, output-budget, batching, deterministic-enrichment,
+deduplication, dtype, backend, or model-change experiment has been promoted. The next
+decision requires metadata-only results from the operator's target Windows machine;
+the ten-minute success target has not yet been demonstrated.

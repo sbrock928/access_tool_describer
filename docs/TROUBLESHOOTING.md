@@ -119,6 +119,13 @@ portfolio synthesis. CPU inference can therefore take substantial time on a larg
 process checkpoints applications so a later compatible invocation can reuse them. `--force`
 deliberately recomputes selected current evidence.
 
+Successful chunk and reduction outputs are also checkpointed immediately. `--force` bypasses
+cache reads while retaining successful writes; resume without `--force` to reuse them. Start with
+`analyze --estimate` to inspect call bounds, then use `--performance-report NEW_FILE.json` to
+separate first-token latency from decoding. `--max-inference-calls-per-application N` stops safely
+without dropping evidence or publishing a completed run. See the
+[offline performance runbook](PERFORMANCE_RUNBOOK.md) for Windows benchmark commands.
+
 The model supports 32,768 tokens, but production inference does not attempt that full window on a
 CPU. Logical-unit requests are capped at 8,192 total tokens and synthesis requests at 16,384,
 including reserved output. Larger requests split before generation. In verbose mode, a heartbeat
