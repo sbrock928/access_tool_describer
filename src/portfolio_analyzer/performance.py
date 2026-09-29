@@ -71,6 +71,7 @@ class GenerationMeasurement:
     decode_seconds: float | None = None
     decode_tokens_per_second: float | None = None
     generation_seconds: float = 0.0
+    secret_canary_detected: bool | None = None
     hit_output_limit: bool = False
     outcome: str = "interrupted"
     validation_issues: list[ValidationDiagnostic] = field(default_factory=list)

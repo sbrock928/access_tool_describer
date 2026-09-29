@@ -64,7 +64,8 @@ def test_failed_worker_has_safe_diagnostics_and_does_not_continue(
         output=destination, suite="micro", workload="mixed",
     )
     result = json.loads(destination.read_text())
-    assert result["results"] == [{"threads_requested": 1, "outcome": "worker_failed"}]
+    assert result["results"] == [{"threads_requested": 1, "outcome": "worker_failed",
+                                  "experiment": "baseline"}]
     assert "PRIVATE" not in destination.read_text()
 
 
@@ -78,3 +79,33 @@ def test_matrix_refuses_model_directory_and_existing_output(tmp_path: Path) -> N
                 output=destination, suite="micro", workload="mixed",
             )
     assert (tmp_path / "existing.json").read_text() == "keep"
+
+
+def test_candidates_use_separate_processes_and_explicit_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policies = []
+
+    def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        policy = command[command.index("--experiment") + 1]
+        policies.append(policy)
+        Path(command[-1]).write_text(json.dumps({"experiment": policy}))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(benchmark.subprocess, "run", run)
+    assert benchmark.run_matrix(
+        model_dir=tmp_path / "model", threads=(4,), repetitions=1,
+        output=tmp_path / "out.json", suite="micro", workload="mixed",
+        experiments=("baseline", "clear-object", "combined"),
+    )
+    assert policies == ["baseline", "clear-object", "combined"]
+
+
+def test_unknown_candidate_is_rejected_before_writes(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        benchmark.run_matrix(
+            model_dir=tmp_path / "model", threads=(4,), repetitions=1,
+            output=tmp_path / "out.json", suite="micro", workload="mixed",
+            experiments=("PRIVATE",),
+        )
+    assert not (tmp_path / "out.json").exists()

@@ -861,6 +861,10 @@ def benchmark_inference(
     repetitions: int = typer.Option(3, min=1, max=10),
     suite: str = typer.Option("micro", help="micro or application"),
     workload: str = typer.Option("mixed", help="mixed, procedures, oversized, or duplicates"),
+    experiments: str = typer.Option(
+        "baseline", help="Comma-separated benchmark-only candidates: baseline, clear-object, "
+        "compact-schema, targeted-repair, json-stop, combined",
+    ),
 ) -> None:
     """Benchmark synthetic evidence offline without touching production analysis state."""
     from portfolio_analyzer.qwen.benchmark import run_matrix
@@ -871,6 +875,7 @@ def benchmark_inference(
         success = run_matrix(
             model_dir=model_dir, threads=counts, repetitions=repetitions,
             output=output, suite=suite, workload=workload,
+            experiments=tuple(dict.fromkeys(value.strip() for value in experiments.split(","))),
         )
     except KeyboardInterrupt:
         typer.echo("Benchmark interrupted; completed thread-setting results retained.")
@@ -1164,7 +1169,7 @@ def _model_provenance(provider: LocalQwenProvider) -> ModelProvenance:
         raise ValueError(
             "Local Qwen analysis requires the installed transformers runtime"
         ) from exc
-    return ModelProvenance(
+    provenance = ModelProvenance(
         model_manifest_sha256=provider.verified.manifest.manifest_sha256,
         prompt_version=TWO_STAGE_PROMPT_VERSION,
         output_schema_version="+".join(
@@ -1198,6 +1203,20 @@ def _model_provenance(provider: LocalQwenProvider) -> ModelProvenance:
             KeyValueFact(name="trust_remote_code", value="false"),
         ),
     )
+    from portfolio_analyzer.qwen.experiments import EXPERIMENTS
+
+    experiment = getattr(provider, "experiment", EXPERIMENTS["baseline"])
+    if experiment.name != "baseline":
+        # Keep baseline fingerprints stable; every experimental policy has separate caches.
+        provenance = provenance.model_copy(update={
+            "generation_parameters": tuple(sorted(
+                (*provenance.generation_parameters,
+                 KeyValueFact(name="inference_experiment", value=experiment.identity)),
+                key=lambda item: item.name,
+            )),
+        })
+    return provenance
+
 
 
 def _compatible_previous_analysis(

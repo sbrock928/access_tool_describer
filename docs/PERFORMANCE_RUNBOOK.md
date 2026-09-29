@@ -154,3 +154,55 @@ Use a fresh output filename. This performs three warm-up requests and three time
 requests, each allowing one repair. It does not require staged applications or another
 full thread matrix. Share only the summary if your organization's policy permits it.
 Prompts, output budgets, and repair behavior are unchanged by this diagnostic update.
+
+## Compare optimization candidates (benchmark only)
+
+The following candidates are available through `benchmark-inference --experiments`.
+They cannot be selected by production `analyze`; its baseline policy and cache keys
+remain unchanged. Each candidate/thread pair runs in its own fresh process and has
+isolated synthetic application caches. Candidate provenance invalidates incompatible
+cache entries. Output limits remain 128 for the microbenchmark and 1,024 for application
+inference. These are experiments, not promoted optimizations.
+
+| Candidate | Change from baseline |
+| --- | --- |
+| `baseline` | Current production request and repair behavior |
+| `clear-object` | Remove the ambiguous named-object wording; explicitly request top-level properties |
+| `compact-schema` | Remove schema titles, examples, and comments; retain descriptions and every validation constraint |
+| `targeted-repair` | Add up to eight fixed failure categories and schema-defined top-level fields to repair feedback |
+| `json-stop` | Stop generation when an object structurally closes; retain strict JSON, schema, and grounding validation |
+| `combined` | Apply all four candidate changes together |
+
+Run the controlled screen on the same Windows machine, with four threads:
+
+```powershell
+portfolio-analyzer benchmark-inference --model-dir C:\Models\Qwen2.5-0.5B-Instruct --threads 4 --repetitions 1 --experiments baseline,clear-object,compact-schema,targeted-repair,json-stop,combined --output .\optimization-screen.json
+portfolio-analyzer benchmark-summary --input .\optimization-screen.json
+```
+
+Run these as two separate commands. Substitute your existing verified model directory.
+This is six benchmark configurations: 36 requests including warm-ups, with at most
+72 generations if every request needs repair. It will take substantially longer than
+the previous single-configuration diagnostic run. All prompts remain ephemeral.
+
+The summary labels each candidate. Compare final request validity, canary findings,
+repair frequency, total request time, calls, prompt/output tokens, first-token latency,
+decode speed, and peak memory. Unknown metrics remain explicitly unmeasured. Request
+time includes validation/tokenization as well as generation. First-token latency is a
+prefill proxy; decode throughput includes callback overhead. JSON stopping currently
+decodes the accumulated suffix each step to avoid tokenizer-boundary errors, so its
+cost is included and may outweigh its benefit. Peak memory includes cold-start/warm-up
+allocations and is not reset for each case. Do not subtract that overhead from comparisons.
+
+Canary detection now checks all decoded attempts, including malformed and schema-invalid
+responses, and decoded JSON values. Older reports checked successful validated values
+only; compare leakage measurements with this coverage change in mind. No canary text or
+rejected output is exported. This exact-canary check is not a general secret-leak detector.
+
+After the screen, rerun promising candidates and baseline with `--repetitions 3`, then
+compare them with `--suite application --workload mixed` (and procedures, oversized,
+duplicates) using a new output filename per run. The summary command currently handles
+microbenchmarks; application metrics are in the JSON report. Preserve the original
+thread matrix, and repeat it after response reliability improves. Production promotion
+still requires the adjudicated quality suite and same-application runtime comparisons;
+passing three synthetic schema probes alone is insufficient.

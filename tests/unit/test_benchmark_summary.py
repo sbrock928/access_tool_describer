@@ -63,3 +63,22 @@ def test_summary_cli_never_echoes_invalid_report_content(tmp_path: Path, unsafe:
     assert result.exit_code == 1
     assert "no report contents displayed" in result.output
     assert "SECRET" not in result.output
+
+
+def test_summary_labels_candidate_and_reports_comparison_measurements(tmp_path: Path) -> None:
+    path = tmp_path / "metrics.json"
+    _report(path)
+    report = json.loads(path.read_text())
+    worker = report["results"][0]
+    worker["experiment"] = "combined"
+    for run in worker["runs"]:
+        run["metrics"].update(elapsed_seconds=50.0, peak_working_set_bytes=1024)
+        for event in run["metrics"]["generations"]:
+            event.update(prompt_tokens=100, generated_tokens=20,
+                         first_token_seconds=1.0, decode_tokens_per_second=4.0)
+    path.write_text(json.dumps(report))
+    summary = summarize_micro_benchmark(path)
+    assert "Experiment: combined" in summary
+    assert "Calls=6 RetryPercent=100.0 PromptTokens=600.00 GeneratedTokens=120.00" in summary
+    assert "MedianRequestSeconds=50.00 MedianFirstTokenSeconds=1.00" in summary
+    assert "MedianDecodeTokensPerSecond=4.00 PeakWorkingSetBytes=1024.00" in summary

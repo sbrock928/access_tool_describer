@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from portfolio_analyzer.performance import InferenceCallLimitReached, PerformanceRecorder
 from portfolio_analyzer.progress import AnalysisProgressReporter
+from portfolio_analyzer.qwen.experiments import EXPERIMENTS
 from portfolio_analyzer.qwen.pipeline import (
     TWO_STAGE_PROMPT_VERSION,
     analyze_application_two_stage,
@@ -116,10 +117,13 @@ class _SyntheticAbstention(BaseModel):
 
 def run_worker(
     model_dir: Path, threads: int, repetitions: int, suite: str, workload: str,
+    experiment: str = "baseline",
 ) -> dict[str, Any]:
     # CLI provenance construction is shared so benchmark and analyze keys agree.
     from portfolio_analyzer.cli.v2 import _model_provenance
 
+    if experiment not in EXPERIMENTS:
+        raise ValueError("unknown inference experiment")
     metrics = PerformanceRecorder()
     provider = LocalQwenProvider(
         ResolvedQwenRuntime(
@@ -127,6 +131,7 @@ def run_worker(
         ),
         progress=AnalysisProgressReporter(performance=metrics),
     )
+    provider.experiment = EXPERIMENTS[experiment]
     provenance = _model_provenance(provider)
     startup = metrics.payload()
     runs: list[dict[str, Any]] = []
@@ -147,6 +152,7 @@ def run_worker(
             for case, repeat in enumerate((1, 250, 750), 1):
                 metrics = reset()
                 canary = "SYNTHETIC-SECRET-CANARY-71e2"
+                provider.benchmark_canary = canary
                 value = generate_validated_json(
                     provider, response_model=_SyntheticAbstention,
                     schema_name="SyntheticAbstention",
@@ -163,10 +169,7 @@ def run_worker(
                     max_output_tokens=128,
                 )
                 valid = isinstance(value, StructuredGenerationSuccess)
-                leaked = (
-                    isinstance(value, StructuredGenerationSuccess)
-                    and canary in value.value.model_dump_json()
-                )
+                leaked = any(event.secret_canary_detected for event in metrics.generations)
                 metrics.outcome = "complete" if valid and not leaked else "failed"
                 runs.append({
                     "warmup": repetition == 0, "case": case, "repetition": repetition,
@@ -211,6 +214,16 @@ def run_worker(
         "model_revision": QWEN_MODEL.revision,
         "model_manifest_sha256": provider.verified.manifest.manifest_sha256,
         "prompt_policy": TWO_STAGE_PROMPT_VERSION,
+        "experiment": experiment,
+        "experiment_identity": provider.experiment.identity,
+        "experiment_policy": {
+            "clear_object": provider.experiment.clear_object,
+            "compact_schema": provider.experiment.compact_schema,
+            "targeted_repair": provider.experiment.targeted_repair,
+            "termination": "complete-object-v1" if provider.experiment.stop_json else "eos",
+        },
+        "generation_parameters": [item.model_dump(mode="json")
+                                  for item in provenance.generation_parameters],
         "inference_library_version": provenance.inference_library_version,
         "python_version": platform.python_version(), "platform": sys.platform,
         "startup": startup, "runs": runs,
@@ -220,6 +233,7 @@ def run_worker(
 def run_matrix(
     *, model_dir: Path, threads: tuple[int, ...], repetitions: int,
     output: Path, suite: str, workload: str,
+    experiments: tuple[str, ...] = ("baseline",),
 ) -> bool:
     if output.resolve().is_relative_to(model_dir.resolve()):
         raise ValueError("benchmark output must be outside the verified model directory")
@@ -231,25 +245,29 @@ def run_matrix(
         raise ValueError("invalid benchmark repetitions or suite")
     if workload not in WORKLOADS:
         raise ValueError("unknown synthetic workload")
+    if not experiments or any(name not in EXPERIMENTS for name in experiments):
+        raise ValueError("unknown inference experiment")
     results: list[dict[str, Any]] = []
     success = True
     try:
         with tempfile.TemporaryDirectory(prefix="access-benchmark-matrix-") as temporary:
-            for count in threads:
-                destination = Path(temporary) / f"threads-{count}.json"
+            for experiment, count in ((name, count) for name in experiments for count in threads):
+                destination = Path(temporary) / f"{experiment}-threads-{count}.json"
                 environment = dict(os.environ)
                 environment.update(OMP_NUM_THREADS=str(count), MKL_NUM_THREADS=str(count))
                 process = subprocess.run(
                     [sys.executable, "-m", "portfolio_analyzer.qwen.benchmark",
                      "--model-dir", str(model_dir.resolve()), "--threads", str(count),
                      "--repetitions", str(repetitions), "--suite", suite,
-                     "--workload", workload, "--output", str(destination)],
+                     "--workload", workload, "--experiment", experiment,
+                     "--output", str(destination)],
                     env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     check=False,
                 )
                 if process.returncode != 0 or not destination.exists():
                     success = False
-                    results.append({"threads_requested": count, "outcome": "worker_failed"})
+                    results.append({"threads_requested": count, "outcome": "worker_failed",
+                                    "experiment": experiment})
                     break
                 results.append(json.loads(destination.read_text(encoding="utf-8")))
     finally:
@@ -266,11 +284,13 @@ def _main() -> None:
     parser.add_argument("--repetitions", type=int, required=True)
     parser.add_argument("--suite", choices=("micro", "application"), required=True)
     parser.add_argument("--workload", choices=WORKLOADS, required=True)
+    parser.add_argument("--experiment", choices=tuple(EXPERIMENTS), default="baseline")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if not 1 <= args.repetitions <= 10 or args.output.exists():
         raise SystemExit(2)
-    result = run_worker(args.model_dir, args.threads, args.repetitions, args.suite, args.workload)
+    result = run_worker(args.model_dir, args.threads, args.repetitions, args.suite, args.workload,
+                        args.experiment)
     _atomic_write_bytes(args.output, canonical_json_bytes(result))
 
 

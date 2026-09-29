@@ -27,6 +27,7 @@ from portfolio_analyzer.progress import (
     GenerationHeartbeat,
     TokenProgressCriteria,
 )
+from portfolio_analyzer.qwen.experiments import EXPERIMENTS, JsonObjectStop, compact_schema
 from portfolio_analyzer.runtime import ResolvedQwenRuntime
 from portfolio_analyzer.semantic.model_store import (
     QWEN_MODEL,
@@ -164,6 +165,7 @@ def generate_validated_json[ResponseModelT: BaseModel](
 
     for attempt in (1, 2):
         typed_attempt: Literal[1, 2] = attempt
+        field_issues: list[ValidationDiagnostic] = []
         previous_generations = len(metrics.generations) if metrics is not None else 0
         if metrics is not None:
             metrics.attempt = attempt
@@ -190,6 +192,7 @@ def generate_validated_json[ResponseModelT: BaseModel](
             progress.detail(
                 f"Structured generation {requested_schema_name}: malformed JSON"
             )
+            field_issues = [ValidationDiagnostic("malformed_json", "<root>")]
             issue = OutputValidationIssue(
                 attempt=typed_attempt,
                 kind="json",
@@ -201,13 +204,12 @@ def generate_validated_json[ResponseModelT: BaseModel](
                 with metrics.phase("validation") if metrics is not None else nullcontext():
                     validated = response_model.model_validate(candidate)
             except ValidationError as exc:
+                field_issues = _validation_field_details(exc, output_schema)
                 if metrics is not None:
                     metrics.failures.update(_validation_details(exc))
                     if len(metrics.generations) > previous_generations:
                         metrics.generations[-1].outcome = "invalid"
-                        metrics.generations[-1].validation_issues = _validation_field_details(
-                            exc, output_schema,
-                        )
+                        metrics.generations[-1].validation_issues = field_issues
                 progress.detail(
                     f"Structured generation {requested_schema_name}: schema validation failed"
                 )
@@ -237,6 +239,18 @@ def generate_validated_json[ResponseModelT: BaseModel](
             "the supplied schema exactly."
         )
 
+        experiment = getattr(provider, "experiment", EXPERIMENTS["baseline"])
+        if experiment.targeted_repair:
+            # Fixed categories and code-owned top-level fields only; cap prompt overhead.
+            feedback = "; ".join(
+                f"{item.category}:{item.field}" for item in field_issues[:8]
+            )
+            current_system += (
+                f"\nValidation categories and fields: {feedback}. "
+                "Include every required field at the top level; omit extra fields and wrappers. "
+                "Use only the schema's allowed enum values."
+            )
+
     raise AssertionError("the fixed two-attempt loop must return")  # pragma: no cover
 
 
@@ -250,6 +264,8 @@ class LocalQwenProvider:
         progress: AnalysisProgressReporter | None = None,
     ) -> None:
         self.runtime = runtime
+        self.experiment = EXPERIMENTS["baseline"]
+        self.benchmark_canary: str | None = None
         self.progress = progress or AnalysisProgressReporter()
         self.performance = self.progress.performance or PerformanceRecorder()
         _enable_offline_mode()
@@ -358,6 +374,8 @@ class LocalQwenProvider:
             generation["stopping_criteria"] = criteria_type(
                 [TokenProgressCriteria(prompt_tokens, heartbeat)]
             )
+            if self.experiment.stop_json:
+                generation["stopping_criteria"].append(JsonObjectStop(tokenizer, prompt_tokens))
             eos_token_id = getattr(tokenizer, "eos_token_id", None)
             pad_token_id = getattr(tokenizer, "pad_token_id", None)
             if eos_token_id is not None:
@@ -416,10 +434,16 @@ class LocalQwenProvider:
             decoded = tokenizer.decode(
                 sequence[prompt_tokens:], skip_special_tokens=True
             )
+            if self.benchmark_canary is not None:
+                event.secret_canary_detected = self.benchmark_canary in decoded
             text, normalization = _restore_prefilled_json(decoded)
             try:
                 with self.performance.phase("validation"):
                     parsed = parse_json_object(text)
+                    if self.benchmark_canary is not None:
+                        event.secret_canary_detected = bool(event.secret_canary_detected) or (
+                            self.benchmark_canary in json.dumps(parsed, ensure_ascii=False)
+                        )
                 event.outcome = "json_valid"
                 return parsed
             except QwenOutputError as exc:
@@ -462,7 +486,7 @@ class LocalQwenProvider:
             raise ValueError("max_output_tokens must be a positive integer")
         try:
             schema_text = json.dumps(
-                dict(schema),
+                compact_schema(schema) if self.experiment.compact_schema else dict(schema),
                 allow_nan=False,
                 ensure_ascii=True,
                 separators=(",", ":"),
@@ -471,9 +495,15 @@ class LocalQwenProvider:
         except (TypeError, ValueError) as exc:
             raise ValueError("schema must be JSON serializable") from exc
 
+        object_instruction = (
+            "Return exactly one JSON object matching this JSON Schema. "
+            "Put the schema properties directly in the response object, with no enclosing key. "
+            if self.experiment.clear_object else
+            f"Return exactly one JSON object named {schema_name} matching this JSON Schema. "
+        )
         system_message = (
             f"{system.rstrip()}\n"
-            f"Return exactly one JSON object named {schema_name} matching this JSON Schema. "
+            f"{object_instruction}"
             "The response is already prefixed with one opening brace. Continue with the first "
             "quoted member name and finish the same JSON object. Do not repeat the opening brace. "
             "Do not use Markdown, wrappers, or commentary.\n"

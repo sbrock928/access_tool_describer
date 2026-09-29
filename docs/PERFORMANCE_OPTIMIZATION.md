@@ -135,3 +135,38 @@ fields on initial and repair attempts without exporting generated content.
 Application runtime, cold/warm loading costs, token distributions, first-token latency,
 decode throughput, peak memory, and production quality remain unmeasured here. There is
 no before/after optimization comparison yet; the ten-minute target remains unverified.
+
+## Four-thread diagnostic rerun and candidate implementation
+
+The operator's subsequent screenshot reports three timed requests, one final valid
+request, three repairs, and 49.30 seconds median request generation time (initial plus
+repair). All initial attempts had an unknown extra field and missing `status`, `summary`,
+and `evidence_ids`. After repair, case 1 retained an extra field, case 2 passed, and case 3
+had an invalid `status` enum. This supports testing request clarity and targeted repairs.
+It does not prove the exact shape of rejected JSON: no rejected content was exported.
+
+Inspection found the instruction “one JSON object named SyntheticAbstention,” which may
+encourage an unwanted wrapper. The wrapper explanation remains a hypothesis. Four
+independent benchmark-only candidates now test clearer top-level-object wording, removal
+of schema annotation overhead, safe categorized repair feedback, and structural JSON
+stopping. A combined candidate tests interaction effects. Schema compaction preserves
+property names (even when named `title`), descriptions, references, and all constraints.
+Local validation uses the original response model. Repair feedback never includes
+rejected values, dynamic field names, or raw validation messages.
+
+The stop candidate handles nested arrays/objects and escaped strings, never crops a
+trailing suffix, and still requires strict parsing (including duplicate-key rejection),
+schema validation, and grounding. Its per-token decode probe adds CPU overhead that must
+be measured. All experiments have versioned provenance and incompatible cache identities;
+production defaults and existing baseline checkpoints retain their original identity.
+
+The earlier zero-canary observation covered only successfully validated responses. New
+microbenchmarks also check rejected attempts and export only a boolean. Neither version
+establishes the absence of all possible secret leakage.
+
+Before/after candidate measurements remain **unmeasured** on Windows. Run the comparison
+in the runbook before promoting anything. No lower token budget, new batching boundary,
+deterministic association enrichment, duplicate rebinding, dtype, backend, or model has
+been adopted. These later increments remain gated on successful output distributions,
+procedure-scoped association evidence, reviewed quality, and target-machine measurements.
+The lack of reviewed `quality-check` calibration remains a limitation.

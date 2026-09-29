@@ -837,3 +837,53 @@ def test_malformed_attempt_diagnostics_do_not_contaminate_repair(
     ]
     assert events[1]["validation_issues"] == []
     assert "SECRET" not in json.dumps(events)
+
+
+@pytest.mark.parametrize("experiment", [
+    "baseline", "clear-object", "compact-schema", "targeted-repair", "json-stop", "combined",
+])
+def test_experiment_measurement_matches_execution_and_preserves_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, experiment: str,
+) -> None:
+    from portfolio_analyzer.qwen.experiments import EXPERIMENTS
+
+    tokenizer, model, _, _ = _install_fake_runtime(monkeypatch, tmp_path, responses=[
+        '{"status":"PRIVATE-INVALID","PRIVATE-KEY":"PRIVATE-VALUE"}',
+        '{"status":"abstain"}',
+    ])
+    provider = LocalQwenProvider(_runtime(tmp_path))
+    provider.experiment = EXPERIMENTS[experiment]
+    budget = provider.measure_prompt(system="Analyze", user="{}", schema_name="Answer",
+                                     schema=_Answer.model_json_schema())
+    measured_prompt = tokenizer.prompts[-1]
+    result = generate_validated_json(provider, response_model=_Answer, schema_name="Answer",
+                                     system="Analyze", user="{}")
+    assert isinstance(result, StructuredGenerationSuccess)
+    assert budget.prompt_tokens == provider.performance.generations[0].prompt_tokens
+    assert tokenizer.prompts[1] == measured_prompt
+    assert "PRIVATE" not in tokenizer.prompts[2]
+    assert ("Validation categories and fields:" in tokenizer.prompts[2]) == (
+        provider.experiment.targeted_repair
+    )
+    if provider.experiment.targeted_repair:
+        assert "invalid_enum:status" in tokenizer.prompts[2]
+        assert "extra_field:<unknown>" in tokenizer.prompts[2]
+    assert ("object named Answer" in measured_prompt) != provider.experiment.clear_object
+    assert len(model.generate_calls[0]["stopping_criteria"]) == (
+        2 if provider.experiment.stop_json else 1
+    )
+
+
+def test_canary_detection_includes_rejected_response_without_exporting_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_runtime(monkeypatch, tmp_path, responses=[
+        'CANARY invalid json', '{"status":"abstain"}',
+    ])
+    provider = LocalQwenProvider(_runtime(tmp_path))
+    provider.benchmark_canary = "CANARY"
+    generate_validated_json(provider, response_model=_Answer, schema_name="Answer",
+                            system="Analyze", user="{}")
+    payload = provider.performance.payload()
+    assert [event["secret_canary_detected"] for event in payload["generations"]] == [True, False]
+    assert "CANARY" not in json.dumps(payload)
