@@ -417,3 +417,26 @@ retry is checked, rerun `extract --workspace .\workspace-v2` to refresh all sele
 applications under the same version. A total timeout elsewhere still fails the artifact;
 there is no durable per-query extraction checkpoint. Windows timings and COM behavior for
 this change require operator verification; local tests use simulated worker failures.
+
+### A snapshot completes with many parameter warnings
+
+`run-status=complete` means the required snapshots were saved. It does **not** mean every
+piece of evidence was available. `extraction-status` now also displays
+`evidence-coverage=complete|partial|unavailable`, derived from the saved snapshots rather
+than the run status. Reusing a snapshot preserves its warnings in the new run manifest.
+
+Extractor v12 records fixed diagnostic categories, without raw COM exception text, for
+parameter lookup, query identity, parameter Name/Type/Direction reads, collection
+iteration, timeouts, and worker failures. Under `--details`, two compact lines summarize
+query parameter coverage and diagnostic counts. Counts of property failures can exceed
+the query count. `worker_unavailable_not_attempted` distinguishes queries that were never
+attempted after a child became unavailable from queries that individually failed.
+Older snapshots remain readable, with missing diagnostic reasons reported as
+`legacy_unclassified`; their causes cannot be reconstructed from a generic warning.
+
+After updating, repeat the targeted extraction and status commands above to collect
+these diagnostics. The version bump prevents reuse of snapshots with only generic
+parameter warnings. This retry does not load the model or run inference benchmarks.
+Read the two summary lines before undertaking another full-workspace extraction. Preserve
+partial evidence and warnings; do not suppress failures or treat missing direction/type
+metadata as successfully extracted. A successful snapshot does not waive the quality gate.

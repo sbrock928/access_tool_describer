@@ -674,3 +674,29 @@ def test_deferred_query_extraction_never_touches_parameters(tmp_path: Path) -> N
     assert errors == []
     assert result.definition == "SELECT * FROM LocalTable"
     assert result.properties["parameter_metadata_status"] == "deferred"
+
+
+def test_parameter_diagnostics_distinguish_property_failure_from_enumeration_failure() -> None:
+    from portfolio_analyzer.access.windows_extractor import _parameter_metadata
+
+    class Parameter:
+        Name = "pKnown"
+        Type = 10
+
+        @property
+        def Direction(self) -> int:  # noqa: N802
+            raise RuntimeError("Password=secret-canary")
+
+    class Query:
+        @property
+        def Parameters(self) -> Any:  # noqa: N802
+            yield Parameter()
+            raise RuntimeError("connection=private-server")
+
+    errors: list[str] = []
+    codes: dict[str, int] = {}
+    parameters = _parameter_metadata(Query(), errors, "QueryDef", diagnostics=codes)
+    assert parameters == [{"ordinal": "0", "name": "pKnown", "type": "10", "direction": ""}]
+    assert codes == {"parameter_direction_unavailable": 1, "parameters_enumeration_failed": 1}
+    assert "secret-canary" not in str(errors)
+    assert "private-server" not in json.dumps(codes)

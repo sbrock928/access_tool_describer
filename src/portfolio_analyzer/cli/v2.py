@@ -7,7 +7,7 @@ import json
 import platform
 import secrets
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +15,7 @@ from pathlib import Path
 import typer
 
 from portfolio_analyzer.access.libraries import resolve_approved_libraries
+from portfolio_analyzer.access.query_parameters import PARAMETER_DIAGNOSTIC_CODES
 from portfolio_analyzer.access.windows_extractor import WindowsAccessExtractor
 from portfolio_analyzer.access.worker import run_extraction_with_timeout
 from portfolio_analyzer.analysis.bundle import build_application_evidence_bundle
@@ -266,11 +267,14 @@ def extract(
                             extracted=extracted,
                         )
                         snapshot_by_artifact[artifact_record.artifact_id] = store.put(snapshot)
-                        warnings.extend(snapshot.warnings)
                     except Exception as exc:
                         safe_error = redact_sensitive_text(str(exc))
                         errors.append(f"{artifact_record.filename}: {safe_error}")
 
+                warnings.extend(
+                    warning for reference in snapshot_by_artifact.values()
+                    for warning in store.load(reference, ExtractedArtifactSnapshot).warnings
+                )
                 expected = set(staged_application.artifact_ids)
                 available = set(snapshot_by_artifact)
                 if available != expected:
@@ -331,13 +335,14 @@ def extract(
                   if record.status != RunStatus.COMPLETE
                   and (application is None or record.application_id == application)),
             {item.application_id: item.application_name for item in index.applications},
-            details=True,
+            details=True, store=store,
         )
         raise typer.Exit(code=1)
 
 
 def _echo_extraction_status(
     records: tuple[ApplicationRunRecord, ...], names: dict[str, str], *, details: bool,
+    store: V2StateStore,
 ) -> None:
     """Local operator diagnostics only; never feed extraction text to performance reports."""
     typer.echo("LOCAL ONLY: application identifiers and extraction diagnostics; do not export.")
@@ -345,10 +350,19 @@ def _echo_extraction_status(
         identifier = json.dumps(redact_sensitive_text(record.application_id), ensure_ascii=True)
         name = json.dumps(redact_sensitive_text(names.get(record.application_id, "unknown")),
                           ensure_ascii=True)
-        typer.echo(f"{identifier} | {name} | {record.status.value} | "
+        snapshots = [store.load(reference, ExtractedArtifactSnapshot)
+                     for reference in record.extraction_snapshots]
+        coverage = "unavailable" if not snapshots else (
+            "complete" if len(snapshots) == len(record.artifact_ids)
+            and all(item.coverage_status == "complete" and not item.warnings for item in snapshots)
+            else "partial"
+        )
+        typer.echo(f"{identifier} | {name} | run-status={record.status.value} | "
+                   f"evidence-coverage={coverage} | "
                    f"snapshots={len(record.extraction_snapshots)}/{len(record.artifact_ids)} | "
                    f"errors={len(record.errors)} warnings={len(record.warnings)}")
         if details:
+            _echo_parameter_summary(snapshots)
             for label, messages in (("error", record.errors), ("warning", record.warnings)):
                 for message in messages[:12]:
                     text = redact_sensitive_text(message)
@@ -358,6 +372,41 @@ def _echo_extraction_status(
                 if len(messages) > 12:
                     typer.echo(f"  {len(messages) - 12} additional {label}(s) "
                                "in local run manifest.")
+
+
+def _echo_parameter_summary(snapshots: list[ExtractedArtifactSnapshot]) -> None:
+    statuses: Counter[str] = Counter()
+    diagnostics: Counter[str] = Counter()
+    for snapshot in snapshots:
+        for obj in snapshot.objects:
+            if obj.object_type != "query":
+                continue
+            status = obj.sanitized_properties.get("parameter_metadata_status", "legacy_unknown")
+            if status not in {"available", "unavailable_error", "unavailable_timeout", "deferred"}:
+                status = "legacy_unknown"
+            statuses[status] += 1
+            raw = obj.sanitized_properties.get("parameter_metadata_diagnostics")
+            if raw is None:
+                if status != "available":
+                    diagnostics["legacy_unclassified"] += 1
+                continue
+            try:
+                codes = json.loads(raw)
+                if not isinstance(codes, dict) or any(
+                    key not in PARAMETER_DIAGNOSTIC_CODES or type(count) is not int or count <= 0
+                    for key, count in codes.items()
+                ):
+                    raise ValueError("invalid diagnostic counts")
+                diagnostics.update(codes)
+            except (ValueError, TypeError):
+                diagnostics["legacy_unclassified"] += 1
+    if statuses:
+        typer.echo("  Query parameter coverage: " + ", ".join(
+            f"{key}={value}" for key, value in sorted(statuses.items())
+        ))
+    if diagnostics:
+        typer.echo("  Parameter diagnostic counts (property failures may repeat per query): " +
+                   ", ".join(f"{key}={value}" for key, value in sorted(diagnostics.items())))
 
 
 @app.command("extraction-status")
@@ -382,7 +431,8 @@ def extraction_status(
             typer.echo("Saved extraction is stale for current staging; "
                        "statuses describe the old run.")
         _echo_extraction_status(records, {item.application_id: item.application_name
-                                         for item in index.applications}, details=details)
+                                         for item in index.applications},
+                                details=details, store=store)
     except typer.Exit:
         raise
     except Exception:

@@ -290,3 +290,26 @@ redaction. Windows COM execution, extraction before/after runtime, memory overhe
 of unavailable parameters, and semantic effects remain **unmeasured**. Many slow parameter
 reads may still exhaust the total deadline; this does not provide durable incremental
 extraction checkpoints. Performance promotion still requires same-workload Windows results.
+
+### Windows follow-up: saved snapshot, unresolved parameter coverage
+
+The operator's v11 screenshot reports a saved snapshot (`1/1`, zero run errors) and
+1,631 warnings. The visible warnings include generic parameter `unavailable_error`
+messages. This demonstrates that the retry saved evidence instead of losing the entire
+artifact to its deadline. It does not establish full coverage, extraction runtime,
+the cause of the parameter errors, or an inference speedup.
+
+The old CLI's `complete` described snapshot availability and was ambiguous about evidence
+coverage. Status now shows those separately. Snapshot reuse also previously omitted saved
+warnings from the new run record; it now preserves them. V12 adds fixed parameter failure
+codes and summary counts to distinguish lookup/identity, property, enumeration, timeout,
+startup, protocol, and unattempted-query failures. No property is removed on speculation;
+Microsoft documents [DAO parameter properties](https://learn.microsoft.com/en-us/office/client-developer/access/desktop-database-reference/parameter-object-dao),
+including Direction. Which operations fail on this target remains unmeasured until a v12
+retry. Neither generic warnings nor their count establishes that all metadata is absent.
+
+Regression tests check diagnostic categories, retained parameter fields, rejection of
+unknown diagnostic keys, attempted versus unattempted queries, read-only coverage status,
+and preservation of warnings on cache reuse. The existing offline extraction boundaries
+and partial-coverage markers remain intact. Application quality and performance promotion
+remain pending; no inference configuration is promoted by this diagnostic change.

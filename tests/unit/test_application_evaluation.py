@@ -413,3 +413,46 @@ def test_extraction_timeout_option_reaches_worker(
             "--timeout-seconds", str(invalid),
         ]).exit_code != 0
     assert len(limits) == 1
+
+
+def test_status_separates_snapshot_completion_from_partial_evidence_and_preserves_reused_warnings(
+    environment: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def extract(artifact: Any, *_args: Any, **_kwargs: Any) -> AccessExtractionResult:
+        return AccessExtractionResult(
+            tool_inventory_id=artifact.tool_inventory_id, artifact_id=artifact.artifact_id,
+            staged_path=artifact.local_staged_path,
+            extractor_version=WindowsAccessExtractor.version,
+            coverage_status="partial", extraction_errors=["Parameter metadata incomplete"],
+            objects=[AccessExtractedObject(
+                object_type="query", name="local query", definition="SELECT Id FROM Synthetic",
+                properties={"parameter_metadata_status": "unavailable_error",
+                            "parameter_metadata_diagnostics": json.dumps({
+                                "parameter_direction_unavailable": 2,
+                            })},
+            )],
+        )
+
+    monkeypatch.setattr(v2, "run_extraction_with_timeout", extract)
+    runner = CliRunner()
+    workspace = environment["workspace"]
+    result = runner.invoke(v2.app, ["extract", "--workspace", str(workspace), "--force"])
+    assert result.exit_code == 0
+
+    def must_not_extract(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("compatible snapshot should be reused")
+
+    monkeypatch.setattr(v2, "run_extraction_with_timeout", must_not_extract)
+    assert runner.invoke(v2.app, ["extract", "--workspace", str(workspace)]).exit_code == 0
+    before = {p.relative_to(workspace): p.read_bytes() for p in workspace.rglob("*") if p.is_file()}
+    result = runner.invoke(v2.app, [
+        "extraction-status", "--workspace", str(workspace), "--details",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "run-status=complete | evidence-coverage=partial" in result.output
+    assert "warnings=1" in result.output
+    assert "unavailable_error=1" in result.output
+    assert "parameter_direction_unavailable=2" in result.output
+    assert "Parameter metadata incomplete" in result.output
+    after = {p.relative_to(workspace): p.read_bytes() for p in workspace.rglob("*") if p.is_file()}
+    assert after == before

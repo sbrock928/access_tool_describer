@@ -22,6 +22,14 @@ from portfolio_analyzer.staging.hashing import sha256_file
 
 PARAMETER_TIMEOUT_SECONDS = 10
 STARTUP_TIMEOUT_SECONDS = 30
+# Only code-owned categories may cross into parameter diagnostics. Never exception text.
+PARAMETER_DIAGNOSTIC_CODES = frozenset({
+    "query_lookup_failed", "query_identity_mismatch", "query_timeout",
+    "parameter_name_unavailable", "parameter_type_unavailable",
+    "parameter_direction_unavailable", "parameters_enumeration_failed",
+    "worker_startup_timeout", "worker_startup_failed", "worker_protocol_error",
+    "worker_unavailable_not_attempted", "legacy_unclassified",
+})
 
 
 def _parameter_worker(
@@ -52,16 +60,24 @@ def _parameter_worker(
             ):
                 raise ValueError("invalid parameter request")
             errors: list[str] = []
+            diagnostics: dict[str, int] = {}
+            parameters: list[dict[str, str]] = []
             try:
                 query = database.QueryDefs(request["index"])
-                if redact_sensitive_text(str(query.Name)) != request["name"]:
-                    raise ValueError("query identity mismatch")
-                parameters = _parameter_metadata(query, errors, "QueryDef")
-                status = "unavailable_error" if errors else "available"
+                actual_name = redact_sensitive_text(str(query.Name))
             except Exception:
-                parameters, status = [], "unavailable_error"
-            connection.send_bytes(json.dumps({"status": status, "parameters": parameters},
-                                             ensure_ascii=True).encode("utf-8"))
+                diagnostics["query_lookup_failed"] = 1
+            else:
+                if actual_name != request["name"]:
+                    diagnostics["query_identity_mismatch"] = 1
+                else:
+                    parameters = _parameter_metadata(
+                        query, errors, "QueryDef", diagnostics=diagnostics,
+                    )
+            status = "unavailable_error" if diagnostics else "available"
+            connection.send_bytes(json.dumps({
+                "status": status, "parameters": parameters, "diagnostics": diagnostics,
+            }, ensure_ascii=True).encode("utf-8"))
     except (EOFError, BrokenPipeError):
         pass
     except Exception:
@@ -117,6 +133,7 @@ def enrich_query_parameters(
                 continue
             parameters: list[dict[str, str]] = []
             status = "unavailable_error"
+            diagnostics = {"worker_unavailable_not_attempted": 1}
             if not unavailable_worker:
                 try:
                     if process is None:
@@ -129,9 +146,12 @@ def enrich_query_parameters(
                             process.start()
                         finally:
                             child.close()
-                        if not connection.poll(STARTUP_TIMEOUT_SECONDS) or json.loads(
-                            connection.recv_bytes(),
-                        ) != "ready":
+                        if not connection.poll(STARTUP_TIMEOUT_SECONDS):
+                            diagnostics = {"worker_startup_timeout": 1}
+                            unavailable_worker = True
+                            stop()
+                        elif json.loads(connection.recv_bytes()) != "ready":
+                            diagnostics = {"worker_startup_failed": 1}
                             unavailable_worker = True
                             stop()
                     if not unavailable_worker:
@@ -142,6 +162,7 @@ def enrich_query_parameters(
                         }).encode("utf-8"))
                         if not connection.poll(PARAMETER_TIMEOUT_SECONDS):
                             status = "unavailable_timeout"
+                            diagnostics = {"query_timeout": 1}
                             stop()
                         else:
                             value = json.loads(connection.recv_bytes())
@@ -154,24 +175,36 @@ def enrich_query_parameters(
                                     for item in candidate
                                 ):
                                     raise ValueError("invalid parameter response")
+                                codes = value["diagnostics"]
+                                if not isinstance(codes, dict) or any(
+                                    key not in PARAMETER_DIAGNOSTIC_CODES
+                                    or type(count) is not int or count <= 0
+                                    for key, count in codes.items()
+                                ) or bool(codes) != (value["status"] == "unavailable_error"):
+                                    raise ValueError("invalid parameter diagnostics")
                                 status, parameters = value["status"], candidate
+                                diagnostics = codes
                             else:
+                                diagnostics = {"worker_protocol_error": 1}
                                 unavailable_worker = True
                                 stop()
                 except Exception:
                     # A broken process must not be reused for subsequent requests.
+                    diagnostics = {"worker_protocol_error": 1}
                     unavailable_worker = True
                     stop()
             properties = dict(obj.properties)
             properties.update(
                 parameters=json.dumps(parameters, sort_keys=True, separators=(",", ":")),
                 parameter_metadata_status=status,
+                parameter_metadata_diagnostics=json.dumps(diagnostics, sort_keys=True),
             )
             objects.append(AccessExtractedObject.model_validate({
                 **obj.model_dump(), "properties": properties,
             }))
             if status != "available":
-                warnings.append(f"Query parameter metadata {status}: {obj.name}; "
+                categories = ",".join(sorted(diagnostics))
+                warnings.append(f"Query parameter metadata {status} ({categories}): {obj.name}; "
                                 "SQL and other metadata retained; parameter coverage is incomplete")
                 progress(f"Parameter metadata {status} for object {ordinal}; "
                          "retaining source with explicit incomplete coverage")

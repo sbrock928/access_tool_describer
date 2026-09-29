@@ -122,7 +122,7 @@ def setup(
 
 
 def response(name: str = "pId") -> dict[str, Any]:
-    return {"status": "available", "parameters": [
+    return {"status": "available", "diagnostics": {}, "parameters": [
         {"ordinal": "0", "name": name, "type": "4", "direction": "1"},
     ]}
 
@@ -253,6 +253,7 @@ def test_child_verifies_stage_opens_read_only_and_checks_query_identity(
     assert connection.closed
     assert connection.sent == ["ready", {
         "status": "available" if matching_name else "unavailable_error", "parameters": [],
+        "diagnostics": {} if matching_name else {"query_identity_mismatch": 1},
     }]
 
 
@@ -268,3 +269,40 @@ def test_child_rejects_tampered_stage_before_loading_com(
     )
     assert connection.sent == [{"status": "worker_unavailable"}]
     assert connection.closed
+
+
+def test_parameter_diagnostic_codes_survive_but_unknown_codes_are_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = response()
+    first.update(status="unavailable_error", diagnostics={"parameter_direction_unavailable": 1})
+    second = response()
+    second.update(status="unavailable_error", diagnostics={"PASSWORD=secret-canary": 1})
+    _, extracted, artifact, settings = setup(tmp_path, monkeypatch, [["ready", first, second]])
+    result = subject.enrich_query_parameters(
+        extracted, artifact, settings.extracted_dir, settings, progress=lambda _: None,
+    )
+    assert json.loads(result.objects[0].properties["parameter_metadata_diagnostics"]) == {
+        "parameter_direction_unavailable": 1,
+    }
+    assert json.loads(result.objects[0].properties["parameters"])[0]["name"] == "pId"
+    assert json.loads(result.objects[1].properties["parameter_metadata_diagnostics"]) == {
+        "worker_protocol_error": 1,
+    }
+    assert "secret-canary" not in result.model_dump_json()
+    assert result.coverage_status == "partial"
+
+
+def test_failed_startup_distinguishes_attempt_from_remaining_unattempted_queries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, extracted, artifact, settings = setup(tmp_path, monkeypatch, [[None]])
+    result = subject.enrich_query_parameters(
+        extracted, artifact, settings.extracted_dir, settings, progress=lambda _: None,
+    )
+    assert json.loads(result.objects[0].properties["parameter_metadata_diagnostics"]) == {
+        "worker_startup_timeout": 1,
+    }
+    assert json.loads(result.objects[1].properties["parameter_metadata_diagnostics"]) == {
+        "worker_unavailable_not_attempted": 1,
+    }

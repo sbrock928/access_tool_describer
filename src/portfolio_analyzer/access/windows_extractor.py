@@ -66,7 +66,7 @@ class _ExportLaneOutcome:
 
 
 class WindowsAccessExtractor:
-    version = "windows-dao-static-v11"
+    version = "windows-dao-static-v12"
 
     def __init__(
         self,
@@ -642,8 +642,18 @@ def _local_field_metadata(instance: Any, errors: list[str], context: str) -> lis
 def _parameter_metadata(
     instance: Any, errors: list[str], context: str, *,
     progress: Callable[[str], None] | None = None,
+    diagnostics: dict[str, int] | None = None,
 ) -> list[dict[str, str]]:
     parameters: list[dict[str, str]] = []
+
+    def parameter_property(parameter: Any, name: str, parameter_context: str) -> str:
+        before = len(errors)
+        value = _property(parameter, name, errors, parameter_context, progress=progress)
+        if diagnostics is not None and len(errors) > before:
+            code = f"parameter_{name.lower()}_unavailable"
+            diagnostics[code] = diagnostics.get(code, 0) + 1
+        return value
+
     _progress(progress, f"Enumerating DAO parameters: {context}.Parameters")
     try:
         for index, parameter in enumerate(instance.Parameters):
@@ -651,20 +661,17 @@ def _parameter_metadata(
             parameters.append(
                 {
                     "ordinal": str(index),
-                    "name": _property(
-                        parameter, "Name", errors, parameter_context, progress=progress,
-                    ),
-                    "type": _property(
-                        parameter, "Type", errors, parameter_context, progress=progress,
-                    ),
-                    "direction": _property(
-                        parameter, "Direction", errors, parameter_context, progress=progress
-                    ),
+                    "name": parameter_property(parameter, "Name", parameter_context),
+                    "type": parameter_property(parameter, "Type", parameter_context),
+                    "direction": parameter_property(parameter, "Direction", parameter_context),
                 }
             )
             _progress(progress, f"Enumerating next DAO parameter: {context}.Parameters")
     except Exception as exc:
         errors.append(f"{context}.Parameters enumeration failed: {_safe_error(exc)}")
+        if diagnostics is not None:
+            code = "parameters_enumeration_failed"
+            diagnostics[code] = diagnostics.get(code, 0) + 1
     return parameters
 
 
