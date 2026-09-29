@@ -708,3 +708,117 @@ def test_v2_analyze_publishes_evidence_application_and_portfolio_chain(
         for item in stale_partial_model.omissions
     )
     assert latest_path.read_bytes() == latest_complete
+
+
+@pytest.mark.parametrize("stop_mode", ("limit", "interrupt"))
+def test_estimate_is_read_only_and_call_limit_checkpoints_can_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop_mode: str,
+) -> None:
+    from types import SimpleNamespace
+
+    from portfolio_analyzer.performance import PerformanceRecorder
+    from portfolio_analyzer.qwen.provider import PromptBudget
+
+    source = tmp_path / "source.accdb"
+    source.write_bytes(b"synthetic-access")
+    inventory = tmp_path / "inventory.xlsx"
+    _inventory(inventory, [("PRIVATE-APP", "Private application", source)])
+    workspace = tmp_path / "workspace"
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    runner = CliRunner()
+    assert runner.invoke(app, [
+        "stage", "--inventory", str(inventory), "--workspace", str(workspace),
+    ]).exit_code == 0
+
+    def extract(artifact: Any, *_args: Any, **_kwargs: Any) -> AccessExtractionResult:
+        return AccessExtractionResult(
+            tool_inventory_id=artifact.tool_inventory_id, artifact_id=artifact.artifact_id,
+            staged_path=artifact.local_staged_path,
+            extractor_version=WindowsAccessExtractor.version,
+            objects=[AccessExtractedObject(
+                object_type="query", name="PRIVATE-QUERY", definition="SELECT Id FROM Synthetic",
+            )],
+        )
+
+    monkeypatch.setattr(v2_cli.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(v2_cli, "run_extraction_with_timeout", extract)
+    assert runner.invoke(app, ["extract", "--workspace", str(workspace)]).exit_code == 0
+    provenance = ModelProvenance(
+        model_manifest_sha256="a" * 64, prompt_version="test-prompts-v2",
+        output_schema_version="test-contracts-v2", inference_library_version="test-transformers",
+    )
+    monkeypatch.setattr(v2_cli, "resolve_qwen_runtime", lambda *_a, **_k: SimpleNamespace(
+        model_dir=model_dir,
+    ))
+    monkeypatch.setattr(v2_cli, "_model_provenance", lambda _provider: provenance)
+    calls: list[str] = []
+    interrupt_once = [stop_mode == "interrupt"]
+
+    class Provider:
+        def __init__(self, _runtime: Any, *, progress: Any) -> None:
+            self.progress = progress
+            self.performance: PerformanceRecorder = progress.performance
+
+        def measure_prompt(self, **kwargs: Any) -> PromptBudget:
+            return PromptBudget(
+                prompt_tokens=len(kwargs["user"]) // 4,
+                reserved_output_tokens=kwargs["max_output_tokens"], context_tokens=100_000,
+            )
+
+        def complete_json(self, **kwargs: Any) -> dict[str, Any]:
+            if interrupt_once[0] and calls:
+                interrupt_once[0] = False
+                raise KeyboardInterrupt()
+            payload = json.loads(kwargs["user"])
+            self.performance.begin_generation(
+                user=kwargs["user"], prompt_tokens=50, output_limit=kwargs["max_output_tokens"],
+            )
+            stage = payload["stage"]
+            calls.append(stage)
+            if stage == "logical_unit":
+                return {"purpose": "Read synthetic records", "evidence_ids":
+                        payload["allowed_ids"]["evidence_ids"][:1]}
+            if stage == "application_synthesis":
+                return {"summary": "Read synthetic records", "business_purpose": "Unknown",
+                        "evidence_ids": payload["allowed_ids"]["evidence_ids"][:1]}
+            return {"similarities": [], "findings": [], "uncertainties": []}
+
+    monkeypatch.setattr(v2_cli, "LocalQwenProvider", Provider)
+    before = {str(path.relative_to(workspace)): path.read_bytes()
+              for path in workspace.rglob("*") if path.is_file()}
+    estimate = runner.invoke(app, ["analyze", "--workspace", str(workspace), "--estimate"])
+    assert estimate.exit_code == 0, estimate.output
+    assert calls == []
+    assert "PRIVATE-APP" not in estimate.output
+    assert "PRIVATE-QUERY" not in estimate.output
+    after = {str(path.relative_to(workspace)): path.read_bytes()
+             for path in workspace.rglob("*") if path.is_file()}
+    assert before == after
+    report_path = tmp_path / "metrics.json"
+    stopped = runner.invoke(app, [
+        "analyze", "--workspace", str(workspace), "--force",
+        "--max-inference-calls-per-application", "1", "--performance-report", str(report_path),
+    ])
+    assert stopped.exit_code == (130 if stop_mode == "interrupt" else 2), stopped.output
+    store = V2StateStore(workspace)
+    assert not (store.state_root / "writer.lock").exists()
+    assert len(list((store.state_root / "inference-cache").rglob("*.json"))) == 1
+    with pytest.raises(StateIntegrityError):
+        store.load_current_run(RunPhase.ANALYZE)
+    metrics = json.loads(report_path.read_text())
+    assert metrics["outcome"] == ("interrupted" if stop_mode == "interrupt" else "call_limit")
+    assert len(metrics["generations"]) == 1
+    assert "PRIVATE-APP" not in report_path.read_text()
+    calls.clear()
+    resumed = runner.invoke(app, ["analyze", "--workspace", str(workspace)])
+    assert resumed.exit_code == 0, resumed.output
+    assert "logical_unit" not in calls
+    assert store.load_current_run(RunPhase.ANALYZE).status == RunStatus.COMPLETE
+
+    reused_estimate = runner.invoke(app, ["analyze", "--workspace", str(workspace), "--estimate"])
+    assert reused_estimate.exit_code == 0, reused_estimate.output
+    # CliRunner combines stderr progress with stdout; parse from the JSON opening brace.
+    payload = json.loads(reused_estimate.output[reused_estimate.output.index("{"):])
+    assert payload["applications"][0]["current_application_reusable"]
+    assert payload["applications"][0]["remaining_calls_max_with_repairs"] == 0

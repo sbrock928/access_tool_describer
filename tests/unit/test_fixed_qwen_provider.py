@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Mapping
@@ -224,6 +225,9 @@ def _install_fake_runtime(
     context_tokens: int = 10_000,
     generated_token_count: int = 1,
 ) -> tuple[_FakeTokenizer, _FakeModel, _FakeTorch, dict[str, list[dict[str, Any]]]]:
+    (tmp_path / "config.json").write_text(
+        json.dumps({"max_position_embeddings": context_tokens}), encoding="utf-8",
+    )
     tokenizer = _FakeTokenizer(responses, context_tokens=context_tokens)
     model = _FakeModel(
         context_tokens=context_tokens,
@@ -318,7 +322,7 @@ def test_local_qwen_is_fixed_offline_deterministic_and_loaded_once(
     assert "<|im_start|>user\n{\"evidence_id\":\"ev-1\"}<|im_end|>" in tokenizer.prompts[0]
     assert tokenizer.prompts[0].endswith("<|im_start|>assistant\n{")
     assert "already prefixed with one opening brace" in tokenizer.prompts[0]
-    assert list(tmp_path.iterdir()) == []
+    assert [item.name for item in tmp_path.iterdir()] == ["config.json"]
     for name in (
         "HF_HUB_OFFLINE",
         "TRANSFORMERS_OFFLINE",
@@ -724,3 +728,87 @@ def test_local_provider_repairs_malformed_json_without_replaying_model_output(
     assert all('{"evidence_ids":["ev-1"]}' in item for item in tokenizer.prompts)
     assert "MALFORMED-MODEL-SECRET" not in tokenizer.prompts[1]
     assert "MALFORMED-MODEL-SECRET" not in "\n".join(messages)
+
+
+def test_prompt_measurement_never_loads_weights_or_configures_torch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, model, torch, calls = _install_fake_runtime(monkeypatch, tmp_path, responses=[])
+    provider = LocalQwenProvider(_runtime(tmp_path))
+    provider.measure_prompt(system="Measure", user="{}", schema_name="Finding", schema={})
+    assert len(calls["tokenizer"]) == 1
+    assert calls["model"] == []
+    assert torch.thread_calls == []
+    assert model.generate_calls == []
+    assert provider._model is None
+
+
+def test_first_token_and_decode_measurements_are_separate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from portfolio_analyzer.performance import PerformanceRecorder
+
+    _, model, _, _ = _install_fake_runtime(
+        monkeypatch, tmp_path, responses=['{"status":"abstain"}'],
+    )
+    clock = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    metrics = PerformanceRecorder(collect_prompt_components=True)
+    provider = LocalQwenProvider(
+        _runtime(tmp_path), progress=AnalysisProgressReporter(performance=metrics),
+    )
+
+    def generate(**kwargs: Any) -> list[list[int]]:
+        inputs = kwargs["input_ids"].values
+        criteria = kwargs["stopping_criteria"][0]
+        for count, instant in enumerate((10.0, 12.0, 14.0), 1):
+            clock[0] = instant
+            criteria(SimpleNamespace(shape=(1, len(inputs) + count)), None)
+        clock[0] = 15
+        return [inputs + [999] * 3]
+
+    monkeypatch.setattr(model, "generate", generate)
+    result = generate_validated_json(
+        provider, response_model=_Answer, schema_name="Answer",
+        system="Analyze", user='{"stage":"logical_unit"}',
+    )
+    assert isinstance(result, StructuredGenerationSuccess)
+    event = metrics.generations[0]
+    assert event.first_token_seconds == 10
+    assert event.decode_seconds == 4
+    assert event.decode_tokens_per_second == 0.5
+    assert event.generation_seconds == 15
+    assert event.outcome == "valid"
+    assert sum(event.prompt_components.values()) == event.prompt_tokens
+    assert metrics.phases["generation"] == 15
+
+
+def test_single_token_without_callback_has_no_fabricated_decode_rate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_runtime(monkeypatch, tmp_path, responses=['{"answer":"ok"}'])
+    provider = LocalQwenProvider(_runtime(tmp_path))
+    provider.complete_json(system="Analyze", user="{}", schema_name="Answer", schema={})
+    event = provider.performance.generations[0]
+    assert event.generated_tokens == 1
+    assert event.first_token_seconds is None
+    assert event.decode_tokens_per_second is None
+
+
+def test_provider_counts_validation_repairs_without_exposing_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_runtime(monkeypatch, tmp_path, responses=[
+        '{"status":"PRIVATE-INVALID-VALUE"}', '{"status":"abstain"}',
+    ])
+    provider = LocalQwenProvider(_runtime(tmp_path))
+    result = generate_validated_json(
+        provider, response_model=_Answer, schema_name="Answer",
+        system="Analyze", user='{"stage":"logical_unit"}',
+    )
+    assert isinstance(result, StructuredGenerationSuccess)
+    payload = provider.performance.payload()
+    assert payload["validation_failures"] == {"invalid_enum": 1}
+    assert payload["validation_retry_rate"] == 1
+    assert [item["attempt"] for item in payload["generations"]] == [1, 2]
+    assert "PRIVATE-INVALID-VALUE" not in json.dumps(payload)

@@ -13,12 +13,14 @@ import re
 import threading
 import time
 from collections.abc import Mapping
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ValidationError
 
+from portfolio_analyzer.performance import PerformanceRecorder, measured
 from portfolio_analyzer.progress import (
     AnalysisProgressReporter,
     GenerationHeartbeat,
@@ -155,9 +157,14 @@ def generate_validated_json[ResponseModelT: BaseModel](
     issues: list[OutputValidationIssue] = []
     current_system = system
     progress = _provider_progress(provider)
+    metrics = getattr(provider, "performance", None)
+    if not isinstance(metrics, PerformanceRecorder):
+        metrics = None
 
     for attempt in (1, 2):
         typed_attempt: Literal[1, 2] = attempt
+        if metrics is not None:
+            metrics.attempt = attempt
         progress.detail(
             f"Structured generation {requested_schema_name}: attempt {attempt}/2"
         )
@@ -169,20 +176,27 @@ def generate_validated_json[ResponseModelT: BaseModel](
                 schema=output_schema,
                 max_output_tokens=max_output_tokens,
             )
-        except QwenOutputError as exc:
+        except QwenOutputError:
+            if metrics is not None:
+                metrics.failures["malformed_json"] += 1
             progress.detail(
                 f"Structured generation {requested_schema_name}: malformed JSON"
             )
             issue = OutputValidationIssue(
                 attempt=typed_attempt,
                 kind="json",
-                details=(str(exc),),
+                details=("malformed_json",),
             )
             candidate = None
         else:
             try:
-                validated = response_model.model_validate(candidate)
+                with metrics.phase("validation") if metrics is not None else nullcontext():
+                    validated = response_model.model_validate(candidate)
             except ValidationError as exc:
+                if metrics is not None:
+                    metrics.failures.update(_validation_details(exc))
+                    if metrics.generations:
+                        metrics.generations[-1].outcome = "invalid"
                 progress.detail(
                     f"Structured generation {requested_schema_name}: schema validation failed"
                 )
@@ -195,6 +209,8 @@ def generate_validated_json[ResponseModelT: BaseModel](
                 progress.detail(
                     f"Structured generation {requested_schema_name}: validation succeeded"
                 )
+                if metrics is not None and metrics.generations:
+                    metrics.generations[-1].outcome = "valid"
                 return StructuredGenerationSuccess(value=validated, attempts=typed_attempt)
 
         issues.append(issue)
@@ -224,25 +240,31 @@ class LocalQwenProvider:
     ) -> None:
         self.runtime = runtime
         self.progress = progress or AnalysisProgressReporter()
+        self.performance = self.progress.performance or PerformanceRecorder()
         _enable_offline_mode()
         if runtime.device == "cpu":
             os.environ.setdefault("OMP_NUM_THREADS", str(runtime.cpu_threads))
             os.environ.setdefault("MKL_NUM_THREADS", str(runtime.cpu_threads))
         self.progress.basic("Verifying approved Qwen 0.5B model files...")
         verification_started = time.monotonic()
-        self.verified: VerifiedModel = verify_model_directory(runtime.model_dir)
+        with self.performance.phase("verification"):
+            self.verified: VerifiedModel = verify_model_directory(runtime.model_dir)
         _require_exact_qwen(self.verified)
+        self.performance.model_revision = QWEN_MODEL.revision
+        self.performance.model_manifest_sha256 = self.verified.manifest.manifest_sha256
         self.progress.basic(
             "Approved Qwen model verified; "
             f"elapsed={time.monotonic() - verification_started:.1f}s"
         )
         self._load_lock = threading.Lock()
+        self._config: Any = None
         self._tokenizer: Any = None
         self._model: Any = None
         self._torch: Any = None
         self._transformers: Any = None
         self._device: str | None = None
         self._generation_count = 0
+        self._last_prompt_components: dict[str, int] = {}
 
     def measure_prompt(
         self,
@@ -295,6 +317,8 @@ class LocalQwenProvider:
             f"operational_context={budget.effective_context_tokens}; "
             f"model_context={budget.context_tokens}"
         )
+        with self.performance.phase("loading"):
+            self._load()
         tokenizer = self._tokenizer
         model = self._model
         torch = self._torch
@@ -342,22 +366,37 @@ class LocalQwenProvider:
                 f"operational_context_tokens={budget.effective_context_tokens}; "
                 f"model_context_tokens={budget.context_tokens}"
             )
+            event = self.performance.begin_generation(
+                user=user, prompt_tokens=prompt_tokens, output_limit=max_output_tokens,
+            )
+            if self.performance.warning_due():
+                self.progress.basic("Application has exceeded ten minutes; checkpoints retained.")
+            event.prompt_components = dict(self._last_prompt_components)
             heartbeat.start()
             try:
-                with torch.inference_mode():
+                with self.performance.phase("generation"), torch.inference_mode():
                     output = model.generate(**device_inputs, **generation)
             except Exception as exc:
+                event.outcome = "runtime_failure"
                 self.progress.detail(
                     f"Generation {generation_id}: failed; error_type={type(exc).__name__}"
                 )
                 raise
             finally:
-                _generated_so_far, elapsed = heartbeat.finish()
+                generated_so_far, elapsed = heartbeat.finish()
+                event.generation_seconds = elapsed
+                event.generated_tokens = generated_so_far
+                event.first_token_seconds = heartbeat.first_token_seconds
+                first, last = heartbeat.first_token_seconds, heartbeat.last_token_seconds
+                if first is not None and last is not None and last > first and generated_so_far > 1:
+                    event.decode_seconds = last - first
+                    event.decode_tokens_per_second = (generated_so_far - 1) / (last - first)
             sequence = output[0]
             if len(sequence) < prompt_tokens:
                 raise QwenOutputError("Local model returned an invalid token sequence")
             generated_tokens = len(sequence) - prompt_tokens
-            heartbeat.update(generated_tokens)
+            event.generated_tokens = generated_tokens
+            event.hit_output_limit = generated_tokens >= max_output_tokens
             rate = generated_tokens / elapsed if elapsed > 0 else 0.0
             self.progress.detail(
                 f"Generation {generation_id}: complete; generated_tokens={generated_tokens}; "
@@ -368,9 +407,15 @@ class LocalQwenProvider:
             )
             text, normalization = _restore_prefilled_json(decoded)
             try:
-                return parse_json_object(text)
+                with self.performance.phase("validation"):
+                    parsed = parse_json_object(text)
+                event.outcome = "json_valid"
+                return parsed
             except QwenOutputError as exc:
+                event.outcome = "invalid"
                 hit_output_limit = generated_tokens >= max_output_tokens
+                if hit_output_limit:
+                    self.performance.failures["truncation"] += 1
                 self.progress.detail(
                     f"Generation {generation_id}: invalid structured output; "
                     f"hit_output_limit={str(hit_output_limit).lower()}; "
@@ -386,6 +431,7 @@ class LocalQwenProvider:
         except Exception as exc:
             raise QwenProviderError("Local Qwen inference failed") from exc
 
+    @measured("tokenization")
     def _prepare_prompt(
         self,
         *,
@@ -423,22 +469,26 @@ class LocalQwenProvider:
             f"{schema_text}"
         )
         prompt = _render_qwen_chatml(system_message, user)
-        self._load()
+        with self.performance.phase("loading"):
+            self._load_tokenizer()
         tokenizer = self._tokenizer
-        model = self._model
-        torch = self._torch
-        if tokenizer is None or model is None or torch is None or self._device is None:
+        if tokenizer is None:
             raise QwenProviderError("Local Qwen provider did not initialize")
 
         try:
-            inputs = tokenizer(
-                prompt,
-                add_special_tokens=False,
-                return_tensors="pt",
-                truncation=False,
-            )
+            with self.performance.phase("tokenization"):
+                inputs = tokenizer(
+                    prompt,
+                    add_special_tokens=False,
+                    return_tensors="pt",
+                    truncation=False,
+                )
             prompt_tokens = _input_token_count(inputs)
-            context_tokens = _context_window_tokens(tokenizer, model)
+            self._last_prompt_components = (
+                self._measure_components(system_message, schema_text, user, prompt_tokens)
+                if self.performance.collect_prompt_components else {}
+            )
+            context_tokens = _context_window_tokens(tokenizer, SimpleNamespace(config=self._config))
             budget = PromptBudget(
                 prompt_tokens=prompt_tokens,
                 reserved_output_tokens=max_output_tokens,
@@ -449,7 +499,78 @@ class LocalQwenProvider:
         except Exception as exc:
             raise QwenProviderError("Local Qwen prompt measurement failed") from exc
 
+    @measured("tokenization")
+    def _measure_components(
+        self, system_message: str, schema_text: str, user: str, total: int,
+    ) -> dict[str, int]:
+        """Independent component counts plus signed BPE/wrapper residual; no text retained."""
+        parts = {
+            "schema": schema_text,
+            "instructions": system_message.removesuffix(schema_text),
+            "source": "", "context": "", "identifiers_and_metadata": user,
+        }
+        try:
+            payload = json.loads(user)
+            if isinstance(payload, dict):
+                definitions = payload.pop("definitions", None)
+                context = payload.pop("authoritative_context", None)
+                if context is None:
+                    context_keys = {
+                        "dependency_graph", "datasources", "connections", "tables", "queries",
+                        "interactions", "terminal_evidence", "owner_claims", "coverage",
+                        "logical_unit_interpretations", "application_interpretations",
+                        "chunk_interpretations", "candidates", "profiles",
+                    }
+                    context = {
+                        key: payload.pop(key) for key in sorted(context_keys) if key in payload
+                    }
+
+                def serialize(value: Any) -> str:
+                    return json.dumps(
+                        value, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+                    )
+                parts["source"] = serialize(definitions) if definitions is not None else ""
+                parts["context"] = serialize(context) if context is not None else ""
+                parts["identifiers_and_metadata"] = serialize(payload)
+        except (ValueError, TypeError):
+            pass
+        counts = {
+            key: _input_token_count(self._tokenizer(
+                value, add_special_tokens=False, return_tensors="pt", truncation=False,
+            )) if value else 0
+            for key, value in parts.items()
+        }
+        counts["boundary_and_wrapper_residual"] = total - sum(counts.values())
+        return counts
+
+    def _load_tokenizer(self) -> None:
+        if self._tokenizer is not None:
+            return
+        with self._load_lock:
+            if self._tokenizer is not None:
+                return
+            _enable_offline_mode()
+            try:
+                transformers = importlib.import_module("transformers")
+                config = json.loads(
+                    (self.verified.directory / "config.json").read_text(encoding="utf-8")
+                )
+                self.progress.detail("Loading tokenizer...")
+                tokenizer = transformers.AutoTokenizer.from_pretrained(
+                    str(self.verified.directory), local_files_only=True, trust_remote_code=False,
+                )
+            except Exception as exc:
+                raise QwenProviderError(
+                    "Verified local tokenizer/config could not be loaded"
+                ) from exc
+            self._transformers = transformers
+            self._config = SimpleNamespace(
+                max_position_embeddings=config["max_position_embeddings"],
+            )
+            self._tokenizer = tokenizer
+
     def _load(self) -> None:
+        self._load_tokenizer()
         if self._model is not None:
             return
         with self._load_lock:
@@ -459,7 +580,6 @@ class LocalQwenProvider:
             try:
                 torch = importlib.import_module("torch")
                 transformers = importlib.import_module("transformers")
-                auto_tokenizer = transformers.AutoTokenizer
                 auto_model = transformers.AutoModelForCausalLM
             except (ImportError, AttributeError) as exc:  # pragma: no cover - install guidance
                 raise QwenProviderError(
@@ -474,15 +594,7 @@ class LocalQwenProvider:
                         torch.set_num_interop_threads(self.runtime.cpu_interop_threads)
                 local_path = str(self.verified.directory)
                 load_started = time.monotonic()
-                self.progress.detail("Loading tokenizer...")
-                tokenizer = auto_tokenizer.from_pretrained(
-                    local_path,
-                    local_files_only=True,
-                    trust_remote_code=False,
-                )
-                self.progress.detail(
-                    f"Tokenizer loaded; elapsed={time.monotonic() - load_started:.1f}s"
-                )
+                tokenizer = self._tokenizer
                 weights_started = time.monotonic()
                 self.progress.basic("Loading Qwen 0.5B model weights...")
                 model = auto_model.from_pretrained(
@@ -524,6 +636,14 @@ class LocalQwenProvider:
                     "The integrity-verified Qwen model could not be loaded locally"
                 ) from exc
 
+            self.performance.dtype = str(getattr(model, "dtype", "unknown"))
+            self.performance.cpu_threads = (
+                int(torch.get_num_threads()) if hasattr(torch, "get_num_threads") else None
+            )
+            self.performance.cpu_interop_threads = (
+                int(torch.get_num_interop_threads())
+                if hasattr(torch, "get_num_interop_threads") else None
+            )
             self._torch = torch
             self._transformers = transformers
             self._tokenizer = tokenizer
@@ -684,8 +804,39 @@ def _select_device(requested: str, torch: Any) -> str:
 
 
 def _validation_details(error: ValidationError) -> tuple[str, ...]:
+    """Fixed categories only: Pydantic locations/messages may contain untrusted keys."""
     details: list[str] = []
-    for item in error.errors(include_input=False, include_url=False):
-        location = ".".join(str(part) for part in item.get("loc", ())) or "<root>"
-        details.append(f"{location}: {item['msg']} [{item['type']}]")
-    return tuple(details) or ("response failed schema validation",)
+    for item in error.errors(include_input=False, include_url=False, include_context=False):
+        kind = item["type"]
+        if kind == "missing":
+            code = "missing_field"
+        elif kind == "extra_forbidden":
+            code = "extra_field"
+        elif kind in {"literal_error", "enum"}:
+            code = "invalid_enum"
+        elif kind.endswith(("_type", "_parsing")):
+            code = "wrong_type"
+        else:
+            # Match only code-owned exact messages; never export the original text.
+            code = {
+                "Value error, logical interpretation cites non-terminal or unknown evidence":
+                    "unknown_citation",
+                "Value error, logical interpretation cites an unknown technical object":
+                    "unknown_object",
+                "Value error, logical interpretation cites an unknown interaction":
+                    "unknown_interaction",
+                "Value error, application interpretation cites non-terminal or unknown evidence":
+                    "unknown_citation",
+                "Value error, application finding cites non-terminal or unknown evidence":
+                    "unknown_citation",
+                "Value error, application interpretation cites an unknown owner claim":
+                    "unknown_citation",
+                "Value error, application finding cites an unknown owner claim":
+                    "unknown_citation",
+                "Value error, portfolio similarity is not closed by one supplied candidate":
+                    "unknown_citation",
+                "Value error, portfolio finding is not closed by one supplied candidate":
+                    "unknown_citation",
+            }.get(item.get("msg", ""), "schema")
+        details.append(code)
+    return tuple(details) or ("schema",)

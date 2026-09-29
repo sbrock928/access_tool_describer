@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import platform
 import secrets
 import time
@@ -21,7 +22,9 @@ from portfolio_analyzer.config import AnalyzerSettings
 from portfolio_analyzer.inventory.loader import load_inventory
 from portfolio_analyzer.models import VerifiedStagedArtifact
 from portfolio_analyzer.naming import euc_directory_name
+from portfolio_analyzer.performance import InferenceCallLimitReached, PerformanceRecorder
 from portfolio_analyzer.progress import AnalysisProgressReporter
+from portfolio_analyzer.qwen.estimate import estimate_application
 from portfolio_analyzer.qwen.pipeline import (
     TWO_STAGE_PROMPT_VERSION,
     analyze_application_two_stage,
@@ -343,27 +346,56 @@ def analyze(
         "-v",
         help="Show safe token, cache, batching, retry, and timing diagnostics.",
     ),
+    estimate: bool = typer.Option(False, help="Read-only request and cache cost estimate."),
+    performance_report: Path | None = typer.Option(None, help="Metadata-only JSON diagnostics."),
+    max_inference_calls_per_application: int | None = typer.Option(
+        None, min=1, help="Stop safely before exceeding this call count, including repairs.",
+    ),
 ) -> None:
     """Build canonical evidence, interpret every logical unit, and synthesize the portfolio."""
 
     workspace = workspace.resolve()
+    if performance_report is not None and performance_report.exists():
+        raise typer.BadParameter("Performance report destination must not already exist")
+    metrics = PerformanceRecorder(
+        max_calls_per_application=max_inference_calls_per_application,
+        collect_prompt_components=performance_report is not None,
+    )
     progress = AnalysisProgressReporter(
         verbose=verbose,
         sink=lambda message: typer.echo(message, err=True),
+        performance=metrics,
     )
     try:
         progress.basic("Preparing analysis runtime...")
         preflight_workspace(workspace)
         store = V2StateStore(workspace)
+        store.performance = metrics
         runtime = resolve_qwen_runtime(
             workspace,
             model_dir_override=model_dir.resolve() if model_dir is not None else None,
         )
+        if performance_report is not None and (
+            performance_report.resolve().is_relative_to(runtime.model_dir)
+            or performance_report.resolve().is_relative_to(store.state_root)
+        ):
+            # Do not publish a diagnostics file into an integrity-controlled directory.
+            performance_report = None
+            raise ValueError("performance report must be outside model and state directories")
         # Construction performs the independent allowlist/hash verification required before
         # analysis. The provider then lazily loads this same verified model once for the run.
         provider = LocalQwenProvider(runtime, progress=progress)
         provenance = _model_provenance(provider)
-        inference_cache = PersistentInferenceOutputCache(store.state_root)
+        inference_cache = PersistentInferenceOutputCache(
+            store.state_root, bypass_reads=force, performance=metrics,
+        )
+        if estimate:
+            result_estimate = _estimate_workspace(
+                store, provider, provenance, inference_cache, application,
+            )
+            typer.echo(json.dumps(result_estimate, sort_keys=True, indent=2))
+            metrics.outcome = "estimated"
+            return
         requested_failures: list[str] = []
         with store.exclusive_lock():
             stage_run = store.load_current_run(RunPhase.STAGE)
@@ -399,6 +431,7 @@ def analyze(
             for application_index, staged_application in enumerate(
                 index.applications, start=1
             ):
+                metrics.begin_application(application_index)
                 application_id = staged_application.application_id
                 selected = application is None or application == application_id
                 application_started = time.monotonic()
@@ -445,11 +478,10 @@ def analyze(
                     for reference in extraction.extraction_snapshots
                 )
                 try:
-                    bundle = build_application_evidence_bundle(
-                        index,
-                        application_id,
-                        snapshots,
-                    )
+                    with metrics.phase("deterministic"):
+                        bundle = build_application_evidence_bundle(
+                            index, application_id, snapshots,
+                        )
                     bundle_ref = store.put(bundle)
                     bundles_by_application[application_id] = bundle
                     progress.detail(
@@ -504,7 +536,7 @@ def analyze(
                         bundle,
                         provider,
                         provenance=provenance,
-                        cache=None if force and selected else inference_cache,
+                        cache=inference_cache,
                     )
                     payload = application_payload_from_result(result)
                     payload_ref = store.put(payload)
@@ -559,6 +591,7 @@ def analyze(
                             f"error_type={type(exc).__name__}"
                         )
 
+            metrics.begin_application(None)
             portfolio_ref: ContentReference | None = None
             portfolio_payload: PortfolioAnalysisPayload | None = None
             all_current = bool(records) and all(
@@ -580,9 +613,8 @@ def analyze(
                 )
                 candidates: tuple[PortfolioCandidate, ...] = ()
                 try:
-                    candidates = generate_portfolio_candidates(
-                        ordered_bundles, profiles
-                    )
+                    with metrics.phase("deterministic"):
+                        candidates = generate_portfolio_candidates(ordered_bundles, profiles)
                     progress.detail(
                         f"Portfolio candidates ready; count={len(candidates)}"
                     )
@@ -592,7 +624,7 @@ def analyze(
                         ordered_bundles,
                         provider,
                         provenance=provenance,
-                        cache=None if force else inference_cache,
+                        cache=inference_cache,
                     )
                     portfolio_payload = portfolio_payload_from_result(
                         portfolio_result,
@@ -713,10 +745,23 @@ def analyze(
             )
             store.publish_run(manifest)
             progress.basic("Analysis run manifest published successfully.")
+            metrics.outcome = "failed" if requested_failures else "complete"
+    except (KeyboardInterrupt, InferenceCallLimitReached) as exc:
+        metrics.outcome = "interrupted" if isinstance(exc, KeyboardInterrupt) else "call_limit"
+        progress.basic(
+            "Analysis stopped safely; completed inference checkpoints retained. "
+            "Current application and remaining synthesis are incomplete. Resume without --force."
+        )
+        raise typer.Exit(code=130 if isinstance(exc, KeyboardInterrupt) else 2) from None
     except typer.Exit:
         raise
     except Exception as exc:
+        metrics.outcome = "failed"
         _abort("Analysis failed safely", exc)
+    finally:
+        metrics.finish_application()
+        if performance_report is not None:
+            metrics.write(performance_report)
 
     complete_count = sum(item.status == RunStatus.COMPLETE for item in manifest.applications)
     typer.echo(
@@ -727,6 +772,70 @@ def analyze(
         typer.echo("Portfolio analysis is not current.")
     if requested_failures:
         raise typer.Exit(code=1)
+
+
+def _estimate_workspace(
+    store: V2StateStore,
+    provider: LocalQwenProvider,
+    provenance: ModelProvenance,
+    cache: PersistentInferenceOutputCache,
+    application: str | None,
+) -> dict[str, object]:
+    """Read pinned immutable extraction references without acquiring a writer lock."""
+    stage = store.load_current_run(RunPhase.STAGE)
+    stage_ref = _reference_by_schema(stage, "stage-index-v2")
+    index = store.load(stage_ref, StageIndex)
+    extraction = store.load_current_run(RunPhase.EXTRACT)
+    if stage_ref not in extraction.input_references:
+        raise StateIntegrityError("current extraction is stale for the current stage")
+    known = {item.application_id for item in index.applications}
+    records = {item.application_id: item for item in extraction.applications}
+    if set(records) != known:
+        raise StateIntegrityError("current extraction scope does not match the current stage")
+    if application is not None and application not in known:
+        raise ValueError("selected application is not in the current stage")
+    previous = _current_or_none(store, RunPhase.ANALYZE)
+    previous_by_id = (
+        {item.application_id: item for item in previous.applications} if previous else {}
+    )
+    applications: list[dict[str, object]] = []
+    for ordinal, item in enumerate(index.applications, 1):
+        if application is not None and item.application_id != application:
+            continue
+        record = records[item.application_id]
+        if record.status != RunStatus.COMPLETE:
+            applications.append({"application": ordinal, "status": "extraction_unavailable"})
+            continue
+        snapshots = tuple(
+            store.load(reference, ExtractedArtifactSnapshot)
+            for reference in record.extraction_snapshots
+        )
+        with provider.performance.phase("deterministic"):
+            bundle = build_application_evidence_bundle(index, item.application_id, snapshots)
+        estimated = estimate_application(
+            bundle, provider, provenance=provenance, cache=cache, ordinal=ordinal,
+        )
+        reusable = None if cache.bypass_reads else _compatible_previous_analysis(
+            store, previous_by_id.get(item.application_id), bundle, provenance,
+            record.extraction_snapshots,
+        )
+        estimated["current_application_reusable"] = reusable is not None
+        if reusable is not None:
+            estimated["remaining_calls_min"] = 0
+            estimated["remaining_calls_max_with_repairs"] = 0
+        applications.append(estimated)
+    return {
+        "schema_version": "inference-estimate-v1", "application_count": len(applications),
+        "applications": applications,
+        "portfolio_calls": "output-dependent; excluded from application bounds",
+        "expensive_applications": [
+            item["application"] for item in sorted(
+                applications,
+                key=lambda value: int(str(value.get("cold_calls_max_with_repairs", 0))),
+                reverse=True,
+            )
+        ],
+    }
 
 
 @app.command()

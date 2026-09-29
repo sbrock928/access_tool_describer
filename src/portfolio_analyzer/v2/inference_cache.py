@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import re
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Literal, Self
 
 from pydantic import model_validator
 
+from portfolio_analyzer.performance import PerformanceRecorder
 from portfolio_analyzer.qwen.pipeline import InferenceCacheKey, inference_cache_key
 from portfolio_analyzer.v2.identity import canonical_json_bytes
 from portfolio_analyzer.v2.models import Sha256, StrictModel
@@ -50,10 +52,26 @@ class CachedInferenceOutput(StrictModel):
 class PersistentInferenceOutputCache:
     """Atomic, input-addressed cache under V2 generated state."""
 
-    def __init__(self, state_root: Path) -> None:
+    def __init__(
+        self, state_root: Path, *, bypass_reads: bool = False,
+        performance: PerformanceRecorder | None = None,
+    ) -> None:
         self._root = state_root.resolve() / "inference-cache"
+        self.bypass_reads = bypass_reads
+        self.performance = performance
 
     def get(self, key: InferenceCacheKey) -> dict[str, Any] | None:
+        metrics = self.performance
+        with metrics.phase("cache_io") if metrics is not None else nullcontext():
+            value = None if self.bypass_reads else self._get(key)
+        if metrics is not None:
+            if value is None:
+                metrics.cache_misses += 1
+            else:
+                metrics.cache_hits += 1
+        return value
+
+    def _get(self, key: InferenceCacheKey) -> dict[str, Any] | None:
         path = self._entry_path(key.cache_key)
         if not path.exists():
             return None
@@ -68,6 +86,13 @@ class PersistentInferenceOutputCache:
         return dict(entry.output)
 
     def put(self, key: InferenceCacheKey, value: dict[str, Any]) -> None:
+        metrics = self.performance
+        with metrics.phase("cache_io") if metrics is not None else nullcontext():
+            self._put(key, value)
+        if metrics is not None:
+            metrics.cache_writes += 1
+
+    def _put(self, key: InferenceCacheKey, value: dict[str, Any]) -> None:
         entry = CachedInferenceOutput(
             content_sha256=key.content_sha256,
             schema_sha256=key.schema_sha256,

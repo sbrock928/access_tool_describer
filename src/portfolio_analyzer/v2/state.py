@@ -21,6 +21,7 @@ from typing import Annotated, Literal, Self, TypeVar
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from portfolio_analyzer.performance import PerformanceRecorder, measured
 from portfolio_analyzer.v2.identity import canonical_json_bytes, stable_id
 from portfolio_analyzer.v2.models import NonEmptyString, Sha256, StrictModel
 
@@ -416,6 +417,7 @@ class V2StateStore:
     """Content-addressed JSON objects plus manifest-last run publication."""
 
     def __init__(self, root: Path) -> None:
+        self.performance: PerformanceRecorder | None = None
         self.root = root.resolve()
         self.metadata = preflight_workspace(self.root)
         self._active_lock: WorkspaceLock | None = None
@@ -437,6 +439,7 @@ class V2StateStore:
             self._active_lock = None
             lock.release()
 
+    @measured("state_io")
     def put(self, value: BaseModel, *, schema_name: str | None = None) -> ContentReference:
         """Write an immutable canonical JSON object and return its verified reference."""
 
@@ -466,6 +469,7 @@ class V2StateStore:
         self.verify(reference)
         return reference
 
+    @measured("state_io")
     def verify(self, reference: ContentReference) -> Path:
         """Verify containment, byte length, and SHA-256 for a stored object."""
 
@@ -487,6 +491,7 @@ class V2StateStore:
         _verify_embedded_schema_label(reference, payload)
         return path
 
+    @measured("state_io")
     def load(self, reference: ContentReference, model_type: type[ModelT]) -> ModelT:
         """Load a referenced object only after integrity and canonical-schema checks."""
 
@@ -505,6 +510,7 @@ class V2StateStore:
             raise StateIntegrityError("state object is not canonical sanitized JSON")
         return value
 
+    @measured("state_io")
     def publish_run(self, manifest: RunManifest) -> PublishedRun:
         """Publish an immutable manifest, then atomically select it for its phase."""
 
@@ -534,6 +540,7 @@ class V2StateStore:
         self.publish_current(published)
         return published
 
+    @measured("state_io")
     def publish_current(self, published: PublishedRun) -> CurrentRunPointer:
         """Atomically select a verified, immutable run as current for its phase."""
 
@@ -561,6 +568,7 @@ class V2StateStore:
         _atomic_write_bytes(destination, canonical_json_bytes(pointer))
         return pointer
 
+    @measured("state_io")
     def load_run(self, phase: RunPhase, run_id: str) -> RunManifest:
         """Load only a completely published run manifest."""
 
@@ -581,6 +589,7 @@ class V2StateStore:
             self.verify(reference)
         return manifest
 
+    @measured("state_io")
     def load_current_run(self, phase: RunPhase) -> RunManifest:
         """Resolve and verify the atomic current pointer for a phase."""
 

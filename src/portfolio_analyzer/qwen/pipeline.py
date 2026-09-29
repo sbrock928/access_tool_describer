@@ -15,6 +15,7 @@ from typing import Annotated, Any, Literal, Protocol, Self, cast
 
 from pydantic import Field, model_validator
 
+from portfolio_analyzer.performance import PerformanceRecorder
 from portfolio_analyzer.progress import AnalysisProgressReporter
 from portfolio_analyzer.qwen.provider import (
     DEFAULT_MAX_OUTPUT_TOKENS,
@@ -706,6 +707,9 @@ def analyze_application_two_stage(
     progress = _provider_progress(provider)
     progress.detail(f"Application {bundle.application_id}: building logical-unit plans")
     plans = build_logical_units(bundle)
+    metrics = getattr(provider, "performance", None)
+    if isinstance(metrics, PerformanceRecorder):
+        metrics.plan_units([(item.logical_unit_id, item.kind.value) for item in plans])
     kinds: dict[str, int] = {}
     for plan in plans:
         kinds[plan.kind.value] = kinds.get(plan.kind.value, 0) + 1
@@ -2193,6 +2197,9 @@ def _analyze_logical_units(
             max_output_tokens=max_output_tokens,
         )
         results[result.logical_unit_id] = result
+        metrics = getattr(provider, "performance", None)
+        if isinstance(metrics, PerformanceRecorder):
+            metrics.unit_status(result.logical_unit_id, result.chunk_count, result.status.value)
     if set(results) != {item.logical_unit_id for item in plans}:
         raise ValueError("logical-unit batching did not account for every planned unit")
     return tuple(results[item.logical_unit_id] for item in plans)
@@ -2378,6 +2385,9 @@ def _analyze_unit(
             failure=budget_failure,
         )
 
+    metrics = getattr(provider, "performance", None)
+    if isinstance(metrics, PerformanceRecorder):
+        metrics.unit_status(plan.logical_unit_id, len(chunks), "in_progress")
     chunk_interpretations: list[LogicalUnitInterpretation] = []
     cache_keys: list[InferenceCacheKey] = []
     for index, chunk in enumerate(chunks, start=1):

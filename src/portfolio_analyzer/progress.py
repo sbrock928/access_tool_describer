@@ -8,6 +8,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from portfolio_analyzer.performance import PerformanceRecorder
+
 
 @dataclass(slots=True)
 class AnalysisProgressReporter:
@@ -15,6 +17,7 @@ class AnalysisProgressReporter:
 
     verbose: bool = False
     sink: Callable[[str], None] | None = None
+    performance: PerformanceRecorder | None = None
 
     @property
     def enabled(self) -> bool:
@@ -41,10 +44,14 @@ class GenerationHeartbeat:
     _stop: threading.Event = field(default_factory=threading.Event, init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    first_token_seconds: float | None = field(default=None, init=False)
+    last_token_seconds: float | None = field(default=None, init=False)
 
     def start(self) -> None:
         self._started = time.monotonic()
-        if not self.reporter.verbose:
+        if not self.reporter.verbose and (
+            self.reporter.performance is None or not self.reporter.enabled
+        ):
             return
         self._thread = threading.Thread(
             target=self._run,
@@ -55,6 +62,11 @@ class GenerationHeartbeat:
 
     def update(self, generated_tokens: int) -> None:
         with self._lock:
+            if generated_tokens > self._generated_tokens:
+                elapsed = max(0.0, time.monotonic() - self._started)
+                if self.first_token_seconds is None:
+                    self.first_token_seconds = elapsed
+                self.last_token_seconds = elapsed
             self._generated_tokens = max(self._generated_tokens, generated_tokens)
 
     def finish(self) -> tuple[int, float]:
@@ -76,6 +88,11 @@ class GenerationHeartbeat:
                 f"Generation {self.generation_id}: running; elapsed={elapsed:.1f}s; "
                 f"generated_tokens={generated}; speed={rate:.2f} tokens/s"
             )
+            metrics = self.reporter.performance
+            if metrics is not None and metrics.warning_due():
+                self.reporter.basic(
+                    "Application has exceeded ten minutes; completed outputs are checkpointed."
+                )
 
 
 class TokenProgressCriteria:

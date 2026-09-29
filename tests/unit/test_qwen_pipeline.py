@@ -1268,3 +1268,54 @@ def test_portfolio_batches_adapt_to_exact_tokenizer_measurement() -> None:
         for candidate in call["payload"]["candidates"]
     }
     assert submitted_ids == {item.candidate_id for item in candidates}
+
+
+def test_estimator_matches_executor_chunks_prompts_and_cache_without_writes() -> None:
+    from portfolio_analyzer.qwen.estimate import estimate_application
+
+    bundle = _bundle()
+    provider = _PipelineProvider()
+    cache = _MemoryInferenceCache()
+    estimate = estimate_application(
+        bundle, provider, provenance=_provenance(), cache=cache, ordinal=1,
+    )
+    assert provider.calls == []
+    assert cache.values == {}
+    assert estimate["chunk_cache_hits"] == 0
+    result = analyze_application_two_stage(bundle, provider, provenance=_provenance(), cache=cache)
+    assert result.interpretation is not None
+    leaves = [item for item in provider.calls if item["payload"]["stage"] == "logical_unit"]
+    assert estimate["initial_chunks"] == len(leaves)
+    assert estimate["logical_units"] == len(result.unit_results)
+    assert estimate["cold_calls_min_if_successful"] <= len(provider.calls)
+    assert estimate["cold_calls_max_with_repairs"] >= len(provider.calls)
+    snapshot = dict(cache.values)
+    cached_estimate = estimate_application(
+        bundle, provider, provenance=_provenance(), cache=cache, ordinal=1,
+    )
+    assert cached_estimate["chunk_cache_hits"] == len(leaves)
+    assert cached_estimate["remaining_calls_min"] == 0
+    assert len(provider.calls) == len(leaves) + 1
+    assert cache.values == snapshot
+    assert cached_estimate["downstream_cache_coverage"] == "unknown"
+
+
+def test_estimate_includes_chunk_reductions_and_synthesis_bounds() -> None:
+    from portfolio_analyzer.qwen.estimate import estimate_application
+
+    bundle = _bundle()
+    provider = _PipelineProvider(
+        max_definition_chars_per_prompt=70, max_application_inputs_per_prompt=2,
+    )
+    estimate = estimate_application(
+        bundle, provider, provenance=_provenance(), cache=_MemoryInferenceCache(), ordinal=1,
+    )
+    result = analyze_application_two_stage(bundle, provider, provenance=_provenance())
+    assert result.interpretation is not None
+    stages = [item["payload"]["stage"] for item in provider.calls]
+    assert stages.count("logical_unit") == estimate["initial_chunks"]
+    assert stages.count("logical_unit_reduction") == estimate[
+        "logical_reduction_calls_if_successful"
+    ]
+    assert estimate["cold_calls_min_if_successful"] <= len(stages)
+    assert estimate["cold_calls_max_with_repairs"] >= len(stages)
