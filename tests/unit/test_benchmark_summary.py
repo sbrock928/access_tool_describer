@@ -82,3 +82,22 @@ def test_summary_labels_candidate_and_reports_comparison_measurements(tmp_path: 
     assert "Calls=6 RetryPercent=100.0 PromptTokens=600.00 GeneratedTokens=120.00" in summary
     assert "MedianRequestSeconds=50.00 MedianFirstTokenSeconds=1.00" in summary
     assert "MedianDecodeTokensPerSecond=4.00 PeakWorkingSetBytes=1024.00" in summary
+
+
+def test_summary_exposes_safe_shape_and_canary_per_attempt(tmp_path: Path) -> None:
+    path = tmp_path / "metrics.json"
+    _report(path)
+    report = json.loads(path.read_text())
+    worker = report["results"][0]
+    worker["experiment"] = "contract-private"
+    first = worker["runs"][0]["metrics"]["generations"][0]
+    first["response_shape"] = {
+        "extra_keys": 1, "extra_keys_matching_input": 1, "schema_name_wrapper": False,
+        "missing_required_keys": 0, "PRIVATE-KEY": "PRIVATE-VALUE",
+    }
+    first["secret_canary_detected"] = True
+    path.write_text(json.dumps(report))
+    summary = summarize_micro_benchmark(path)
+    assert "Experiment: contract-private" in summary
+    assert "extra_keys=1 input_key_matches=1 named_wrapper=false canary=true" in summary
+    assert "PRIVATE" not in summary

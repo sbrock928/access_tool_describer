@@ -841,6 +841,7 @@ def test_malformed_attempt_diagnostics_do_not_contaminate_repair(
 
 @pytest.mark.parametrize("experiment", [
     "baseline", "clear-object", "compact-schema", "targeted-repair", "json-stop", "combined",
+    "field-contract", "privacy-rule", "contract-private",
 ])
 def test_experiment_measurement_matches_execution_and_preserves_validation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, experiment: str,
@@ -869,6 +870,9 @@ def test_experiment_measurement_matches_execution_and_preserves_validation(
         assert "invalid_enum:status" in tokenizer.prompts[2]
         assert "extra_field:<unknown>" in tokenizer.prompts[2]
     assert ("object named Answer" in measured_prompt) != provider.experiment.clear_object
+    assert ("Response field checklist" in measured_prompt) == provider.experiment.field_contract
+    assert ("confidential input" in measured_prompt) == provider.experiment.privacy_rule
+    assert provider.performance.generations[0].response_shape is None
     assert len(model.generate_calls[0]["stopping_criteria"]) == (
         2 if provider.experiment.stop_json else 1
     )
@@ -887,3 +891,26 @@ def test_canary_detection_includes_rejected_response_without_exporting_it(
     payload = provider.performance.payload()
     assert [event["secret_canary_detected"] for event in payload["generations"]] == [True, False]
     assert "CANARY" not in json.dumps(payload)
+
+
+def test_benchmark_shape_diagnostics_record_only_counts_and_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_runtime(monkeypatch, tmp_path, responses=[
+        '{"PRIVATE-KEY":"PRIVATE-VALUE"}', '{"status":"abstain"}',
+    ])
+    provider = LocalQwenProvider(_runtime(tmp_path))
+    provider.collect_response_shape = True
+    result = generate_validated_json(
+        provider, response_model=_Answer, schema_name="Answer", system="Analyze",
+        user='{"PRIVATE-KEY":"PRIVATE-INPUT"}',
+    )
+    assert isinstance(result, StructuredGenerationSuccess)
+    payload = provider.performance.payload()
+    events = payload["generations"]
+    assert events[0]["response_shape"] == {
+        "extra_keys": 1, "extra_keys_matching_input": 1, "schema_name_wrapper": False,
+        "missing_required_keys": 1,
+    }
+    assert events[1]["response_shape"]["extra_keys"] == 0
+    assert "PRIVATE" not in json.dumps(payload)

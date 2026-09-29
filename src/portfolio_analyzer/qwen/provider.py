@@ -27,7 +27,13 @@ from portfolio_analyzer.progress import (
     GenerationHeartbeat,
     TokenProgressCriteria,
 )
-from portfolio_analyzer.qwen.experiments import EXPERIMENTS, JsonObjectStop, compact_schema
+from portfolio_analyzer.qwen.experiments import (
+    EXPERIMENTS,
+    PRIVACY_RULE,
+    JsonObjectStop,
+    compact_schema,
+    response_contract,
+)
 from portfolio_analyzer.runtime import ResolvedQwenRuntime
 from portfolio_analyzer.semantic.model_store import (
     QWEN_MODEL,
@@ -266,6 +272,7 @@ class LocalQwenProvider:
         self.runtime = runtime
         self.experiment = EXPERIMENTS["baseline"]
         self.benchmark_canary: str | None = None
+        self.collect_response_shape = False
         self.progress = progress or AnalysisProgressReporter()
         self.performance = self.progress.performance or PerformanceRecorder()
         _enable_offline_mode()
@@ -440,6 +447,8 @@ class LocalQwenProvider:
             try:
                 with self.performance.phase("validation"):
                     parsed = parse_json_object(text)
+                    if self.collect_response_shape:
+                        event.response_shape = _response_shape(parsed, schema, schema_name, user)
                     if self.benchmark_canary is not None:
                         event.secret_canary_detected = bool(event.secret_canary_detected) or (
                             self.benchmark_canary in json.dumps(parsed, ensure_ascii=False)
@@ -509,6 +518,10 @@ class LocalQwenProvider:
             "Do not use Markdown, wrappers, or commentary.\n"
             f"{schema_text}"
         )
+        if self.experiment.field_contract:
+            system_message += response_contract(schema)
+        if self.experiment.privacy_rule:
+            system_message += PRIVACY_RULE
         prompt = _render_qwen_chatml(system_message, user)
         with self.performance.phase("loading"):
             self._load_tokenizer()
@@ -905,3 +918,27 @@ def _validation_field_details(
         counts[category, field_name] += 1
     return [ValidationDiagnostic(category, name, count)
             for (category, name), count in sorted(counts.items())]
+
+
+def _response_shape(
+    candidate: Mapping[str, Any], schema: Mapping[str, Any], schema_name: str, user: str,
+) -> dict[str, int | bool]:
+    """Export only counts/flags distinguishing input copying from a named wrapper."""
+    properties = schema.get("properties", {})
+    required = schema.get("required", [])
+    allowed = set(properties) if isinstance(properties, dict) else set()
+    required_keys = {key for key in required if isinstance(key, str)} if isinstance(
+        required, list,
+    ) else set()
+    extras = set(candidate) - allowed
+    try:
+        inputs = json.loads(user)
+    except (ValueError, RecursionError):
+        inputs = None
+    input_keys = set(inputs) if isinstance(inputs, dict) else set()
+    return {
+        "extra_keys": len(extras),
+        "extra_keys_matching_input": len(extras & input_keys),
+        "schema_name_wrapper": schema_name in extras and isinstance(candidate[schema_name], dict),
+        "missing_required_keys": len(required_keys - set(candidate)),
+    }

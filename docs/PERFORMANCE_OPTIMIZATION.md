@@ -170,3 +170,53 @@ deterministic association enrichment, duplicate rebinding, dtype, backend, or mo
 been adopted. These later increments remain gated on successful output distributions,
 procedure-scoped association evidence, reviewed quality, and target-machine measurements.
 The lack of reviewed `quality-check` calibration remains a limitation.
+
+## Operator candidate screen and second-round scope
+
+The operator supplied a screenshot of the six-candidate screen at four threads, one
+repetition per case (three timed requests per candidate). These are transcribed values,
+not independently inspected raw artifacts. Median generation time includes repairs.
+
+| Candidate | Valid requests | Repairs | Requests with canary detections | Median generation seconds |
+| --- | ---: | ---: | ---: | ---: |
+| baseline | 1/3 | 3 | 1 | 54.55 |
+| clear-object | 2/3 | 2 | 1 | 29.38 |
+| compact-schema | 1/3 | 3 | 0 | 59.33 |
+| targeted-repair | 0/3 | 3 | 0 | 60.10 |
+| json-stop | 1/3 | 3 | 1 | 54.52 |
+| combined | 1/3 | 2 | 0 | 40.00 |
+
+Clear-object reduced the reported generation median by approximately 46% and calls from
+six to five. Its case 1 retained an extra-field error after repair; case 2 passed initially;
+case 3 passed after a missing-evidence-ID repair. It still detected a canary. No candidate
+passes the promotion gate. The combined candidate's reduced generated-token total does
+not compensate for failed schema validity. Zero detections in three requests do not prove
+privacy. All configurations reported roughly 1.75 GB peak working set; request, first-token,
+and decode medians cannot be added or subtracted to infer an exclusive stage breakdown.
+
+The next controlled comparison holds clear-object constant, then independently adds:
+
+- `field-contract`: a concise schema-derived checklist of required/allowed root keys and
+  direct enum/constant choices. It supplies no example answer, semantic conclusion, or
+  evidence identifier. Every original constraint and local validator remains active.
+- `privacy-rule`: an explicit instruction to keep credential values out of every output
+  key/value while retaining semantic interpretation and evidence citations.
+- `contract-private`: both additions, to measure their interaction.
+
+These retain full schemas, the original repair prompt, EOS termination, and original
+output budgets; they do not inherit the unsuccessful first-round changes. The earlier
+profiles and their identities are unchanged. Each new profile has a distinct cache and
+provenance identity and remains unavailable to production analyze.
+
+New benchmark-only response-shape diagnostics export counts of extra root keys, how many
+match root input keys, missing required keys, and a boolean for a schema-name object wrapper.
+No input or rejected key names/values are exported. This can distinguish two hypotheses
+(input copying versus a named wrapper) without requesting private outputs. Each attempt
+also displays its existing canary detection boolean. Shape inspection runs during the
+validation phase and its time is included in the comparison. It is disabled by default
+outside benchmarks. Malformed JSON has no parsed-shape measurement.
+
+Second-round Windows speed, validity, and privacy effects are **unmeasured**. These prompt
+experiments cannot replace deterministic input redaction or establish production security.
+Application performance, semantic quality calibration, and later batching/runtime gates
+remain outstanding; no production inference behavior has been promoted.

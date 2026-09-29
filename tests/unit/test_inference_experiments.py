@@ -89,3 +89,64 @@ def test_candidate_provenance_invalidates_cache_without_changing_baseline(
         assert model_fingerprint(reloaded) == model_fingerprint(provenance)
         fingerprints.append(model_fingerprint(provenance))
     assert len(set(fingerprints)) == len(EXPERIMENTS)
+
+
+def test_field_contract_uses_only_schema_requirements_without_inventing_answers() -> None:
+    import json
+
+    from portfolio_analyzer.qwen.experiments import response_contract
+
+    schema = {
+        "properties": {"status": {"const": "unknown"}, "summary": {"type": "string"},
+                       "evidence_ids": {"type": "array"}, "optional": {"type": "string"}},
+        "required": ["status", "summary", "evidence_ids"], "additionalProperties": False,
+    }
+    prompt = response_contract(schema)
+    payload = prompt.split(": ", 1)[1].split(". Include", 1)[0]
+    assert json.loads(payload) == {
+        "required": ["status", "summary", "evidence_ids"],
+        "allowed_keys": ["status", "summary", "evidence_ids", "optional"],
+        "allowed_values": {"status": ["unknown"]},
+    }
+    assert "ev_synthetic" not in prompt
+    assert "allowed_keys" not in response_contract({"properties": {}, "additionalProperties": True})
+    assert response_contract({"properties": False}) == ""
+
+
+def test_new_candidates_isolate_field_and_privacy_changes() -> None:
+    from dataclasses import asdict
+
+    from portfolio_analyzer.qwen.experiments import EXPERIMENTS
+
+    reference = asdict(EXPERIMENTS["clear-object"])
+    for name, changes in (
+        ("field-contract", {"field_contract": True}),
+        ("privacy-rule", {"privacy_rule": True}),
+        ("contract-private", {"field_contract": True, "privacy_rule": True}),
+    ):
+        assert asdict(EXPERIMENTS[name]) == {**reference, "name": name, **changes}
+
+
+def test_response_shape_counts_input_copy_and_wrapper_without_content() -> None:
+    import json
+
+    from portfolio_analyzer.qwen.provider import _response_shape
+
+    schema = {"properties": {"summary": {}}, "required": ["summary"]}
+    copied = _response_shape(
+        {"SECRET-KEY": "SECRET-VALUE", "summary": "SECRET-CONTENT"}, schema,
+        "Response", '{"SECRET-KEY":"SECRET-PASSWORD"}',
+    )
+    assert copied == {
+        "extra_keys": 1, "extra_keys_matching_input": 1, "schema_name_wrapper": False,
+        "missing_required_keys": 0,
+    }
+    wrapped = _response_shape({"Response": {"summary": "SECRET"}}, schema, "Response", "{}")
+    assert wrapped == {
+        "extra_keys": 1, "extra_keys_matching_input": 0, "schema_name_wrapper": True,
+        "missing_required_keys": 1,
+    }
+    assert "SECRET" not in json.dumps([copied, wrapped])
+    assert _response_shape({"other": 1}, schema, "Response", "not JSON")[
+        "extra_keys_matching_input"
+    ] == 0

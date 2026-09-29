@@ -206,3 +206,32 @@ microbenchmarks; application metrics are in the JSON report. Preserve the origin
 thread matrix, and repeat it after response reliability improves. Production promotion
 still requires the adjudicated quality suite and same-application runtime comparisons;
 passing three synthetic schema probes alone is insufficient.
+
+## Second-round comparison: field completeness and credential exclusion
+
+The first screen improved schema validity and generation time with `clear-object`, but
+that candidate still failed one case and repeated the synthetic canary. No first-round
+candidate passed the promotion gate. The next comparison uses `clear-object` as its
+reference and independently tests a schema-derived field checklist (`field-contract`),
+a credential-exclusion instruction (`privacy-rule`), and both (`contract-private`).
+The other settings and the workload stay fixed; no staged applications are needed.
+
+After installing the update, run these two commands separately. Substitute the approved
+model path already used successfully on your machine:
+
+```powershell
+portfolio-analyzer benchmark-inference --model-dir C:\Models\Qwen2.5-0.5B-Instruct --threads 4 --repetitions 1 --experiments clear-object,field-contract,privacy-rule,contract-private --output .\optimization-round2.json
+portfolio-analyzer benchmark-summary --input .\optimization-round2.json
+```
+
+This is four fresh processes and 24 requests including warm-ups, with at most 48
+initial/repair generations. It is a screening run; use three repetitions for confirmation
+before application-level quality and timing comparisons. A faster result that introduces
+canary detections or loses validity does not qualify for promotion.
+
+The per-attempt summary now adds `extra_keys`, `input_key_matches`, `named_wrapper`, and
+`canary`. `input_key_matches` counts extra response keys that also occurred at the root
+of the input; it does not expose those names. `named_wrapper=true` means the response has
+an extra key equal to the code-owned schema name containing an object. These are structural
+observations, not claims about why the model produced them. Missing diagnostics in old
+reports cannot be reconstructed. Share only the metadata summary if local policy permits.

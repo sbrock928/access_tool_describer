@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -14,6 +15,8 @@ class InferenceExperiment:
     compact_schema: bool = False
     targeted_repair: bool = False
     stop_json: bool = False
+    field_contract: bool = False
+    privacy_rule: bool = False
 
     @property
     def identity(self) -> str:
@@ -28,8 +31,44 @@ EXPERIMENTS = {
         InferenceExperiment("targeted-repair", targeted_repair=True),
         InferenceExperiment("json-stop", stop_json=True),
         InferenceExperiment("combined", True, True, True, True),
+        InferenceExperiment("field-contract", clear_object=True, field_contract=True),
+        InferenceExperiment("privacy-rule", clear_object=True, privacy_rule=True),
+        InferenceExperiment("contract-private", clear_object=True, field_contract=True,
+                            privacy_rule=True),
     )
 }
+
+
+def response_contract(schema: Mapping[str, Any]) -> str:
+    """Repeat structural requirements only; never invent an answer or evidence ID."""
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        return ""
+    contract: dict[str, Any] = {"required": schema.get("required", [])}
+    if schema.get("additionalProperties") is False:
+        contract["allowed_keys"] = list(properties)
+    choices = {}
+    for name, definition in properties.items():
+        if isinstance(definition, dict):
+            if "enum" in definition:
+                choices[name] = definition["enum"]
+            elif "const" in definition:
+                choices[name] = [definition["const"]]
+    if choices:
+        contract["allowed_values"] = choices
+    return (
+        "\nResponse field checklist (top level): "
+        + json.dumps(contract, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
+        + ". Include every required key. Do not add other input keys to the response."
+    )
+
+
+PRIVACY_RULE = (
+    "\nCredentials in the evidence are confidential input, never answer material. "
+    "Do not copy passwords, tokens, or connection-string credentials into any output key "
+    "or value, including summaries. Describe their role without their values; retain "
+    "the schema's required fields and grounded evidence citations."
+)
 
 
 def compact_schema(schema: Mapping[str, Any]) -> dict[str, Any]:

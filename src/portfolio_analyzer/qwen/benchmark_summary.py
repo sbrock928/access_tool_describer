@@ -21,11 +21,20 @@ class _Issue(_SafeRecord):
     count: int = Field(default=1, ge=1)
 
 
+class _Shape(_SafeRecord):
+    extra_keys: int = Field(ge=0)
+    extra_keys_matching_input: int = Field(ge=0)
+    schema_name_wrapper: bool
+    missing_required_keys: int = Field(ge=0)
+
+
 class _Generation(_SafeRecord):
     attempt: Literal[1, 2]
     generation_seconds: float = Field(ge=0, allow_inf_nan=False)
     outcome: Literal["interrupted", "runtime_failure", "json_valid", "invalid", "valid"]
     validation_issues: list[_Issue] | None = None
+    response_shape: _Shape | None = None
+    secret_canary_detected: bool | None = None
     prompt_tokens: int | None = Field(default=None, ge=0)
     generated_tokens: int | None = Field(default=None, ge=0)
     first_token_seconds: float | None = Field(default=None, ge=0, allow_inf_nan=False)
@@ -49,7 +58,8 @@ class _Run(_SafeRecord):
 
 class _Worker(_SafeRecord):
     experiment: Literal["baseline", "clear-object", "compact-schema", "targeted-repair",
-                        "json-stop", "combined"] = "baseline"
+                        "json-stop", "combined", "field-contract", "privacy-rule",
+                        "contract-private"] = "baseline"
     threads_requested: int = Field(ge=1, le=4)
     suite: Literal["micro"] | None = None
     outcome: Literal["worker_failed"] | None = None
@@ -125,6 +135,15 @@ def summarize_micro_benchmark(path: Path) -> str:
                         f"{issue.category}:{issue.field}={issue.count}"
                         for issue in event.validation_issues
                     ) or "none"
+                if event.response_shape is not None:
+                    shape = event.response_shape
+                    diagnostics += (
+                        f" | extra_keys={shape.extra_keys}"
+                        f" input_key_matches={shape.extra_keys_matching_input}"
+                        f" named_wrapper={str(shape.schema_name_wrapper).lower()}"
+                    )
+                if event.secret_canary_detected is not None:
+                    diagnostics += f" canary={str(event.secret_canary_detected).lower()}"
                 details.append(
                     f"{worker.threads_requested:7} {run.case:4} {run.repetition:10} "
                     f"{event.attempt:7} {event.outcome:7} {diagnostics}"

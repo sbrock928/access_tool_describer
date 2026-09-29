@@ -863,7 +863,8 @@ def benchmark_inference(
     workload: str = typer.Option("mixed", help="mixed, procedures, oversized, or duplicates"),
     experiments: str = typer.Option(
         "baseline", help="Comma-separated benchmark-only candidates: baseline, clear-object, "
-        "compact-schema, targeted-repair, json-stop, combined",
+        "compact-schema, targeted-repair, json-stop, combined, field-contract, privacy-rule, "
+        "contract-private",
     ),
 ) -> None:
     """Benchmark synthetic evidence offline without touching production analysis state."""

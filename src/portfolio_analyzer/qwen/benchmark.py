@@ -132,6 +132,7 @@ def run_worker(
         progress=AnalysisProgressReporter(performance=metrics),
     )
     provider.experiment = EXPERIMENTS[experiment]
+    provider.collect_response_shape = True
     provenance = _model_provenance(provider)
     startup = metrics.payload()
     runs: list[dict[str, Any]] = []
@@ -220,6 +221,8 @@ def run_worker(
             "clear_object": provider.experiment.clear_object,
             "compact_schema": provider.experiment.compact_schema,
             "targeted_repair": provider.experiment.targeted_repair,
+            "field_contract": provider.experiment.field_contract,
+            "privacy_rule": provider.experiment.privacy_rule,
             "termination": "complete-object-v1" if provider.experiment.stop_json else "eos",
         },
         "generation_parameters": [item.model_dump(mode="json")
