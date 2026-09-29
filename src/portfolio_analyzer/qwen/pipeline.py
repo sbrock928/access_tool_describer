@@ -40,15 +40,16 @@ from portfolio_analyzer.v2.models import (
     InterpretationKind,
     LogicalUnitInterpretation,
     ModelProvenance,
+    NonEmptyString,
     PortfolioAnalysis,
     PortfolioCandidate,
     QueryEvidence,
     StrictModel,
 )
 
-TWO_STAGE_PROMPT_VERSION = "qwen-two-stage-v4"
-UNIT_PROMPT_VERSION = "qwen-logical-unit-v4"
-UNIT_BATCH_PROMPT_VERSION = "qwen-logical-unit-batch-v2"
+TWO_STAGE_PROMPT_VERSION = "qwen-two-stage-v5"
+UNIT_PROMPT_VERSION = "qwen-logical-unit-v5"
+UNIT_BATCH_PROMPT_VERSION = "qwen-logical-unit-batch-v3"
 APPLICATION_PROMPT_VERSION = "qwen-application-synthesis-v3"
 PORTFOLIO_PROMPT_VERSION = "qwen-portfolio-interpretation-v3"
 DEFAULT_DEFINITION_CHARS = 12_000
@@ -171,11 +172,36 @@ class LogicalUnitAnalysisResult:
         }
 
 
+class _LogicalUnitDraft(StrictModel):
+    """Compact model-authored fields; deterministic envelope fields are added in code."""
+
+    schema_version: Literal["logical-unit-draft-v1"] = "logical-unit-draft-v1"
+    purpose: NonEmptyString
+    business_entities: tuple[NonEmptyString, ...] = ()
+    workflow_actions: tuple[NonEmptyString, ...] = ()
+    datasource_interaction_ids: tuple[NonEmptyString, ...] = ()
+    called_object_ids: tuple[NonEmptyString, ...] = ()
+    generated_outputs: tuple[NonEmptyString, ...] = ()
+    user_interactions: tuple[NonEmptyString, ...] = ()
+    important_business_terms: tuple[NonEmptyString, ...] = ()
+    uncertainties: tuple[NonEmptyString, ...] = ()
+    evidence_ids: tuple[NonEmptyString, ...]
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_json_arrays(cls, value: Any) -> Any:
+        return _logical_json_arrays_to_tuples(value)
+
+
+class _LogicalUnitBatchItemDraft(_LogicalUnitDraft):
+    logical_unit_id: NonEmptyString
+
+
 class _LogicalUnitBatchOutput(StrictModel):
-    schema_version: Literal["logical-unit-batch-output-v1"] = (
-        "logical-unit-batch-output-v1"
+    schema_version: Literal["logical-unit-batch-draft-v1"] = (
+        "logical-unit-batch-draft-v1"
     )
-    interpretations: tuple[LogicalUnitInterpretation, ...]
+    interpretations: tuple[_LogicalUnitBatchItemDraft, ...]
 
     @model_validator(mode="before")
     @classmethod
@@ -470,13 +496,10 @@ def build_definition_chunks(
 
 
 def _fit_definition_chunks_to_token_budget(
-    bundle: ApplicationEvidenceBundle,
     plan: LogicalUnitPlan,
     chunks: tuple[tuple[DefinitionFragment, ...], ...],
     provider: BudgetedQwenJsonProvider,
     *,
-    provenance: ModelProvenance,
-    source_bundle_sha256: str,
     max_output_tokens: int,
 ) -> tuple[tuple[tuple[DefinitionFragment, ...], ...], str | None]:
     """Split at semantic/lexical boundaries until every exact unit prompt fits."""
@@ -491,20 +514,13 @@ def _fit_definition_chunks_to_token_budget(
                 else stable_id("logical_chunk", plan.logical_unit_id, index, len(normalized))
             )
             payload = _unit_payload(
-                bundle,
                 plan,
                 chunk,
                 chunk_index=index,
                 chunk_count=len(normalized),
                 expected_logical_unit_id=expected_id,
-                source_bundle_sha256=source_bundle_sha256,
-                provenance=provenance,
             )
             response_type = _unit_response_model(
-                application_id=bundle.application_id,
-                logical_unit_id=expected_id,
-                source_bundle_sha256=source_bundle_sha256,
-                provenance=provenance,
                 allowed_evidence_ids=plan.allowed_evidence_ids,
                 allowed_object_ids=plan.allowed_object_ids,
                 allowed_interaction_ids=plan.allowed_interaction_ids,
@@ -1675,7 +1691,10 @@ def _portfolio_json_arrays_to_tuples(value: Any) -> Any:
             findings.append(item)
     if isinstance(result.get("findings"), list):
         result["findings"] = tuple(findings)
-    result["provenance"] = _provenance_json_arrays_to_tuples(result.get("provenance"))
+    if "provenance" in result:
+        result["provenance"] = _provenance_json_arrays_to_tuples(
+            result.get("provenance")
+        )
     return result
 
 
@@ -2024,10 +2043,8 @@ def _analyze_logical_units(
             for size in range(upper, 1, -1):
                 candidate = tuple(group[cursor : cursor + size])
                 request = _logical_unit_batch_request(
-                    bundle,
                     candidate,
                     provenance=provenance,
-                    source_bundle_sha256=source_bundle_sha256,
                     max_output_tokens=max_output_tokens,
                 )
                 budget, failure = _measure_prompt_budget(
@@ -2075,35 +2092,25 @@ def _analyze_logical_units(
 
 
 def _logical_unit_batch_request(
-    bundle: ApplicationEvidenceBundle,
     units: tuple[_BatchableLogicalUnit, ...],
     *,
     provenance: ModelProvenance,
-    source_bundle_sha256: str,
     max_output_tokens: int,
 ) -> _LogicalUnitBatchRequest:
     payload = {
         "stage": "logical_unit_batch",
         "units": [
             _unit_payload(
-                bundle,
                 item.plan,
                 item.chunk,
                 chunk_index=1,
                 chunk_count=1,
                 expected_logical_unit_id=item.plan.logical_unit_id,
-                source_bundle_sha256=source_bundle_sha256,
-                provenance=provenance,
             )
             for item in units
         ],
     }
-    response_type = _unit_batch_response_model(
-        application_id=bundle.application_id,
-        units=units,
-        source_bundle_sha256=source_bundle_sha256,
-        provenance=provenance,
-    )
+    response_type = _unit_batch_response_model(units=units)
     system = _unit_batch_system_prompt()
     cache_key = _cache_key_for(
         payload=payload,
@@ -2132,10 +2139,8 @@ def _analyze_logical_unit_batch(
     max_output_tokens: int,
 ) -> tuple[LogicalUnitAnalysisResult, ...]:
     request = _logical_unit_batch_request(
-        bundle,
         units,
         provenance=provenance,
-        source_bundle_sha256=source_bundle_sha256,
         max_output_tokens=max_output_tokens,
     )
     interpretations: tuple[LogicalUnitInterpretation, ...] | None = None
@@ -2148,8 +2153,12 @@ def _analyze_logical_unit_batch(
             )
             grounded = request.response_type.model_validate(cached)
             interpretations = tuple(
-                LogicalUnitInterpretation.model_validate(
-                    _sanitize_generated_payload(item.model_dump(mode="python"))
+                _finalize_logical_unit_draft(
+                    item,
+                    application_id=bundle.application_id,
+                    logical_unit_id=item.logical_unit_id,
+                    source_bundle_sha256=source_bundle_sha256,
+                    provenance=provenance,
                 )
                 for item in grounded.interpretations
             )
@@ -2186,17 +2195,19 @@ def _analyze_logical_unit_batch(
                     failure = "output remained invalid after one repair attempt"
                 else:
                     interpretations = tuple(
-                        LogicalUnitInterpretation.model_validate(
-                            _sanitize_generated_payload(item.model_dump(mode="python"))
+                        _finalize_logical_unit_draft(
+                            item,
+                            application_id=bundle.application_id,
+                            logical_unit_id=item.logical_unit_id,
+                            source_bundle_sha256=source_bundle_sha256,
+                            provenance=provenance,
                         )
                         for item in generated.value.interpretations
                     )
                     if cache is not None:
                         cache.put(
                             request.cache_key,
-                            _LogicalUnitBatchOutput(
-                                interpretations=interpretations
-                            ).model_dump(mode="json"),
+                            generated.value.model_dump(mode="json"),
                         )
     if interpretations is None:
         return tuple(
@@ -2246,12 +2257,9 @@ def _analyze_unit(
             failure="skipped because the logical unit has no terminal observed evidence",
         )
     chunks, budget_failure = _fit_definition_chunks_to_token_budget(
-        bundle,
         plan,
         chunks,
         provider,
-        provenance=provenance,
-        source_bundle_sha256=source_bundle_sha256,
         max_output_tokens=max_output_tokens,
     )
     if budget_failure is not None:
@@ -2272,14 +2280,11 @@ def _analyze_unit(
             else stable_id("logical_chunk", plan.logical_unit_id, index, len(chunks))
         )
         payload = _unit_payload(
-            bundle,
             plan,
             chunk,
             chunk_index=index,
             chunk_count=len(chunks),
             expected_logical_unit_id=expected_id,
-            source_bundle_sha256=source_bundle_sha256,
-            provenance=provenance,
         )
         interpretation, failure, cache_key = _generate_unit_interpretation(
             provider,
@@ -2388,21 +2393,16 @@ def _reduce_unit_interpretations(
             )
             payload = {
                 "stage": "logical_unit_reduction",
-                "expected_output": _expected_unit_output(
-                    bundle.application_id,
-                    expected_id,
-                    source_bundle_sha256,
-                    provenance,
-                ),
                 "logical_unit": {
                     "logical_unit_id": plan.logical_unit_id,
+                    "output_id": expected_id,
                     "kind": plan.kind,
                     "primary_object_ids": plan.primary_object_ids,
                     "covered_definition_chunks": covered,
                     "definition_chunk_count": len(all_indices),
                 },
                 "chunk_interpretations": [
-                    item.interpretation.model_dump(mode="json") for item in group
+                    _logical_unit_as_draft_payload(item.interpretation) for item in group
                 ],
                 "authoritative_context": plan.context,
                 "allowed_ids": _allowed_ids(plan),
@@ -2431,26 +2431,18 @@ def _reduce_unit_interpretations(
 
 
 def _unit_payload(
-    bundle: ApplicationEvidenceBundle,
     plan: LogicalUnitPlan,
     chunk: tuple[DefinitionFragment, ...],
     *,
     chunk_index: int,
     chunk_count: int,
     expected_logical_unit_id: str,
-    source_bundle_sha256: str,
-    provenance: ModelProvenance,
 ) -> dict[str, Any]:
     return {
         "stage": "logical_unit",
-        "expected_output": _expected_unit_output(
-            bundle.application_id,
-            expected_logical_unit_id,
-            source_bundle_sha256,
-            provenance,
-        ),
         "logical_unit": {
             "logical_unit_id": plan.logical_unit_id,
+            "output_id": expected_logical_unit_id,
             "kind": plan.kind,
             "primary_object_ids": plan.primary_object_ids,
             "definition_chunk_index": chunk_index,
@@ -2468,20 +2460,6 @@ def _unit_payload(
         ],
         "authoritative_context": plan.context,
         "allowed_ids": _allowed_ids(plan),
-    }
-
-
-def _expected_unit_output(
-    application_id: str,
-    logical_unit_id: str,
-    source_bundle_sha256: str,
-    provenance: ModelProvenance,
-) -> dict[str, Any]:
-    return {
-        "application_id": application_id,
-        "logical_unit_id": logical_unit_id,
-        "source_bundle_sha256": source_bundle_sha256,
-        "provenance": provenance.model_dump(mode="json"),
     }
 
 
@@ -2508,10 +2486,6 @@ def _generate_unit_interpretation(
     prompt_version: str,
 ) -> tuple[LogicalUnitInterpretation | None, str | None, InferenceCacheKey]:
     response_type = _unit_response_model(
-        application_id=bundle.application_id,
-        logical_unit_id=expected_logical_unit_id,
-        source_bundle_sha256=source_bundle_sha256,
-        provenance=provenance,
         allowed_evidence_ids=plan.allowed_evidence_ids,
         allowed_object_ids=plan.allowed_object_ids,
         allowed_interaction_ids=plan.allowed_interaction_ids,
@@ -2532,8 +2506,12 @@ def _generate_unit_interpretation(
             )
             grounded = response_type.model_validate(cached)
             return (
-                LogicalUnitInterpretation.model_validate(
-                    _sanitize_generated_payload(grounded.model_dump(mode="python"))
+                _finalize_logical_unit_draft(
+                    grounded,
+                    application_id=bundle.application_id,
+                    logical_unit_id=expected_logical_unit_id,
+                    source_bundle_sha256=source_bundle_sha256,
+                    provenance=provenance,
                 ),
                 None,
                 cache_key,
@@ -2565,11 +2543,15 @@ def _generate_unit_interpretation(
         return None, f"provider failure: {exc}", cache_key
     if isinstance(generated, StructuredGenerationFailure):
         return None, "output remained invalid after one repair attempt", cache_key
-    interpretation = LogicalUnitInterpretation.model_validate(
-        _sanitize_generated_payload(generated.value.model_dump(mode="python"))
+    interpretation = _finalize_logical_unit_draft(
+        generated.value,
+        application_id=bundle.application_id,
+        logical_unit_id=expected_logical_unit_id,
+        source_bundle_sha256=source_bundle_sha256,
+        provenance=provenance,
     )
     if cache is not None:
-        cache.put(cache_key, interpretation.model_dump(mode="json"))
+        cache.put(cache_key, generated.value.model_dump(mode="json"))
     return interpretation, None, cache_key
 
 
@@ -2582,34 +2564,17 @@ def _provider_progress(
 
 def _unit_response_model(
     *,
-    application_id: str,
-    logical_unit_id: str,
-    source_bundle_sha256: str,
-    provenance: ModelProvenance,
     allowed_evidence_ids: tuple[str, ...],
     allowed_object_ids: tuple[str, ...],
     allowed_interaction_ids: tuple[str, ...],
-) -> type[LogicalUnitInterpretation]:
+) -> type[_LogicalUnitDraft]:
     evidence = frozenset(allowed_evidence_ids)
     objects = frozenset(allowed_object_ids)
     interactions = frozenset(allowed_interaction_ids)
 
-    class GroundedLogicalUnitInterpretation(LogicalUnitInterpretation):
-        @model_validator(mode="before")
-        @classmethod
-        def accept_json_arrays(cls, value: Any) -> Any:
-            return _logical_json_arrays_to_tuples(value)
-
+    class GroundedLogicalUnitDraft(_LogicalUnitDraft):
         @model_validator(mode="after")
         def validate_grounding(self) -> Self:
-            if self.application_id != application_id:
-                raise ValueError("logical interpretation belongs to another application")
-            if self.logical_unit_id != logical_unit_id:
-                raise ValueError("logical interpretation has an unknown logical-unit ID")
-            if self.source_bundle_sha256 != source_bundle_sha256:
-                raise ValueError("logical interpretation cites another evidence bundle")
-            if self.provenance != provenance:
-                raise ValueError("logical interpretation provenance does not match this run")
             if not set(self.evidence_ids) <= evidence:
                 raise ValueError("logical interpretation cites non-terminal or unknown evidence")
             if not set(self.called_object_ids) <= objects:
@@ -2618,22 +2583,60 @@ def _unit_response_model(
                 raise ValueError("logical interpretation cites an unknown interaction")
             return self
 
-    return GroundedLogicalUnitInterpretation
+    return GroundedLogicalUnitDraft
+
+
+def _finalize_logical_unit_draft(
+    draft: _LogicalUnitDraft,
+    *,
+    application_id: str,
+    logical_unit_id: str,
+    source_bundle_sha256: str,
+    provenance: ModelProvenance,
+) -> LogicalUnitInterpretation:
+    """Attach authoritative run fields that Qwen must never reproduce or alter."""
+
+    return LogicalUnitInterpretation(
+        application_id=application_id,
+        logical_unit_id=logical_unit_id,
+        source_bundle_sha256=source_bundle_sha256,
+        purpose=draft.purpose,
+        business_entities=draft.business_entities,
+        workflow_actions=draft.workflow_actions,
+        datasource_interaction_ids=draft.datasource_interaction_ids,
+        called_object_ids=draft.called_object_ids,
+        generated_outputs=draft.generated_outputs,
+        user_interactions=draft.user_interactions,
+        important_business_terms=draft.important_business_terms,
+        uncertainties=draft.uncertainties,
+        evidence_ids=draft.evidence_ids,
+        provenance=provenance,
+    )
+
+
+def _logical_unit_as_draft_payload(
+    interpretation: LogicalUnitInterpretation,
+) -> dict[str, Any]:
+    return _LogicalUnitDraft(
+        purpose=interpretation.purpose,
+        business_entities=interpretation.business_entities,
+        workflow_actions=interpretation.workflow_actions,
+        datasource_interaction_ids=interpretation.datasource_interaction_ids,
+        called_object_ids=interpretation.called_object_ids,
+        generated_outputs=interpretation.generated_outputs,
+        user_interactions=interpretation.user_interactions,
+        important_business_terms=interpretation.important_business_terms,
+        uncertainties=interpretation.uncertainties,
+        evidence_ids=interpretation.evidence_ids,
+    ).model_dump(mode="json")
 
 
 def _unit_batch_response_model(
     *,
-    application_id: str,
     units: tuple[_BatchableLogicalUnit, ...],
-    source_bundle_sha256: str,
-    provenance: ModelProvenance,
 ) -> type[_LogicalUnitBatchOutput]:
     validators = {
         item.plan.logical_unit_id: _unit_response_model(
-            application_id=application_id,
-            logical_unit_id=item.plan.logical_unit_id,
-            source_bundle_sha256=source_bundle_sha256,
-            provenance=provenance,
             allowed_evidence_ids=item.plan.allowed_evidence_ids,
             allowed_object_ids=item.plan.allowed_object_ids,
             allowed_interaction_ids=item.plan.allowed_interaction_ids,
@@ -2652,7 +2655,11 @@ def _unit_batch_response_model(
                 )
             for interpretation in self.interpretations:
                 validators[interpretation.logical_unit_id].model_validate(
-                    interpretation.model_dump(mode="python")
+                    {
+                        key: value
+                        for key, value in interpretation.model_dump(mode="python").items()
+                        if key != "logical_unit_id"
+                    }
                 )
             object.__setattr__(
                 self,
@@ -2733,7 +2740,10 @@ def _logical_json_arrays_to_tuples(value: Any) -> Any:
     ):
         if isinstance(result.get(name), list):
             result[name] = tuple(result[name])
-    result["provenance"] = _provenance_json_arrays_to_tuples(result.get("provenance"))
+    if "provenance" in result:
+        result["provenance"] = _provenance_json_arrays_to_tuples(
+            result.get("provenance")
+        )
     return result
 
 

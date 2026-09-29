@@ -188,9 +188,13 @@ class _PipelineProvider:
             return self._logical_response(payload)
         if stage == "logical_unit_batch":
             return {
-                "schema_version": "logical-unit-batch-output-v1",
+                "schema_version": "logical-unit-batch-draft-v1",
                 "interpretations": [
-                    self._logical_response(unit) for unit in payload["units"]
+                    {
+                        **self._logical_response(unit),
+                        "logical_unit_id": unit["logical_unit"]["output_id"],
+                    }
+                    for unit in payload["units"]
                 ],
             }
         if stage in {
@@ -204,10 +208,9 @@ class _PipelineProvider:
         raise AssertionError(f"unexpected stage: {stage}")
 
     def _logical_response(self, payload: dict[str, Any]) -> dict[str, Any]:
-        expected = payload["expected_output"]
         unit = payload["logical_unit"]
         kind = unit["kind"]
-        key = ("unit", expected["logical_unit_id"])
+        key = ("unit", unit["output_id"])
         attempt = self._attempts.get(key, 0) + 1
         self._attempts[key] = attempt
         called_ids: list[str] = []
@@ -219,7 +222,7 @@ class _PipelineProvider:
         allowed = payload["allowed_ids"]
         interaction_ids = allowed["datasource_interaction_ids"]
         return {
-            **expected,
+            "schema_version": "logical-unit-draft-v1",
             "purpose": self.leaked_text
             or ("Insufficient evidence; abstain." if kind == "macro" else "Grounded purpose"),
             "business_entities": [],
@@ -722,7 +725,7 @@ def test_small_related_units_are_batched_under_the_measured_prompt_budget() -> N
     assert batch_calls
     assert any(len(item["payload"]["units"]) > 1 for item in batch_calls)
     batched_ids = {
-        unit["expected_output"]["logical_unit_id"]
+        unit["logical_unit"]["output_id"]
         for item in batch_calls
         for unit in item["payload"]["units"]
     }
@@ -731,6 +734,19 @@ def test_small_related_units_are_batched_under_the_measured_prompt_budget() -> N
         item.interpretation is not None
         for item in result.unit_results
         if item.logical_unit_id in batched_ids
+    )
+    unit_schema = next(
+        item["schema"]
+        for item in provider.calls
+        if item["payload"]["stage"] == "logical_unit_batch"
+    )
+    serialized_schema = json.dumps(unit_schema, sort_keys=True)
+    assert "source_bundle_sha256" not in serialized_schema
+    assert "model_manifest_sha256" not in serialized_schema
+    assert all(
+        "expected_output" not in unit
+        for item in batch_calls
+        for unit in item["payload"]["units"]
     )
 
 
