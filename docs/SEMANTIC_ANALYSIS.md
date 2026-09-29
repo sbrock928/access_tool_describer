@@ -113,10 +113,11 @@ semantic-bearing source must end in one interpretation, a schema-valid abstentio
 skip/failure reason.
 
 Small related units may share one request only when the tokenizer-measured prompt plus reserved
-output fits the reviewed context window. Oversized units split at procedure, statement, control, or
-other logical boundaries. Every chunk is interpreted and reduced; the pipeline neither silently
-truncates a definition nor drops its tail. If an indivisible input cannot fit, the unit fails
-explicitly.
+output fits the fixed 8,192-token logical-unit operational ceiling. The model's separately enforced
+reviewed context ceiling remains 32,768 tokens. Oversized units split at procedure, statement,
+control, or other logical boundaries. Every chunk is interpreted and reduced; the pipeline neither
+silently truncates a definition nor drops its tail. If an indivisible input cannot fit, the unit
+fails explicitly.
 
 Each output claim cites supplied evidence IDs. A citation to an unknown, cross-application,
 aggregate-only, or secret-derived identifier is invalid. Technical identifiers, endpoints,
@@ -126,8 +127,8 @@ operations, objects, and dependency edges must already exist in deterministic ev
 
 Application synthesis receives every valid Stage-1 result, the authoritative dependency graph and
 datasource facts, coverage, and separately tagged owner claims. If the direct synthesis prompt is
-too large, the pipeline reduces tokenizer-fitted groups and then synthesizes those complete
-rollups—it does not silently omit units.
+larger than its fixed 16,384-token operational ceiling, the pipeline reduces tokenizer-fitted
+groups and then synthesizes those complete rollups—it does not silently omit units.
 
 Qwen may describe purpose, workflows, capabilities, modernization concerns, and uncertainty. It
 cannot rewrite technical evidence. Claims must resolve transitively through unit results to concrete

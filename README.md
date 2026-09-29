@@ -120,6 +120,12 @@ token budgets, cache results, retries, generation throughput, and a 15-second he
 messages never include prompts, generated text, object definitions, credentials, or filesystem
 paths.
 
+The reviewed Qwen context ceiling remains 32,768 tokens, but production uses smaller operational
+ceilings: 8,192 total tokens for logical-unit inference and 16,384 for application/portfolio
+synthesis, both including reserved output. This forces tokenizer-measured splitting before
+CPU-hostile near-maximum-context prefill. These fixed limits participate in model provenance and
+cache invalidation.
+
 Semantic-profile similarity candidates are disabled pending reviewed Qwen 0.5B gold-set
 calibration. Endpoint, external-object, file, and exact-code candidates remain active; reports
 qualify this limitation and suppress semantic-similarity absence claims.

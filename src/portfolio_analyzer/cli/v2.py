@@ -29,6 +29,9 @@ from portfolio_analyzer.qwen.pipeline import (
 )
 from portfolio_analyzer.qwen.provider import (
     DEFAULT_MAX_OUTPUT_TOKENS,
+    LOGICAL_UNIT_OPERATIONAL_CONTEXT_TOKENS,
+    REVIEWED_CONTEXT_TOKENS,
+    SYNTHESIS_OPERATIONAL_CONTEXT_TOKENS,
     LocalQwenProvider,
 )
 from portfolio_analyzer.redaction import redact_sensitive_text
@@ -1021,10 +1024,22 @@ def _model_provenance(provider: LocalQwenProvider) -> ModelProvenance:
         generation_parameters=(
             KeyValueFact(name="do_sample", value="false"),
             KeyValueFact(name="local_files_only", value="true"),
+            KeyValueFact(
+                name="logical_unit_context_tokens",
+                value=str(LOGICAL_UNIT_OPERATIONAL_CONTEXT_TOKENS),
+            ),
             KeyValueFact(name="max_new_tokens", value=str(DEFAULT_MAX_OUTPUT_TOKENS)),
+            KeyValueFact(
+                name="model_context_ceiling_tokens",
+                value=str(REVIEWED_CONTEXT_TOKENS),
+            ),
             KeyValueFact(name="num_beams", value="1"),
             KeyValueFact(name="safetensors_only", value="true"),
             KeyValueFact(name="seed", value="0"),
+            KeyValueFact(
+                name="synthesis_context_tokens",
+                value=str(SYNTHESIS_OPERATIONAL_CONTEXT_TOKENS),
+            ),
             KeyValueFact(name="trust_remote_code", value="false"),
         ),
     )

@@ -32,7 +32,9 @@ from portfolio_analyzer.semantic.model_store import (
 )
 
 DEFAULT_MAX_OUTPUT_TOKENS = 1_024
-_REVIEWED_CONTEXT_TOKENS = 32_768
+REVIEWED_CONTEXT_TOKENS = 32_768
+LOGICAL_UNIT_OPERATIONAL_CONTEXT_TOKENS = 8_192
+SYNTHESIS_OPERATIONAL_CONTEXT_TOKENS = 16_384
 _SCHEMA_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}\Z")
 _CHATML_CONTROL_TOKENS = ("<|im_start|>", "<|im_end|>", "<|endoftext|>")
 
@@ -56,10 +58,20 @@ class PromptBudget:
     prompt_tokens: int
     reserved_output_tokens: int
     context_tokens: int
+    operational_context_tokens: int | None = None
+
+    @property
+    def effective_context_tokens(self) -> int:
+        if self.operational_context_tokens is None:
+            return self.context_tokens
+        return min(self.context_tokens, self.operational_context_tokens)
 
     @property
     def fits(self) -> bool:
-        return self.prompt_tokens + self.reserved_output_tokens <= self.context_tokens
+        return (
+            self.prompt_tokens + self.reserved_output_tokens
+            <= self.effective_context_tokens
+        )
 
 
 class QwenJsonProvider(Protocol):
@@ -266,13 +278,15 @@ class LocalQwenProvider:
         )
         if not budget.fits:
             raise QwenPromptBudgetError(
-                "Complete prompt and reserved output exceed the model token budget "
+                "Complete prompt and reserved output exceed the operational token budget "
                 f"({budget.prompt_tokens} + {budget.reserved_output_tokens} > "
-                f"{budget.context_tokens}); split the logical unit before inference"
+                f"{budget.effective_context_tokens}); split the logical unit before inference"
             )
         self.progress.detail(
             f"Prompt ready for {schema_name}; tokens={prompt_tokens}; "
-            f"reserved_output={max_output_tokens}; context={budget.context_tokens}"
+            f"reserved_output={max_output_tokens}; "
+            f"operational_context={budget.effective_context_tokens}; "
+            f"model_context={budget.context_tokens}"
         )
         tokenizer = self._tokenizer
         model = self._model
@@ -318,7 +332,8 @@ class LocalQwenProvider:
             self.progress.detail(
                 f"Generation {generation_id}: starting {schema_name}; "
                 f"prompt_tokens={prompt_tokens}; reserved_output_tokens={max_output_tokens}; "
-                f"context_tokens={budget.context_tokens}"
+                f"operational_context_tokens={budget.effective_context_tokens}; "
+                f"model_context_tokens={budget.context_tokens}"
             )
             heartbeat.start()
             try:
@@ -403,6 +418,7 @@ class LocalQwenProvider:
                 prompt_tokens=prompt_tokens,
                 reserved_output_tokens=max_output_tokens,
                 context_tokens=context_tokens,
+                operational_context_tokens=_operational_context_tokens(schema_name),
             )
             return inputs, prompt_tokens, budget
         except Exception as exc:
@@ -582,7 +598,7 @@ def _input_token_count(inputs: Any) -> int:
 
 
 def _context_window_tokens(tokenizer: Any, model: Any) -> int:
-    candidates = [_REVIEWED_CONTEXT_TOKENS]
+    candidates = [REVIEWED_CONTEXT_TOKENS]
     for value in (
         getattr(getattr(model, "config", None), "max_position_embeddings", None),
         getattr(tokenizer, "model_max_length", None),
@@ -590,6 +606,12 @@ def _context_window_tokens(tokenizer: Any, model: Any) -> int:
         if isinstance(value, int) and not isinstance(value, bool) and 0 < value <= 1_000_000:
             candidates.append(value)
     return min(candidates)
+
+
+def _operational_context_tokens(schema_name: str) -> int:
+    if schema_name in {"ApplicationInterpretation", "PortfolioAnalysis"}:
+        return SYNTHESIS_OPERATIONAL_CONTEXT_TOKENS
+    return LOGICAL_UNIT_OPERATIONAL_CONTEXT_TOKENS
 
 
 def _move_inputs(inputs: Any, device: str) -> Mapping[str, Any]:

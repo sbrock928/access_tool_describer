@@ -447,8 +447,46 @@ def test_provider_exposes_exact_non_generating_prompt_measurement(
     assert budget.prompt_tokens == len(tokenizer.prompts[0])
     assert budget.reserved_output_tokens == 64
     assert budget.context_tokens == 10_000
+    assert budget.operational_context_tokens == 8_192
+    assert budget.effective_context_tokens == 8_192
     assert budget.fits is True
     assert model.generate_calls == []
+
+
+def test_logical_unit_operational_ceiling_blocks_cpu_hostile_prefill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tokenizer, model, _, _ = _install_fake_runtime(
+        monkeypatch,
+        tmp_path,
+        responses=['{"ok":true}'],
+        context_tokens=32_768,
+    )
+    provider = LocalQwenProvider(_runtime(tmp_path))
+    large_user_payload = "x" * 8_500
+
+    with pytest.raises(QwenPromptBudgetError, match="operational token budget"):
+        provider.complete_json(
+            system="Analyze all supplied evidence.",
+            user=large_user_payload,
+            schema_name="LogicalUnitInterpretation",
+            schema={"type": "object"},
+            max_output_tokens=64,
+        )
+
+    assert model.generate_calls == []
+    synthesis_budget = provider.measure_prompt(
+        system="Synthesize all supplied interpretations.",
+        user=large_user_payload,
+        schema_name="ApplicationInterpretation",
+        schema={"type": "object"},
+        max_output_tokens=64,
+    )
+    assert synthesis_budget.context_tokens == 32_768
+    assert synthesis_budget.operational_context_tokens == 16_384
+    assert synthesis_budget.fits
+    assert tokenizer.tokenize_kwargs
 
 
 @pytest.mark.parametrize(

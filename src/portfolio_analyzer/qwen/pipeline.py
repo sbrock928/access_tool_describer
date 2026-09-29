@@ -46,11 +46,11 @@ from portfolio_analyzer.v2.models import (
     StrictModel,
 )
 
-TWO_STAGE_PROMPT_VERSION = "qwen-two-stage-v3"
-UNIT_PROMPT_VERSION = "qwen-logical-unit-v3"
-UNIT_BATCH_PROMPT_VERSION = "qwen-logical-unit-batch-v1"
-APPLICATION_PROMPT_VERSION = "qwen-application-synthesis-v2"
-PORTFOLIO_PROMPT_VERSION = "qwen-portfolio-interpretation-v2"
+TWO_STAGE_PROMPT_VERSION = "qwen-two-stage-v4"
+UNIT_PROMPT_VERSION = "qwen-logical-unit-v4"
+UNIT_BATCH_PROMPT_VERSION = "qwen-logical-unit-batch-v2"
+APPLICATION_PROMPT_VERSION = "qwen-application-synthesis-v3"
+PORTFOLIO_PROMPT_VERSION = "qwen-portfolio-interpretation-v3"
 DEFAULT_DEFINITION_CHARS = 12_000
 DEFAULT_PORTFOLIO_BATCH_SIZE = 25
 DEFAULT_LOGICAL_UNIT_BATCH_SIZE = 4
@@ -2815,6 +2815,10 @@ def _measure_prompt_budget(
         budget.prompt_tokens < 1
         or budget.reserved_output_tokens != max_output_tokens
         or budget.context_tokens < 1
+        or (
+            budget.operational_context_tokens is not None
+            and budget.operational_context_tokens < 1
+        )
     ):
         return None, "provider returned an invalid prompt-budget measurement"
     return budget, None
@@ -2843,7 +2847,7 @@ def _prompt_budget_failure(
         return (
             "tokenizer-measured prompt budget exceeded "
             f"({budget.prompt_tokens} + {budget.reserved_output_tokens} > "
-            f"{budget.context_tokens})"
+            f"{budget.effective_context_tokens}; model ceiling={budget.context_tokens})"
         )
     return None
 

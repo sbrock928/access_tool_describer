@@ -119,6 +119,13 @@ portfolio synthesis. CPU inference can therefore take substantial time on a larg
 process checkpoints applications so a later compatible invocation can reuse them. `--force`
 deliberately recomputes selected current evidence.
 
+The model supports 32,768 tokens, but production inference does not attempt that full window on a
+CPU. Logical-unit requests are capped at 8,192 total tokens and synthesis requests at 16,384,
+including reserved output. Larger requests split before generation. In verbose mode, a heartbeat
+with zero generated tokens means the model is still performing first-token prefill; after this
+policy change, a logical-unit prompt near 30,000 tokens indicates that the running process predates
+the current code and should be stopped and restarted.
+
 An invalid JSON/schema response receives exactly one repair attempt. A second invalid response is
 an explicit required-unit or synthesis failure. A token-budget error means an indivisible logical
 source or synthesis input could not fit without unsafe truncation; the pipeline does not omit it.
