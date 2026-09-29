@@ -624,3 +624,35 @@ def test_save_as_text_gate_accepts_attested_unprivileged_worker(
     monkeypatch.setenv("ACCESS_ANALYZER_MACROS_DISABLED", "1")
 
     assert EnvironmentExportSafetyGate().evaluate().permitted
+
+
+def test_query_progress_precedes_every_com_property_and_parameter_enumeration(
+    tmp_path: Path,
+) -> None:
+    messages: list[str] = []
+    reads: list[str] = []
+
+    class Parameter:
+        def __getattr__(self, name: str) -> str:
+            assert messages[-1] == f"Reading DAO property: QueryDef[0].Parameters[0].{name}"
+            reads.append("parameter." + name)
+            return {"Name": "pId", "Type": "4", "Direction": "1"}[name]
+
+    class Query:
+        def __getattr__(self, name: str) -> Any:
+            reads.append(name)
+            if name == "Parameters":
+                assert messages[-1] == "Enumerating DAO parameters: QueryDef[0].Parameters"
+                return [Parameter()]
+            assert messages[-1] == f"Reading DAO property: QueryDef[0].{name}"
+            return {"Name": "qSynthetic", "SQL": "SELECT 1", "Type": "0", "Attributes": "0",
+                    "Connect": "", "ReturnsRecords": "True", "ODBCTimeout": "60",
+                    "MaxRecords": "0"}[name]
+
+    errors: list[str] = []
+    result = _extractor(tmp_path)._query_object(Query(), 0, errors, messages.append)
+    assert errors == []
+    assert result.definition == "SELECT 1"
+    assert json.loads(result.properties["parameters"])[0]["name"] == "pId"
+    assert reads[-4:] == ["Parameters", "parameter.Name", "parameter.Type", "parameter.Direction"]
+    assert "SELECT 1" not in "\n".join(messages)

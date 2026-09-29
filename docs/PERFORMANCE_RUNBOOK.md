@@ -361,3 +361,25 @@ report. Long/many reasons are bounded; full saved details remain in the local ru
 Subsequent failed `extract` runs now print the same local failure details automatically.
 Inspect the first concrete error before retrying; missing-snapshot errors describe the
 consequence and may not identify its cause. No extraction security settings are changed.
+
+### Extraction hits the 300-second deadline
+
+The extraction deadline is a total per-artifact wall-clock limit, not a per-query limit.
+An error naming the last query does not prove that query executed or that its SQL read
+caused the stall. DAO metadata properties, parameter enumeration, collection iteration,
+database closing, and export gating can follow a query progress message. Updated progress
+marks query COM properties and parameter reads before access, query enumeration, DAO
+closing, and the export safety check. The timeout error says “last reported operation.”
+
+The default remains 300 seconds. For a controlled retry on a larger application, an
+operator can choose a limit from 30 to 3,600 seconds, for example:
+
+```powershell
+portfolio-analyzer extract --workspace .\workspace-v2 --application "YOUR_APPLICATION_ID" --timeout-seconds 900
+```
+
+This permits up to 15 minutes for each required artifact in that application. It does
+not fix a hung COM call, skip evidence, or change read-only DAO/export security policy.
+Successful compatible extractions are reused; `--force` is not needed to retry failed
+artifacts. If it times out again, inspect the newly recorded operation before extending
+the deadline further. The missing-snapshot message is a consequence of the failed worker.

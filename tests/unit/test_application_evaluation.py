@@ -388,3 +388,28 @@ def test_extraction_status_does_not_display_integrity_exception(
     assert "No exception content displayed" in result.output
     assert "PRIVATE" not in result.output
     assert "HIDDEN" not in result.output
+
+
+@pytest.mark.parametrize("seconds", [None, 900])
+def test_extraction_timeout_option_reaches_worker(
+    environment: dict[str, Any], monkeypatch: pytest.MonkeyPatch, seconds: int | None,
+) -> None:
+    original = v2.run_extraction_with_timeout
+    limits = []
+
+    def extract(*args: Any, **kwargs: Any) -> Any:
+        limits.append(kwargs["timeout_seconds"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(v2, "run_extraction_with_timeout", extract)
+    command = ["extract", "--workspace", str(environment["workspace"]), "--force"]
+    if seconds is not None:
+        command += ["--timeout-seconds", str(seconds)]
+    result = CliRunner().invoke(v2.app, command)
+    assert result.exit_code == 0, result.output
+    assert limits == [seconds or 300]
+    for invalid in (0, 29, 3601):
+        assert CliRunner().invoke(v2.app, command[:4] + [
+            "--timeout-seconds", str(invalid),
+        ]).exit_code != 0
+    assert len(limits) == 1

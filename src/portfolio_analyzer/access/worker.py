@@ -70,7 +70,8 @@ def run_extraction_with_timeout(
             _terminate_worker_tree(process)
             operation = last_progress or "before the first extraction checkpoint"
             raise AccessExtractionTimeoutError(
-                f"Extraction exceeded {timeout_seconds} seconds during: {operation}"
+                f"Extraction exceeded {timeout_seconds} seconds total; "
+                f"last reported operation: {operation}"
             )
         if worker_result is None:
             if result_path.exists():

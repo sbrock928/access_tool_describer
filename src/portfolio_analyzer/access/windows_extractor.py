@@ -128,6 +128,7 @@ class WindowsAccessExtractor:
             ) from exc
         finally:
             if database is not None:
+                _progress(progress, "Closing read-only DAO database")
                 with suppress(Exception):
                     database.Close()
             database = None
@@ -136,6 +137,7 @@ class WindowsAccessExtractor:
         if sha256_file(staged_database_path) != staged_sha256:
             raise AccessExtractionError("DAO metadata extraction modified the staged artifact")
 
+        _progress(progress, "Checking SaveAsText safety gate")
         decision = self.export_gate.evaluate()
         if decision.permitted:
             export_outcome = self._run_export_lane(
@@ -406,6 +408,7 @@ class WindowsAccessExtractor:
             raise AccessExtractionError(
                 f"DAO TableDefs enumeration failed: {_safe_error(exc)}"
             ) from exc
+        _progress(progress, "Enumerating DAO query definitions")
         try:
             for index, query in enumerate(database.QueryDefs):
                 coverage.querydef_enumerated_count += 1
@@ -418,6 +421,7 @@ class WindowsAccessExtractor:
                     )
                 else:
                     coverage.querydef_succeeded_count += 1
+                _progress(progress, "Enumerating next DAO query definition")
         except Exception as exc:
             raise AccessExtractionError(
                 f"DAO QueryDefs enumeration failed: {_safe_error(exc)}"
@@ -474,16 +478,18 @@ class WindowsAccessExtractor:
         progress: Callable[[str], None] | None,
     ) -> AccessExtractedObject:
         context = f"QueryDef[{index}]"
-        name = _property(query, "Name", errors, context, default=f"<query-{index}>")
-        sql = _property(query, "SQL", errors, context)
-        type_code = _property(query, "Type", errors, context, default="-1")
+        name = _property(
+            query, "Name", errors, context, progress=progress, default=f"<query-{index}>",
+        )
+        sql = _property(query, "SQL", errors, context, progress=progress)
+        type_code = _property(query, "Type", errors, context, progress=progress, default="-1")
         error_count = len(errors)
-        connect = _property(query, "Connect", errors, context)
+        connect = _property(query, "Connect", errors, context, progress=progress)
         connect_available = len(errors) == error_count
-        returns_records = _property(query, "ReturnsRecords", errors, context)
-        odbc_timeout = _property(query, "ODBCTimeout", errors, context)
-        max_records = _property(query, "MaxRecords", errors, context)
-        attributes = _property(query, "Attributes", errors, context, default="0")
+        returns_records = _property(query, "ReturnsRecords", errors, context, progress=progress)
+        odbc_timeout = _property(query, "ODBCTimeout", errors, context, progress=progress)
+        max_records = _property(query, "MaxRecords", errors, context, progress=progress)
+        attributes = _property(query, "Attributes", errors, context, progress=progress, default="0")
         hidden, system = _dao_object_flags(
             attributes,
             name,
@@ -504,7 +510,7 @@ class WindowsAccessExtractor:
             "max_records": max_records,
             "attributes": attributes,
             "parameters": json.dumps(
-                _parameter_metadata(query, errors, context),
+                _parameter_metadata(query, errors, context, progress=progress),
                 sort_keys=True,
                 separators=(",", ":"),
             ),
@@ -590,7 +596,9 @@ def _property(
     context: str,
     *,
     default: str = "",
+    progress: Callable[[str], None] | None = None,
 ) -> str:
+    _progress(progress, f"Reading DAO property: {context}.{property_name}")
     try:
         value = getattr(instance, property_name)
         return default if value is None else str(value)
@@ -620,21 +628,30 @@ def _local_field_metadata(instance: Any, errors: list[str], context: str) -> lis
     return fields
 
 
-def _parameter_metadata(instance: Any, errors: list[str], context: str) -> list[dict[str, str]]:
+def _parameter_metadata(
+    instance: Any, errors: list[str], context: str, *,
+    progress: Callable[[str], None] | None = None,
+) -> list[dict[str, str]]:
     parameters: list[dict[str, str]] = []
+    _progress(progress, f"Enumerating DAO parameters: {context}.Parameters")
     try:
         for index, parameter in enumerate(instance.Parameters):
             parameter_context = f"{context}.Parameters[{index}]"
             parameters.append(
                 {
                     "ordinal": str(index),
-                    "name": _property(parameter, "Name", errors, parameter_context),
-                    "type": _property(parameter, "Type", errors, parameter_context),
+                    "name": _property(
+                        parameter, "Name", errors, parameter_context, progress=progress,
+                    ),
+                    "type": _property(
+                        parameter, "Type", errors, parameter_context, progress=progress,
+                    ),
                     "direction": _property(
-                        parameter, "Direction", errors, parameter_context
+                        parameter, "Direction", errors, parameter_context, progress=progress
                     ),
                 }
             )
+            _progress(progress, f"Enumerating next DAO parameter: {context}.Parameters")
     except Exception as exc:
         errors.append(f"{context}.Parameters enumeration failed: {_safe_error(exc)}")
     return parameters

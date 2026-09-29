@@ -176,6 +176,10 @@ def extract(
         None, "--application", help="Extract one inventory application ID."
     ),
     force: bool = typer.Option(False, help="Re-extract selected current artifacts."),
+    timeout_seconds: int = typer.Option(
+        ACCESS_EXTRACTION_TIMEOUT_SECONDS, min=30, max=3600,
+        help="Total extraction time limit per artifact, in seconds (not per query).",
+    ),
 ) -> None:
     """Extract static Access metadata from verified staged copies only."""
 
@@ -251,7 +255,7 @@ def extract(
                             extraction_artifact,
                             destination,
                             settings,
-                            timeout_seconds=ACCESS_EXTRACTION_TIMEOUT_SECONDS,
+                            timeout_seconds=timeout_seconds,
                             on_progress=_progress_reporter(application_id),
                         )
                         snapshot = snapshot_from_extraction_result(
