@@ -11,9 +11,9 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Literal, Protocol, Self
+from typing import Annotated, Any, Literal, Protocol, Self, cast
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from portfolio_analyzer.progress import AnalysisProgressReporter
 from portfolio_analyzer.qwen.provider import (
@@ -35,23 +35,26 @@ from portfolio_analyzer.v2.models import (
     AccessObjectType,
     ApplicationEvidenceBundle,
     ApplicationInterpretation,
+    ApplicationSimilarity,
     Confidence,
     EvidenceOrigin,
     InterpretationKind,
+    InterpretiveFinding,
     LogicalUnitInterpretation,
     ModelProvenance,
     NonEmptyString,
     PortfolioAnalysis,
     PortfolioCandidate,
+    PortfolioFinding,
     QueryEvidence,
     StrictModel,
 )
 
-TWO_STAGE_PROMPT_VERSION = "qwen-two-stage-v5"
+TWO_STAGE_PROMPT_VERSION = "qwen-two-stage-v6"
 UNIT_PROMPT_VERSION = "qwen-logical-unit-v5"
 UNIT_BATCH_PROMPT_VERSION = "qwen-logical-unit-batch-v3"
-APPLICATION_PROMPT_VERSION = "qwen-application-synthesis-v3"
-PORTFOLIO_PROMPT_VERSION = "qwen-portfolio-interpretation-v3"
+APPLICATION_PROMPT_VERSION = "qwen-application-synthesis-v4"
+PORTFOLIO_PROMPT_VERSION = "qwen-portfolio-interpretation-v4"
 DEFAULT_DEFINITION_CHARS = 12_000
 DEFAULT_PORTFOLIO_BATCH_SIZE = 25
 DEFAULT_LOGICAL_UNIT_BATCH_SIZE = 4
@@ -215,6 +218,64 @@ class _LogicalUnitBatchOutput(StrictModel):
                 _logical_json_arrays_to_tuples(item) for item in interpretations
             )
         return normalized
+
+
+class _InterpretiveFindingDraft(StrictModel):
+    kind: InterpretationKind
+    title: NonEmptyString
+    explanation: NonEmptyString
+    confidence: Confidence
+    evidence_ids: tuple[NonEmptyString, ...]
+    claim_ids: tuple[NonEmptyString, ...] = ()
+    uncertainties: tuple[NonEmptyString, ...] = ()
+
+
+class _ApplicationDraft(StrictModel):
+    schema_version: Literal["application-draft-v1"] = "application-draft-v1"
+    summary: NonEmptyString
+    business_purpose: NonEmptyString
+    major_workflows: tuple[NonEmptyString, ...] = ()
+    capabilities: tuple[NonEmptyString, ...] = ()
+    modernization_concerns: tuple[NonEmptyString, ...] = ()
+    uncertainties: tuple[NonEmptyString, ...] = ()
+    findings: tuple[_InterpretiveFindingDraft, ...] = ()
+    evidence_ids: tuple[NonEmptyString, ...]
+    claim_ids: tuple[NonEmptyString, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_json_arrays(cls, value: Any) -> Any:
+        return _application_json_arrays_to_tuples(value)
+
+
+class _ApplicationSimilarityDraft(StrictModel):
+    source_application_id: NonEmptyString
+    target_application_id: NonEmptyString
+    score: Annotated[float, Field(ge=0.0, le=1.0)]
+    shared_features: tuple[NonEmptyString, ...]
+    evidence_ids: tuple[NonEmptyString, ...]
+
+
+class _PortfolioFindingDraft(StrictModel):
+    kind: InterpretationKind
+    title: NonEmptyString
+    narrative: NonEmptyString
+    application_ids: tuple[NonEmptyString, ...]
+    evidence_ids: tuple[NonEmptyString, ...]
+    confidence: Confidence
+    uncertainties: tuple[NonEmptyString, ...] = ()
+
+
+class _PortfolioDraft(StrictModel):
+    schema_version: Literal["portfolio-draft-v1"] = "portfolio-draft-v1"
+    similarities: tuple[_ApplicationSimilarityDraft, ...] = ()
+    findings: tuple[_PortfolioFindingDraft, ...] = ()
+    uncertainties: tuple[NonEmptyString, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_json_arrays(cls, value: Any) -> Any:
+        return _portfolio_json_arrays_to_tuples(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -882,9 +943,13 @@ def _synthesize_application(
 @dataclass(frozen=True, slots=True)
 class _ApplicationRequest:
     payload: dict[str, Any]
-    response_type: type[ApplicationInterpretation]
+    response_type: type[_ApplicationDraft]
     system: str
     cache_key: InferenceCacheKey
+    application_id: str
+    source_bundle_sha256: str
+    logical_unit_interpretation_ids: tuple[str, ...]
+    provenance: ModelProvenance
 
 
 def _application_request(
@@ -900,21 +965,11 @@ def _application_request(
 ) -> _ApplicationRequest:
     logical_ids = _application_input_logical_ids(inputs)
     response_type = _application_response_model(
-        application_id=bundle.application_id,
-        source_bundle_sha256=source_bundle_sha256,
-        logical_unit_interpretation_ids=logical_ids,
-        provenance=provenance,
         allowed_evidence_ids=terminal_evidence_ids,
         allowed_claim_ids=claim_ids,
     )
     payload: dict[str, Any] = {
         "stage": stage,
-        "expected_output": {
-            "application_id": bundle.application_id,
-            "source_bundle_sha256": source_bundle_sha256,
-            "logical_unit_interpretation_ids": logical_ids,
-            "provenance": provenance.model_dump(mode="json"),
-        },
         "application": {
             "application_id": bundle.application_id,
             "application_name": bundle.application_name,
@@ -943,11 +998,18 @@ def _application_request(
     }
     if inputs and isinstance(inputs[0], ApplicationInterpretation):
         payload["application_interpretations"] = [
-            item.model_dump(mode="json") for item in inputs
+            _application_as_draft_payload(cast(ApplicationInterpretation, item))
+            for item in inputs
         ]
     else:
         payload["logical_unit_interpretations"] = [
-            item.model_dump(mode="json") for item in inputs
+            {
+                "logical_unit_interpretation_id": item.interpretation_id,
+                **_logical_unit_as_draft_payload(
+                    cast(LogicalUnitInterpretation, item)
+                ),
+            }
+            for item in inputs
         ]
     reduction = stage == "application_synthesis_reduction"
     system = _application_system_prompt(reduction=reduction)
@@ -963,6 +1025,10 @@ def _application_request(
             provenance=provenance,
             max_output_tokens=max_output_tokens,
         ),
+        application_id=bundle.application_id,
+        source_bundle_sha256=source_bundle_sha256,
+        logical_unit_interpretation_ids=logical_ids,
+        provenance=provenance,
     )
 
 
@@ -1077,9 +1143,7 @@ def _generate_application_request(
             )
             grounded = request.response_type.model_validate(cached)
             return (
-                ApplicationInterpretation.model_validate(
-                    _sanitize_generated_payload(grounded.model_dump(mode="python"))
-                ),
+                _finalize_application_draft(grounded, request),
                 None,
             )
         _provider_progress(provider).detail("Application synthesis cache miss")
@@ -1106,11 +1170,9 @@ def _generate_application_request(
         return None, f"provider failure: {exc}"
     if isinstance(generated, StructuredGenerationFailure):
         return None, "output remained invalid after one repair attempt"
-    interpretation = ApplicationInterpretation.model_validate(
-        _sanitize_generated_payload(generated.value.model_dump(mode="python"))
-    )
+    interpretation = _finalize_application_draft(generated.value, request)
     if cache is not None:
-        cache.put(request.cache_key, interpretation.model_dump(mode="json"))
+        cache.put(request.cache_key, generated.value.model_dump(mode="json"))
     return interpretation, None
 
 
@@ -1149,7 +1211,6 @@ def analyze_portfolio_candidates(
         evidence_bundles,
         provider,
         context=context,
-        provenance=provenance,
         max_output_tokens=max_output_tokens,
     )
     if batching_failure is not None:
@@ -1170,7 +1231,6 @@ def analyze_portfolio_candidates(
             context,
             batch_index=batch_index,
             batch_count=len(batches),
-            provenance=provenance,
         )
         analysis, failure, cache_key = _generate_portfolio_analysis(
             provider,
@@ -1263,12 +1323,8 @@ def _reduce_portfolio_analyses(
             )
             payload = {
                 "stage": "portfolio_reduction",
-                "expected_output": {
-                    "application_interpretation_sha256s": context.profile_sha256s,
-                    "provenance": provenance.model_dump(mode="json"),
-                },
                 "batch_analyses": [
-                    item.analysis.model_dump(mode="json") for item in group
+                    _portfolio_as_draft_payload(item.analysis) for item in group
                 ],
                 "candidate_registry": [
                     item.model_dump(mode="json") for item in candidates
@@ -1301,7 +1357,6 @@ def _fit_portfolio_candidate_batches(
     provider: BudgetedQwenJsonProvider,
     *,
     context: _PortfolioContext,
-    provenance: ModelProvenance,
     max_output_tokens: int,
 ) -> tuple[tuple[tuple[PortfolioCandidate, ...], ...], str | None]:
     """Adapt candidate-boundary batches until each exact schema-bearing prompt fits."""
@@ -1316,12 +1371,10 @@ def _fit_portfolio_candidate_batches(
                 context,
                 batch_index=index + 1,
                 batch_count=len(batches),
-                provenance=provenance,
             )
             response_type = _portfolio_response_model(
                 candidates=batch,
                 context=context,
-                provenance=provenance,
             )
             budget, failure = _measure_prompt_budget(
                 provider,
@@ -1483,7 +1536,6 @@ def _portfolio_payload(
     *,
     batch_index: int,
     batch_count: int,
-    provenance: ModelProvenance,
 ) -> dict[str, Any]:
     member_ids = {app for candidate in candidates for app in candidate.application_ids}
     candidate_evidence = {
@@ -1494,13 +1546,12 @@ def _portfolio_payload(
         "stage": "portfolio_candidate_interpretation",
         "batch_index": batch_index,
         "batch_count": batch_count,
-        "expected_output": {
-            "application_interpretation_sha256s": context.profile_sha256s,
-            "provenance": provenance.model_dump(mode="json"),
-        },
         "candidates": [item.model_dump(mode="json") for item in candidates],
         "application_profiles": [
-            item.model_dump(mode="json")
+            {
+                "application_id": item.application_id,
+                **_application_as_draft_payload(item),
+            }
             for item in profiles
             if item.application_id in member_ids
         ],
@@ -1542,7 +1593,6 @@ def _generate_portfolio_analysis(
     response_type = _portfolio_response_model(
         candidates=candidates,
         context=context,
-        provenance=provenance,
     )
     cache_key = _cache_key_for(
         payload=payload,
@@ -1558,8 +1608,10 @@ def _generate_portfolio_analysis(
             _provider_progress(provider).detail("Portfolio synthesis cache hit")
             grounded = response_type.model_validate(cached)
             return (
-                PortfolioAnalysis.model_validate(
-                    _sanitize_generated_payload(grounded.model_dump(mode="python"))
+                _finalize_portfolio_draft(
+                    grounded,
+                    context=context,
+                    provenance=provenance,
                 ),
                 None,
                 cache_key,
@@ -1589,11 +1641,13 @@ def _generate_portfolio_analysis(
         return None, f"provider failure: {exc}", cache_key
     if isinstance(generated, StructuredGenerationFailure):
         return None, "output remained invalid after one repair attempt", cache_key
-    analysis = PortfolioAnalysis.model_validate(
-        _sanitize_generated_payload(generated.value.model_dump(mode="python"))
+    analysis = _finalize_portfolio_draft(
+        generated.value,
+        context=context,
+        provenance=provenance,
     )
     if cache is not None:
-        cache.put(cache_key, analysis.model_dump(mode="json"))
+        cache.put(cache_key, generated.value.model_dump(mode="json"))
     return analysis, None, cache_key
 
 
@@ -1601,9 +1655,7 @@ def _portfolio_response_model(
     *,
     candidates: Sequence[PortfolioCandidate],
     context: _PortfolioContext,
-    provenance: ModelProvenance,
-) -> type[PortfolioAnalysis]:
-    profile_sha256s = frozenset(context.profile_sha256s)
+) -> type[_PortfolioDraft]:
     candidate_sets = tuple(
         (
             frozenset(item.application_ids),
@@ -1612,20 +1664,9 @@ def _portfolio_response_model(
         for item in candidates
     )
 
-    class GroundedPortfolioAnalysis(PortfolioAnalysis):
-        @model_validator(mode="before")
-        @classmethod
-        def accept_json_arrays(cls, value: Any) -> Any:
-            return _portfolio_json_arrays_to_tuples(value)
-
+    class GroundedPortfolioDraft(_PortfolioDraft):
         @model_validator(mode="after")
         def validate_grounding(self) -> Self:
-            if set(self.application_interpretation_sha256s) != profile_sha256s or len(
-                self.application_interpretation_sha256s
-            ) != len(profile_sha256s):
-                raise ValueError("portfolio output must consume every supplied application profile")
-            if self.provenance != provenance:
-                raise ValueError("portfolio provenance does not match this run")
             for similarity in self.similarities:
                 apps = frozenset(
                     (similarity.source_application_id, similarity.target_application_id)
@@ -1653,7 +1694,72 @@ def _portfolio_response_model(
                     )
             return self
 
-    return GroundedPortfolioAnalysis
+    return GroundedPortfolioDraft
+
+
+def _finalize_portfolio_draft(
+    draft: _PortfolioDraft,
+    *,
+    context: _PortfolioContext,
+    provenance: ModelProvenance,
+) -> PortfolioAnalysis:
+    similarities = tuple(
+        ApplicationSimilarity(
+            source_application_id=item.source_application_id,
+            target_application_id=item.target_application_id,
+            score=item.score,
+            shared_features=item.shared_features,
+            evidence_ids=item.evidence_ids,
+        )
+        for item in draft.similarities
+    )
+    findings = tuple(
+        PortfolioFinding(
+            kind=item.kind,
+            title=item.title,
+            narrative=item.narrative,
+            application_ids=item.application_ids,
+            evidence_ids=item.evidence_ids,
+            confidence=item.confidence,
+            uncertainties=item.uncertainties,
+        )
+        for item in draft.findings
+    )
+    return PortfolioAnalysis(
+        application_interpretation_sha256s=context.profile_sha256s,
+        similarities=similarities,
+        findings=findings,
+        uncertainties=draft.uncertainties,
+        provenance=provenance,
+    )
+
+
+def _portfolio_as_draft_payload(analysis: PortfolioAnalysis) -> dict[str, Any]:
+    return _PortfolioDraft(
+        similarities=tuple(
+            _ApplicationSimilarityDraft(
+                source_application_id=item.source_application_id,
+                target_application_id=item.target_application_id,
+                score=item.score,
+                shared_features=item.shared_features,
+                evidence_ids=item.evidence_ids,
+            )
+            for item in analysis.similarities
+        ),
+        findings=tuple(
+            _PortfolioFindingDraft(
+                kind=item.kind,
+                title=item.title,
+                narrative=item.narrative,
+                application_ids=item.application_ids,
+                evidence_ids=item.evidence_ids,
+                confidence=item.confidence,
+                uncertainties=item.uncertainties,
+            )
+            for item in analysis.findings
+        ),
+        uncertainties=analysis.uncertainties,
+    ).model_dump(mode="json")
 
 
 def _portfolio_json_arrays_to_tuples(value: Any) -> Any:
@@ -2678,35 +2784,15 @@ def _unit_batch_response_model(
 
 def _application_response_model(
     *,
-    application_id: str,
-    source_bundle_sha256: str,
-    logical_unit_interpretation_ids: tuple[str, ...],
-    provenance: ModelProvenance,
     allowed_evidence_ids: tuple[str, ...],
     allowed_claim_ids: tuple[str, ...],
-) -> type[ApplicationInterpretation]:
-    logical_ids = frozenset(logical_unit_interpretation_ids)
+) -> type[_ApplicationDraft]:
     evidence = frozenset(allowed_evidence_ids)
     claims = frozenset(allowed_claim_ids)
 
-    class GroundedApplicationInterpretation(ApplicationInterpretation):
-        @model_validator(mode="before")
-        @classmethod
-        def accept_json_arrays(cls, value: Any) -> Any:
-            return _application_json_arrays_to_tuples(value)
-
+    class GroundedApplicationDraft(_ApplicationDraft):
         @model_validator(mode="after")
         def validate_grounding(self) -> Self:
-            if self.application_id != application_id:
-                raise ValueError("application interpretation belongs to another application")
-            if self.source_bundle_sha256 != source_bundle_sha256:
-                raise ValueError("application interpretation cites another evidence bundle")
-            if self.provenance != provenance:
-                raise ValueError("application interpretation provenance does not match this run")
-            if set(self.logical_unit_interpretation_ids) != logical_ids or len(
-                self.logical_unit_interpretation_ids
-            ) != len(logical_ids):
-                raise ValueError("application interpretation must consume every valid logical unit")
             if not set(self.evidence_ids) <= evidence:
                 raise ValueError(
                     "application interpretation cites non-terminal or unknown evidence"
@@ -2720,7 +2806,74 @@ def _application_response_model(
                     raise ValueError("application finding cites an unknown owner claim")
             return self
 
-    return GroundedApplicationInterpretation
+    return GroundedApplicationDraft
+
+
+def _finalize_application_draft(
+    draft: _ApplicationDraft,
+    request: _ApplicationRequest,
+) -> ApplicationInterpretation:
+    findings = tuple(
+        InterpretiveFinding(
+            application_id=request.application_id,
+            kind=item.kind,
+            title=item.title,
+            explanation=item.explanation,
+            confidence=item.confidence,
+            evidence_ids=item.evidence_ids,
+            claim_ids=item.claim_ids,
+            uncertainties=item.uncertainties,
+        )
+        for item in draft.findings
+    )
+    return ApplicationInterpretation(
+        application_id=request.application_id,
+        source_bundle_sha256=request.source_bundle_sha256,
+        logical_unit_interpretation_ids=request.logical_unit_interpretation_ids,
+        summary=draft.summary,
+        business_purpose=draft.business_purpose,
+        major_workflows=draft.major_workflows,
+        capabilities=draft.capabilities,
+        modernization_concerns=draft.modernization_concerns,
+        uncertainties=draft.uncertainties,
+        findings=findings,
+        evidence_ids=draft.evidence_ids,
+        claim_ids=draft.claim_ids,
+        provenance=request.provenance,
+    )
+
+
+def _application_as_draft_payload(
+    interpretation: ApplicationInterpretation,
+) -> dict[str, Any]:
+    draft = _ApplicationDraft(
+        summary=interpretation.summary,
+        business_purpose=interpretation.business_purpose,
+        major_workflows=interpretation.major_workflows,
+        capabilities=interpretation.capabilities,
+        modernization_concerns=interpretation.modernization_concerns,
+        uncertainties=interpretation.uncertainties,
+        findings=tuple(
+            _InterpretiveFindingDraft(
+                kind=item.kind,
+                title=item.title,
+                explanation=item.explanation,
+                confidence=item.confidence,
+                evidence_ids=item.evidence_ids,
+                claim_ids=item.claim_ids,
+                uncertainties=item.uncertainties,
+            )
+            for item in interpretation.findings
+        ),
+        evidence_ids=interpretation.evidence_ids,
+        claim_ids=interpretation.claim_ids,
+    ).model_dump(mode="json")
+    return {
+        "covered_logical_unit_interpretation_ids": (
+            interpretation.logical_unit_interpretation_ids
+        ),
+        **draft,
+    }
 
 
 def _logical_json_arrays_to_tuples(value: Any) -> Any:
@@ -2778,7 +2931,10 @@ def _application_json_arrays_to_tuples(value: Any) -> Any:
             findings.append(finding)
     if isinstance(result.get("findings"), list):
         result["findings"] = tuple(findings)
-    result["provenance"] = _provenance_json_arrays_to_tuples(result.get("provenance"))
+    if "provenance" in result:
+        result["provenance"] = _provenance_json_arrays_to_tuples(
+            result.get("provenance")
+        )
     return result
 
 

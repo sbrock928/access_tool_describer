@@ -237,11 +237,10 @@ class _PipelineProvider:
         }
 
     def _application_response(self, payload: dict[str, Any]) -> dict[str, Any]:
-        expected = payload["expected_output"]
         allowed = payload["allowed_ids"]
         evidence_id = self.application_evidence_id or allowed["evidence_ids"][0]
         return {
-            **expected,
+            "schema_version": "application-draft-v1",
             "summary": self.leaked_text or "Grounded application summary.",
             "business_purpose": "Support a reviewed workflow.",
             "major_workflows": [],
@@ -254,7 +253,6 @@ class _PipelineProvider:
         }
 
     def _portfolio_response(self, payload: dict[str, Any]) -> dict[str, Any]:
-        expected = payload["expected_output"]
         candidates = payload.get("candidates", payload.get("candidate_registry", []))
         if self.portfolio_mode == "abstain" or not candidates:
             findings: list[dict[str, Any]] = []
@@ -283,7 +281,7 @@ class _PipelineProvider:
                 }
             ]
         return {
-            **expected,
+            "schema_version": "portfolio-draft-v1",
             "similarities": [],
             "findings": findings,
             "uncertainties": [],
@@ -777,14 +775,20 @@ def test_two_stage_pipeline_consumes_all_units_graph_datasources_coverage_and_cl
     }
     assert any(item.chunk_count > 1 for item in result.unit_results)
     assert any(call["repaired"] for call in provider.calls)
-    app_payload = next(
-        call["payload"]
+    app_call = next(
+        call
         for call in provider.calls
         if call["payload"]["stage"] == "application_synthesis"
     )
+    app_payload = app_call["payload"]
     assert len(app_payload["logical_unit_interpretations"]) == len(result.unit_results)
     assert app_payload["dependency_graph"]["edges"]
     assert app_payload["datasources"]
+    assert "expected_output" not in app_payload
+    app_schema = json.dumps(app_call["schema"], sort_keys=True)
+    assert "source_bundle_sha256" not in app_schema
+    assert "logical_unit_interpretation_ids" not in app_schema
+    assert "model_manifest_sha256" not in app_schema
     assert app_payload["coverage"]
     assert app_payload["owner_claims"]
 
@@ -1072,6 +1076,10 @@ def test_portfolio_stage_is_candidate_closed_and_bounded() -> None:
     payload = provider.calls[0]["payload"]
     assert payload["candidates"] == [candidate.model_dump(mode="json")]
     assert payload["technical_basis"] == [first.datasources[0].model_dump(mode="json")]
+    assert "expected_output" not in payload
+    portfolio_schema = json.dumps(provider.calls[0]["schema"], sort_keys=True)
+    assert "application_interpretation_sha256s" not in portfolio_schema
+    assert "model_manifest_sha256" not in portfolio_schema
 
 
 def test_portfolio_rejects_invented_membership_after_one_repair() -> None:
