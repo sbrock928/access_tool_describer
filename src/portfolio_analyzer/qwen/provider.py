@@ -37,6 +37,11 @@ LOGICAL_UNIT_OPERATIONAL_CONTEXT_TOKENS = 8_192
 SYNTHESIS_OPERATIONAL_CONTEXT_TOKENS = 16_384
 _SCHEMA_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}\Z")
 _CHATML_CONTROL_TOKENS = ("<|im_start|>", "<|im_end|>", "<|endoftext|>")
+_JSON_RESPONSE_PREFIX = "{"
+_MARKDOWN_JSON_FENCE = re.compile(
+    r"\A```(?:json)?[ \t]*\r?\n(?P<body>.*?)\r?\n```[ \t]*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 class QwenProviderError(RuntimeError):
@@ -149,7 +154,6 @@ def generate_validated_json[ResponseModelT: BaseModel](
     requested_schema_name = schema_name or response_model.__name__
     issues: list[OutputValidationIssue] = []
     current_system = system
-    current_user = user
     progress = _provider_progress(provider)
 
     for attempt in (1, 2):
@@ -160,7 +164,7 @@ def generate_validated_json[ResponseModelT: BaseModel](
         try:
             candidate = provider.complete_json(
                 system=current_system,
-                user=current_user,
+                user=user,
                 schema_name=requested_schema_name,
                 schema=output_schema,
                 max_output_tokens=max_output_tokens,
@@ -196,12 +200,15 @@ def generate_validated_json[ResponseModelT: BaseModel](
         issues.append(issue)
         if attempt == 2:
             return StructuredGenerationFailure(issues=(issues[0], issues[1]))
+        failure_kind = (
+            "was not valid JSON" if issue.kind == "json" else "did not match the JSON Schema"
+        )
         current_system = (
             f"{system.rstrip()}\n"
-            "Your previous response was invalid. This is the only repair attempt. Return a "
-            "complete replacement JSON object that matches the supplied schema exactly."
+            f"Your previous response {failure_kind}. This is the only repair attempt. Re-read "
+            "the unchanged user request and return a complete replacement JSON object matching "
+            "the supplied schema exactly."
         )
-        current_user = _repair_request(user, candidate, issue)
 
     raise AssertionError("the fixed two-attempt loop must return")  # pragma: no cover
 
@@ -356,14 +363,18 @@ class LocalQwenProvider:
                 f"Generation {generation_id}: complete; generated_tokens={generated_tokens}; "
                 f"elapsed={elapsed:.1f}s; speed={rate:.2f} tokens/s"
             )
-            text = tokenizer.decode(sequence[prompt_tokens:], skip_special_tokens=True)
+            decoded = tokenizer.decode(
+                sequence[prompt_tokens:], skip_special_tokens=True
+            )
+            text, normalization = _restore_prefilled_json(decoded)
             try:
                 return parse_json_object(text)
             except QwenOutputError as exc:
                 hit_output_limit = generated_tokens >= max_output_tokens
                 self.progress.detail(
                     f"Generation {generation_id}: invalid structured output; "
-                    f"hit_output_limit={str(hit_output_limit).lower()}"
+                    f"hit_output_limit={str(hit_output_limit).lower()}; "
+                    f"normalization={normalization}"
                 )
                 if hit_output_limit:
                     raise QwenOutputError(
@@ -406,6 +417,8 @@ class LocalQwenProvider:
         system_message = (
             f"{system.rstrip()}\n"
             f"Return exactly one JSON object named {schema_name} matching this JSON Schema. "
+            "The response is already prefixed with one opening brace. Continue with the first "
+            "quoted member name and finish the same JSON object. Do not repeat the opening brace. "
             "Do not use Markdown, wrappers, or commentary.\n"
             f"{schema_text}"
         )
@@ -594,8 +607,22 @@ def _render_qwen_chatml(system: str, user: str) -> str:
     return (
         f"<|im_start|>system\n{system}<|im_end|>\n"
         f"<|im_start|>user\n{user}<|im_end|>\n"
-        "<|im_start|>assistant\n"
+        f"<|im_start|>assistant\n{_JSON_RESPONSE_PREFIX}"
     )
+
+
+def _restore_prefilled_json(value: str) -> tuple[str, str]:
+    """Restore the fixed opening brace and unwrap only one exact Markdown fence."""
+
+    stripped = value.strip()
+    normalization = "prefilled_prefix"
+    fenced = _MARKDOWN_JSON_FENCE.fullmatch(stripped)
+    if fenced is not None:
+        stripped = fenced.group("body").strip()
+        normalization = "markdown_fence"
+    if stripped.startswith(_JSON_RESPONSE_PREFIX):
+        return stripped, f"{normalization}_repeated"
+    return _JSON_RESPONSE_PREFIX + stripped, normalization
 
 
 def _input_token_count(inputs: Any) -> int:
@@ -662,16 +689,3 @@ def _validation_details(error: ValidationError) -> tuple[str, ...]:
         location = ".".join(str(part) for part in item.get("loc", ())) or "<root>"
         details.append(f"{location}: {item['msg']} [{item['type']}]")
     return tuple(details) or ("response failed schema validation",)
-
-
-def _repair_request(
-    original_user: str,
-    candidate: dict[str, Any] | None,
-    issue: OutputValidationIssue,
-) -> str:
-    payload = {
-        "original_request": original_user,
-        "previous_response": candidate,
-        "validation_issues": list(issue.details),
-    }
-    return json.dumps(payload, allow_nan=False, ensure_ascii=True, separators=(",", ":"))

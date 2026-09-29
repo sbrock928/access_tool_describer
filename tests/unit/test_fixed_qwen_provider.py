@@ -316,7 +316,8 @@ def test_local_qwen_is_fixed_offline_deterministic_and_loaded_once(
     assert all(call["add_special_tokens"] is False for call in tokenizer.tokenize_kwargs)
     assert tokenizer.prompts[0].startswith("<|im_start|>system\nAnalyze evidence.")
     assert "<|im_start|>user\n{\"evidence_id\":\"ev-1\"}<|im_end|>" in tokenizer.prompts[0]
-    assert tokenizer.prompts[0].endswith("<|im_start|>assistant\n")
+    assert tokenizer.prompts[0].endswith("<|im_start|>assistant\n{")
+    assert "already prefixed with one opening brace" in tokenizer.prompts[0]
     assert list(tmp_path.iterdir()) == []
     for name in (
         "HF_HUB_OFFLINE",
@@ -546,6 +547,60 @@ def test_json_parser_accepts_one_object_with_surrounding_whitespace() -> None:
     }
 
 
+def test_provider_accepts_prefilled_and_exact_fenced_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_runtime(
+        monkeypatch,
+        tmp_path,
+        responses=[
+            '"answer":"prefilled"}',
+            '```json\n"answer":"fenced"}\n```',
+        ],
+    )
+    provider = LocalQwenProvider(_runtime(tmp_path))
+
+    first = provider.complete_json(
+        system="Return JSON.",
+        user="evidence-one",
+        schema_name="Finding",
+        schema={"type": "object"},
+        max_output_tokens=32,
+    )
+    second = provider.complete_json(
+        system="Return JSON.",
+        user="evidence-two",
+        schema_name="Finding",
+        schema={"type": "object"},
+        max_output_tokens=32,
+    )
+
+    assert first == {"answer": "prefilled"}
+    assert second == {"answer": "fenced"}
+
+
+def test_provider_rejects_prose_wrapped_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_runtime(
+        monkeypatch,
+        tmp_path,
+        responses=['Here is the result: {"answer":"unsafe wrapper"}'],
+    )
+    provider = LocalQwenProvider(_runtime(tmp_path))
+
+    with pytest.raises(QwenOutputError, match="malformed JSON"):
+        provider.complete_json(
+            system="Return JSON.",
+            user="evidence",
+            schema_name="Finding",
+            schema={"type": "object"},
+            max_output_tokens=32,
+        )
+
+
 def test_validation_helper_repairs_once_and_returns_typed_success() -> None:
     provider = _FakeJsonProvider(
         [
@@ -559,6 +614,7 @@ def test_validation_helper_repairs_once_and_returns_typed_success() -> None:
         response_model=_Answer,
         system="Interpret evidence.",
         user='{"evidence_ids":["ev-1"]}',
+        schema_name="Answer",
         max_output_tokens=64,
     )
 
@@ -567,7 +623,8 @@ def test_validation_helper_repairs_once_and_returns_typed_success() -> None:
     assert result.value.answer == "Grounded answer"
     assert len(provider.calls) == 2
     assert "only repair attempt" in provider.calls[1]["system"]
-    assert '"previous_response"' in provider.calls[1]["user"]
+    assert provider.calls[1]["user"] == provider.calls[0]["user"]
+    assert "previous_response" not in provider.calls[1]["user"]
     assert provider.calls[1]["max_output_tokens"] == 64
 
 
@@ -630,3 +687,40 @@ def test_validation_helper_retries_strict_json_failure() -> None:
     assert isinstance(result, StructuredGenerationSuccess)
     assert result.attempts == 2
     assert len(provider.calls) == 2
+
+
+def test_local_provider_repairs_malformed_json_without_replaying_model_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messages: list[str] = []
+    tokenizer, model, _torch, _loader_calls = _install_fake_runtime(
+        monkeypatch,
+        tmp_path,
+        responses=[
+            "MALFORMED-MODEL-SECRET",
+            '"status":"abstain","answer":null}',
+        ],
+    )
+    provider = LocalQwenProvider(
+        _runtime(tmp_path),
+        progress=AnalysisProgressReporter(verbose=True, sink=messages.append),
+    )
+
+    result = generate_validated_json(
+        provider,
+        response_model=_Answer,
+        system="Interpret evidence.",
+        user='{"evidence_ids":["ev-1"]}',
+        schema_name="Answer",
+        max_output_tokens=64,
+    )
+
+    assert isinstance(result, StructuredGenerationSuccess)
+    assert result.attempts == 2
+    assert result.value.status == "abstain"
+    assert len(model.generate_calls) == 2
+    assert len(tokenizer.prompts) == 2
+    assert all('{"evidence_ids":["ev-1"]}' in item for item in tokenizer.prompts)
+    assert "MALFORMED-MODEL-SECRET" not in tokenizer.prompts[1]
+    assert "MALFORMED-MODEL-SECRET" not in "\n".join(messages)
