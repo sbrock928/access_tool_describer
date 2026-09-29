@@ -342,3 +342,22 @@ portfolio-analyzer extract --workspace .\workspace-v2 --application "YOUR_APPLIC
 
 Alternatively, evaluate an already fully extracted application using `--application ID`.
 The incomplete list respects that selection and does not list unselected applications.
+
+### Extraction opens files but only some applications become current
+
+Opening a verified staged copy and printing table/query progress does not mean extraction
+completed. The current run manifest already records failure reasons. Read those locally
+without another extraction or model load:
+
+```powershell
+portfolio-analyzer extraction-status --workspace .\workspace-v2 --details
+```
+
+The command shows IDs, names, status, snapshot counts, and saved redacted errors/warnings.
+Use `--application ID` to narrow the output. Without `--details`, reasons are omitted.
+Output is LOCAL ONLY: it may contain application names, object names and paths. Credential
+patterns are redacted and terminal controls escaped, but this is not an exportable metrics
+report. Long/many reasons are bounded; full saved details remain in the local run manifest.
+Subsequent failed `extract` runs now print the same local failure details automatically.
+Inspect the first concrete error before retrying; missing-snapshot errors describe the
+consequence and may not identify its cause. No extraction security settings are changed.

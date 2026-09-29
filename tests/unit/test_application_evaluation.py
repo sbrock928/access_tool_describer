@@ -336,3 +336,55 @@ def test_incomplete_local_details_escape_controls_and_redact_credentials(
     assert result.exit_code == 1
     assert "SECRET" not in result.output
     assert "APP\\nESC\\u001b" in result.output
+
+
+def test_extraction_reports_failure_and_status_reads_saved_reason_without_rerunning(
+    environment: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fail(*_args: Any, **_kwargs: Any) -> Any:
+        calls.append("extract")
+        raise RuntimeError("Synthetic DAO failure\nPassword=HIDDEN-CREDENTIAL; code=123\x1b")
+
+    monkeypatch.setattr(v2, "run_extraction_with_timeout", fail)
+    runner = CliRunner()
+    workspace = environment["workspace"]
+    failed = runner.invoke(v2.app, ["extract", "--workspace", str(workspace), "--force"])
+    assert failed.exit_code == 1
+    assert "Synthetic DAO failure" in failed.output
+    assert "HIDDEN-CREDENTIAL" not in failed.output
+    assert "\\u001b" in failed.output
+    assert "PRIVATE-APP" in failed.output
+    assert "snapshots=0/1" in failed.output
+    assert calls == ["extract"]
+    before = {p.relative_to(workspace): p.read_bytes() for p in workspace.rglob("*") if p.is_file()}
+    command = ["extraction-status", "--workspace", str(workspace)]
+    summary = runner.invoke(v2.app, command)
+    assert summary.exit_code == 0
+    assert "Synthetic DAO failure" not in summary.output
+    assert "failed" in summary.output
+    details = runner.invoke(v2.app, command + ["--details", "--application", "PRIVATE-APP"])
+    assert details.exit_code == 0
+    assert "Synthetic DAO failure" in details.output
+    assert "HIDDEN-CREDENTIAL" not in details.output
+    assert "LOCAL ONLY" in details.output
+    assert calls == ["extract"]
+    assert runner.invoke(v2.app, command + ["--application", "nonexistent"]).exit_code == 1
+    assert before == {p.relative_to(workspace): p.read_bytes()
+                      for p in workspace.rglob("*") if p.is_file()}
+
+
+def test_extraction_status_does_not_display_integrity_exception(
+    environment: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*_args: Any, **_kwargs: Any) -> Any:
+        raise ValueError("PRIVATE-PATH Password=HIDDEN")
+
+    monkeypatch.setattr(v2.V2StateStore, "load_current_run", fail)
+    result = CliRunner().invoke(v2.app, ["extraction-status", "--workspace",
+                                        str(environment["workspace"]), "--details"])
+    assert result.exit_code == 1
+    assert "No exception content displayed" in result.output
+    assert "PRIVATE" not in result.output
+    assert "HIDDEN" not in result.output

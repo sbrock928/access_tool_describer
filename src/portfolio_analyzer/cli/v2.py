@@ -322,7 +322,69 @@ def extract(
         f"{complete_count}/{len(manifest.applications)} application(s) current."
     )
     if requested_failures:
+        _echo_extraction_status(
+            tuple(record for record in manifest.applications
+                  if record.status != RunStatus.COMPLETE
+                  and (application is None or record.application_id == application)),
+            {item.application_id: item.application_name for item in index.applications},
+            details=True,
+        )
         raise typer.Exit(code=1)
+
+
+def _echo_extraction_status(
+    records: tuple[ApplicationRunRecord, ...], names: dict[str, str], *, details: bool,
+) -> None:
+    """Local operator diagnostics only; never feed extraction text to performance reports."""
+    typer.echo("LOCAL ONLY: application identifiers and extraction diagnostics; do not export.")
+    for record in records:
+        identifier = json.dumps(redact_sensitive_text(record.application_id), ensure_ascii=True)
+        name = json.dumps(redact_sensitive_text(names.get(record.application_id, "unknown")),
+                          ensure_ascii=True)
+        typer.echo(f"{identifier} | {name} | {record.status.value} | "
+                   f"snapshots={len(record.extraction_snapshots)}/{len(record.artifact_ids)} | "
+                   f"errors={len(record.errors)} warnings={len(record.warnings)}")
+        if details:
+            for label, messages in (("error", record.errors), ("warning", record.warnings)):
+                for message in messages[:12]:
+                    text = redact_sensitive_text(message)
+                    if len(text) > 1200:
+                        text = text[:1200] + " [truncated; full detail in local run manifest]"
+                    typer.echo(f"  {label}: {json.dumps(text, ensure_ascii=True)}")
+                if len(messages) > 12:
+                    typer.echo(f"  {len(messages) - 12} additional {label}(s) "
+                               "in local run manifest.")
+
+
+@app.command("extraction-status")
+def extraction_status(
+    workspace: Path = typer.Option(..., exists=True, file_okay=False),
+    application: str | None = typer.Option(None, help="Optional inventory application ID."),
+    details: bool = typer.Option(False, help="Show saved, redacted extraction errors locally."),
+) -> None:
+    """Read the last extraction status without rerunning Access or writing state."""
+    try:
+        store = V2StateStore(workspace)
+        stage = store.load_current_run(RunPhase.STAGE)
+        stage_ref = _reference_by_schema(stage, "stage-index-v2")
+        index = store.load(stage_ref, StageIndex)
+        extraction = store.load_current_run(RunPhase.EXTRACT)
+        records = tuple(record for record in extraction.applications
+                        if application is None or record.application_id == application)
+        if not records:
+            typer.echo("No matching application in the current extraction run.")
+            raise typer.Exit(code=1)
+        if stage_ref not in extraction.input_references:
+            typer.echo("Saved extraction is stale for current staging; "
+                       "statuses describe the old run.")
+        _echo_extraction_status(records, {item.application_id: item.application_name
+                                         for item in index.applications}, details=details)
+    except typer.Exit:
+        raise
+    except Exception:
+        typer.echo("Cannot read current extraction status; check workspace and state integrity. "
+                   "No exception content displayed.")
+        raise typer.Exit(code=1) from None
 
 
 @app.command()
