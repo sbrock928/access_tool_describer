@@ -137,6 +137,11 @@ cache miss mean the previous unit exhausted its initial attempt and one repair; 
 was intentionally discarded. Verbose output now reports `hit_output_limit=true` when truncation is
 the likely cause without printing the generated text.
 
+The fixed 0.5B policy does not batch logical units. A current run therefore logs
+`LogicalUnitInterpretation`, not `LogicalUnitBatchOutput`. If batch output still appears, verify that
+`TWO_STAGE_PROMPT_VERSION` is `qwen-two-stage-v8` and restart the Python process after updating the
+checkout.
+
 A schema-valid `unknown` or abstention is successful analysis. A failed required unit is not.
 Normal reporting stays blocked until the application is current. A targeted analysis recomputes
 portfolio findings only when every eligible application is current; otherwise it removes the stale

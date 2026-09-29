@@ -172,9 +172,8 @@ class _PipelineProvider:
         schema: Mapping[str, Any],
         max_output_tokens: int = 1_024,
     ) -> dict[str, Any]:
-        raw = json.loads(user)
-        repaired = "original_request" in raw
-        payload = json.loads(raw["original_request"]) if repaired else raw
+        payload = json.loads(user)
+        repaired = "only repair attempt" in system
         self.calls.append(
             {
                 "system": system,
@@ -706,7 +705,7 @@ def test_definition_chunks_are_bounded_lossless_and_reduce_every_source() -> Non
     assert all(sum(len(item.text) for item in chunk) <= 36 for chunk in chunks)
 
 
-def test_small_related_units_are_batched_under_the_measured_prompt_budget() -> None:
+def test_qwen_05b_routes_every_logical_unit_individually() -> None:
     bundle = _bundle()
     provider = _PipelineProvider()
 
@@ -724,32 +723,23 @@ def test_small_related_units_are_batched_under_the_measured_prompt_budget() -> N
         for item in provider.calls
         if item["payload"]["stage"] == "logical_unit_batch"
     ]
-    assert batch_calls
-    assert any(len(item["payload"]["units"]) > 1 for item in batch_calls)
-    batched_ids = {
-        unit["logical_unit"]["output_id"]
-        for item in batch_calls
-        for unit in item["payload"]["units"]
-    }
-    assert batched_ids <= {item.logical_unit_id for item in result.unit_results}
-    assert all(
-        item.interpretation is not None
-        for item in result.unit_results
-        if item.logical_unit_id in batched_ids
-    )
-    unit_schema = next(
-        item["schema"]
+    assert batch_calls == []
+    unit_calls = [
+        item
         for item in provider.calls
-        if item["payload"]["stage"] == "logical_unit_batch"
-    )
+        if item["payload"]["stage"] == "logical_unit"
+    ]
+    assert len(unit_calls) == len(result.unit_results)
+    routed_ids = {
+        item["payload"]["logical_unit"]["output_id"] for item in unit_calls
+    }
+    assert routed_ids == {item.logical_unit_id for item in result.unit_results}
+    assert all(item.interpretation is not None for item in result.unit_results)
+    unit_schema = unit_calls[0]["schema"]
     serialized_schema = json.dumps(unit_schema, sort_keys=True)
     assert "source_bundle_sha256" not in serialized_schema
     assert "model_manifest_sha256" not in serialized_schema
-    assert all(
-        "expected_output" not in unit
-        for item in batch_calls
-        for unit in item["payload"]["units"]
-    )
+    assert all("expected_output" not in item["payload"] for item in unit_calls)
 
 
 def test_two_stage_pipeline_consumes_all_units_graph_datasources_coverage_and_claims() -> None:

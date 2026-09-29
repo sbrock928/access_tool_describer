@@ -128,9 +128,9 @@ cache invalidation.
 
 Qwen emits compact semantic drafts rather than reproducing authoritative application IDs, hashes,
 provenance, consumed-unit registries, or stable IDs. Strict validation first closes every cited ID
-against supplied evidence; deterministic code then attaches those envelope fields. Logical-unit
-batches are limited to two units for more reliable JSON on the 0.5B model. Invalid drafts are never
-cached.
+against supplied evidence; deterministic code then attaches those envelope fields. The 0.5B policy
+uses one logical unit per generation and pre-fills the opening JSON brace for reliable structure.
+Invalid drafts are never cached.
 
 Semantic-profile similarity candidates are disabled pending reviewed Qwen 0.5B gold-set
 calibration. Endpoint, external-object, file, and exact-code candidates remain active; reports

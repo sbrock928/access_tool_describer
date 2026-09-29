@@ -50,14 +50,15 @@ from portfolio_analyzer.v2.models import (
     StrictModel,
 )
 
-TWO_STAGE_PROMPT_VERSION = "qwen-two-stage-v7"
-UNIT_PROMPT_VERSION = "qwen-logical-unit-v5"
-UNIT_BATCH_PROMPT_VERSION = "qwen-logical-unit-batch-v4"
-APPLICATION_PROMPT_VERSION = "qwen-application-synthesis-v4"
-PORTFOLIO_PROMPT_VERSION = "qwen-portfolio-interpretation-v4"
+TWO_STAGE_PROMPT_VERSION = "qwen-two-stage-v8"
+UNIT_PROMPT_VERSION = "qwen-logical-unit-v6"
+UNIT_BATCH_PROMPT_VERSION = "qwen-logical-unit-batch-v5"
+APPLICATION_PROMPT_VERSION = "qwen-application-synthesis-v5"
+PORTFOLIO_PROMPT_VERSION = "qwen-portfolio-interpretation-v5"
 DEFAULT_DEFINITION_CHARS = 12_000
 DEFAULT_PORTFOLIO_BATCH_SIZE = 25
-DEFAULT_LOGICAL_UNIT_BATCH_SIZE = 2
+# The approved 0.5B model is not authorized for array-shaped logical-unit responses.
+DEFAULT_LOGICAL_UNIT_BATCH_SIZE = 1
 
 _VBA_BOUNDARY = re.compile(
     r"(?im)^(?=(?:(?:public|private|friend|static)\s+)?"

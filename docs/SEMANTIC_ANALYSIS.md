@@ -112,12 +112,11 @@ Tables and connections remain deterministic context and do not receive separate 
 semantic-bearing source must end in one interpretation, a schema-valid abstention, or an explicit
 skip/failure reason.
 
-Small related units may share one request only when the tokenizer-measured prompt plus reserved
-output fits the fixed 8,192-token logical-unit operational ceiling. The model's separately enforced
-reviewed context ceiling remains 32,768 tokens. Oversized units split at procedure, statement,
-control, or other logical boundaries. Every chunk is interpreted and reduced; the pipeline neither
-silently truncates a definition nor drops its tail. If an indivisible input cannot fit, the unit
-fails explicitly.
+Every logical unit receives its own request under the fixed 8,192-token logical-unit operational
+ceiling. The model's separately enforced reviewed context ceiling remains 32,768 tokens. Oversized
+units split at procedure, statement, control, or other logical boundaries. Every chunk is
+interpreted and reduced; the pipeline neither silently truncates a definition nor drops its tail.
+If an indivisible input cannot fit, the unit fails explicitly.
 
 Each output claim cites supplied evidence IDs. A citation to an unknown, cross-application,
 aggregate-only, or secret-derived identifier is invalid. Technical identifiers, endpoints,
@@ -127,8 +126,10 @@ The model-authored JSON is deliberately compact. Qwen supplies only semantic des
 classifications, uncertainties, and citations. Application IDs, logical-unit IDs, evidence-bundle
 hashes, model provenance, complete consumed-unit registries, and stable result IDs are attached
 deterministically after the compact response passes grounding validation. This reduces schema
-copying errors without creating a semantic fallback or relaxing citation closure. At most two
-logical units share one 0.5B inference request.
+copying errors without creating a semantic fallback or relaxing citation closure. Logical units
+never share a 0.5B inference request. The assistant turn is pre-filled with the opening JSON brace,
+and deterministic parsing restores that prefix. One exact `json` Markdown fence may be removed,
+but arbitrary prose or embedded objects remain invalid.
 
 ## Stage 2: application synthesis
 
@@ -144,8 +145,9 @@ evidence in the same application. Owner statements remain claims, not observatio
 until a human review decision.
 
 For a syntactically or schema-invalid response, the provider makes exactly one repair request with
-concise validation feedback. A second invalid result marks the unit or application incomplete. No
-heuristic purpose, role, architecture, or narrative is substituted.
+concise validation feedback. The repair reuses the original evidence payload unchanged and never
+replays malformed model output. A second invalid result marks the unit or application incomplete.
+No heuristic purpose, role, architecture, or narrative is substituted.
 
 ## Portfolio interpretation
 
