@@ -78,8 +78,9 @@ class _FakeTokenizer:
 
 
 class _FakeModel:
-    def __init__(self, *, context_tokens: int) -> None:
+    def __init__(self, *, context_tokens: int, generated_token_count: int = 1) -> None:
         self.config = SimpleNamespace(max_position_embeddings=context_tokens)
+        self.generated_token_count = generated_token_count
         self.to_calls: list[str] = []
         self.eval_calls = 0
         self.generate_calls: list[dict[str, Any]] = []
@@ -94,7 +95,7 @@ class _FakeModel:
         self.generate_calls.append(kwargs)
         input_ids = kwargs["input_ids"]
         assert isinstance(input_ids, _TokenIds)
-        return [input_ids.values + [999]]
+        return [input_ids.values + [999] * self.generated_token_count]
 
 
 class _FakeTorch:
@@ -221,9 +222,13 @@ def _install_fake_runtime(
     *,
     responses: list[str],
     context_tokens: int = 10_000,
+    generated_token_count: int = 1,
 ) -> tuple[_FakeTokenizer, _FakeModel, _FakeTorch, dict[str, list[dict[str, Any]]]]:
     tokenizer = _FakeTokenizer(responses, context_tokens=context_tokens)
-    model = _FakeModel(context_tokens=context_tokens)
+    model = _FakeModel(
+        context_tokens=context_tokens,
+        generated_token_count=generated_token_count,
+    )
     torch = _FakeTorch()
     loader_calls: dict[str, list[dict[str, Any]]] = {"tokenizer": [], "model": []}
 
@@ -354,6 +359,37 @@ def test_verbose_provider_progress_is_content_free(
     assert "Generation 1: complete" in combined
     assert "SECRET" not in combined
     assert str(tmp_path) not in combined
+
+
+def test_verbose_provider_reports_safe_output_limit_diagnosis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_runtime(
+        monkeypatch,
+        tmp_path,
+        responses=["x" * 40],
+        generated_token_count=8,
+    )
+    messages: list[str] = []
+    provider = LocalQwenProvider(
+        _runtime(tmp_path),
+        progress=AnalysisProgressReporter(verbose=True, sink=messages.append),
+    )
+
+    with pytest.raises(QwenOutputError, match="output token limit"):
+        provider.complete_json(
+            system="Return JSON.",
+            user="evidence",
+            schema_name="Finding",
+            schema={"type": "object"},
+            max_output_tokens=8,
+        )
+
+    combined = "\n".join(messages)
+    assert "invalid structured output" in combined
+    assert "hit_output_limit=true" in combined
+    assert "x" * 8 not in combined
 
 
 def test_generation_heartbeat_reports_and_stops_cleanly() -> None:

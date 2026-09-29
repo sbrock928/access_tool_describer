@@ -50,14 +50,14 @@ from portfolio_analyzer.v2.models import (
     StrictModel,
 )
 
-TWO_STAGE_PROMPT_VERSION = "qwen-two-stage-v6"
+TWO_STAGE_PROMPT_VERSION = "qwen-two-stage-v7"
 UNIT_PROMPT_VERSION = "qwen-logical-unit-v5"
-UNIT_BATCH_PROMPT_VERSION = "qwen-logical-unit-batch-v3"
+UNIT_BATCH_PROMPT_VERSION = "qwen-logical-unit-batch-v4"
 APPLICATION_PROMPT_VERSION = "qwen-application-synthesis-v4"
 PORTFOLIO_PROMPT_VERSION = "qwen-portfolio-interpretation-v4"
 DEFAULT_DEFINITION_CHARS = 12_000
 DEFAULT_PORTFOLIO_BATCH_SIZE = 25
-DEFAULT_LOGICAL_UNIT_BATCH_SIZE = 4
+DEFAULT_LOGICAL_UNIT_BATCH_SIZE = 2
 
 _VBA_BOUNDARY = re.compile(
     r"(?im)^(?=(?:(?:public|private|friend|static)\s+)?"
@@ -3157,7 +3157,9 @@ def _unit_system_prompt(*, reduction: bool) -> str:
         f"{action} using only the structured Access evidence supplied. Technical IDs are opaque: "
         "copy only IDs listed in allowed_ids. Never invent objects, interactions, operations, "
         "datasources, or evidence. Cite terminal observed evidence for every interpretation. "
-        "An explicit uncertainty or abstention is valid when the evidence is insufficient."
+        "Return only the compact model-authored fields required by the response schema; run IDs, "
+        "hashes, provenance, and stable IDs are added by the caller. An explicit uncertainty or "
+        "abstention is valid when the evidence is insufficient."
     )
 
 
@@ -3167,8 +3169,9 @@ def _unit_batch_system_prompt() -> str:
         "Access evidence. Return exactly one interpretation per expected logical_unit_id. "
         "Technical IDs are opaque: copy only IDs listed in the corresponding allowed_ids. Never "
         "invent objects, interactions, operations, datasources, or evidence. Cite terminal "
-        "observed evidence for every interpretation. An explicit uncertainty or abstention is "
-        "valid when one unit's evidence is insufficient."
+        "observed evidence for every interpretation. Return only the compact model-authored "
+        "fields required by the response schema; envelope fields are added by the caller. An "
+        "explicit uncertainty or abstention is valid when one unit's evidence is insufficient."
     )
 
 

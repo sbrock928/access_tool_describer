@@ -123,6 +123,13 @@ Each output claim cites supplied evidence IDs. A citation to an unknown, cross-a
 aggregate-only, or secret-derived identifier is invalid. Technical identifiers, endpoints,
 operations, objects, and dependency edges must already exist in deterministic evidence.
 
+The model-authored JSON is deliberately compact. Qwen supplies only semantic descriptions,
+classifications, uncertainties, and citations. Application IDs, logical-unit IDs, evidence-bundle
+hashes, model provenance, complete consumed-unit registries, and stable result IDs are attached
+deterministically after the compact response passes grounding validation. This reduces schema
+copying errors without creating a semantic fallback or relaxing citation closure. At most two
+logical units share one 0.5B inference request.
+
 ## Stage 2: application synthesis
 
 Application synthesis receives every valid Stage-1 result, the authoritative dependency graph and

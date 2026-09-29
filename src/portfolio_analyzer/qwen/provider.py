@@ -357,7 +357,19 @@ class LocalQwenProvider:
                 f"elapsed={elapsed:.1f}s; speed={rate:.2f} tokens/s"
             )
             text = tokenizer.decode(sequence[prompt_tokens:], skip_special_tokens=True)
-            return parse_json_object(text)
+            try:
+                return parse_json_object(text)
+            except QwenOutputError as exc:
+                hit_output_limit = generated_tokens >= max_output_tokens
+                self.progress.detail(
+                    f"Generation {generation_id}: invalid structured output; "
+                    f"hit_output_limit={str(hit_output_limit).lower()}"
+                )
+                if hit_output_limit:
+                    raise QwenOutputError(
+                        "Local model returned malformed JSON after reaching the output token limit"
+                    ) from exc
+                raise
         except (QwenPromptBudgetError, QwenOutputError):
             raise
         except Exception as exc:

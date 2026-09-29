@@ -23,7 +23,7 @@ from portfolio_analyzer.qwen.pipeline import (
     prompt_fingerprint,
     schema_fingerprint,
 )
-from portfolio_analyzer.qwen.provider import PromptBudget
+from portfolio_analyzer.qwen.provider import PromptBudget, QwenOutputError
 from portfolio_analyzer.v2.fingerprints import evidence_bundle_fingerprint
 from portfolio_analyzer.v2.models import (
     AccessObjectEvidence,
@@ -84,6 +84,7 @@ class _PipelineProvider:
         max_application_inputs_per_prompt: int | None = None,
         max_portfolio_candidates_per_prompt: int | None = None,
         leaked_text: str | None = None,
+        malformed_stages: frozenset[str] = frozenset(),
     ) -> None:
         self.fail_kind = fail_kind
         self.repair_unknown_once = repair_unknown_once
@@ -94,6 +95,7 @@ class _PipelineProvider:
         self.max_application_inputs_per_prompt = max_application_inputs_per_prompt
         self.max_portfolio_candidates_per_prompt = max_portfolio_candidates_per_prompt
         self.leaked_text = leaked_text
+        self.malformed_stages = malformed_stages
         self.calls: list[dict[str, Any]] = []
         self.measurements: list[dict[str, Any]] = []
         self._attempts: dict[tuple[str, str], int] = {}
@@ -184,6 +186,8 @@ class _PipelineProvider:
             }
         )
         stage = payload["stage"]
+        if stage in self.malformed_stages:
+            raise QwenOutputError("Local model returned malformed JSON")
         if stage in {"logical_unit", "logical_unit_reduction"}:
             return self._logical_response(payload)
         if stage == "logical_unit_batch":
@@ -905,6 +909,31 @@ def test_failed_unit_is_explicit_and_application_uses_every_remaining_valid_unit
     assert len(failed_payloads) == 1
     assert failed_payloads[0]["reason"]
     assert payload["cache_keys"]
+
+
+def test_repeated_malformed_logical_json_fails_explicitly_without_cache_poisoning() -> None:
+    cache = _MemoryInferenceCache()
+    provider = _PipelineProvider(
+        malformed_stages=frozenset({"logical_unit", "logical_unit_batch"})
+    )
+
+    result = analyze_application_two_stage(
+        _bundle(rich=False),
+        provider,
+        provenance=_provenance(),
+        cache=cache,
+    )
+
+    assert result.status == InterpretationRunStatus.FAILED
+    assert result.interpretation is None
+    assert result.unit_results
+    assert all(item.status == InterpretationRunStatus.FAILED for item in result.unit_results)
+    assert all(
+        item.failure is not None and "after one repair attempt" in item.failure
+        for item in result.unit_results
+    )
+    assert cache.values == {}
+    assert len(provider.calls) == 2 * len(result.unit_results)
 
 
 def test_application_rejects_aggregate_only_terminal_citation_after_repair() -> None:

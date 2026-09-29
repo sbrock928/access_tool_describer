@@ -131,6 +131,12 @@ an explicit required-unit or synthesis failure. A token-budget error means an in
 source or synthesis input could not fit without unsafe truncation; the pipeline does not omit it.
 Preserve the failure reason for review instead of increasing hidden limits or inventing a narrative.
 
+A cache miss is normal on the first run or after a prompt/model policy change. Only a compact,
+schema-valid, evidence-closed draft is cached. Two `malformed JSON` messages followed by the next
+cache miss mean the previous unit exhausted its initial attempt and one repair; the malformed value
+was intentionally discarded. Verbose output now reports `hit_output_limit=true` when truncation is
+the likely cause without printing the generated text.
+
 A schema-valid `unknown` or abstention is successful analysis. A failed required unit is not.
 Normal reporting stays blocked until the application is current. A targeted analysis recomputes
 portfolio findings only when every eligible application is current; otherwise it removes the stale
