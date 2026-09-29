@@ -114,3 +114,32 @@ def test_ten_minute_warning_is_once_per_application(monkeypatch: pytest.MonkeyPa
     assert not metrics.warning_due()
     metrics.begin_application(2)
     assert not metrics.warning_due()
+
+
+def test_field_diagnostics_mask_dynamic_keys_and_rejected_values() -> None:
+    from dataclasses import asdict
+    from typing import Literal
+
+    from pydantic import ConfigDict
+
+    from portfolio_analyzer.qwen.provider import _validation_field_details
+
+    class Response(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        status: Literal["unknown"]
+        summary: str
+        values: dict[str, int]
+
+    with pytest.raises(ValidationError) as error:
+        Response.model_validate({
+            "status": "SECRET-ENUM", "values": {"SECRET-KEY": "SECRET-VALUE"},
+            "SECRET-EXTRA": "SECRET-CONTENT",
+        })
+    details = [asdict(item) for item in _validation_field_details(
+        error.value, Response.model_json_schema(),
+    )]
+    assert {(item["category"], item["field"]) for item in details} == {
+        ("invalid_enum", "status"), ("missing_field", "summary"),
+        ("wrong_type", "values"), ("extra_field", "<unknown>"),
+    }
+    assert "SECRET" not in json.dumps(details)

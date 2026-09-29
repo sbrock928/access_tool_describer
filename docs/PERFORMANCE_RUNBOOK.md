@@ -124,3 +124,33 @@ PERFORMANCE_OPTIMIZATION.md and evaluate each candidate independently. Require r
 coverage, citation, abstention, unsupported-claim, capability, reproducibility, and
 leakage comparisons. Synthetic validity does not satisfy the existing reviewed gold-set
 gate; `quality-check` and its calibration requirements remain intact.
+
+## Inspect schema failures without PowerShell scripts
+
+Read an existing microbenchmark matrix with:
+
+```powershell
+portfolio-analyzer benchmark-summary --input .\thread-matrix.json
+```
+
+This excludes warm-ups, counts final valid requests separately from generation attempts,
+and reports median generation time per request including repairs. One valid request
+among three requests is 33.3%, even if six generation attempts occurred.
+
+New reports include per-attempt failure categories and top-level schema field names.
+Nested errors name only the enclosing schema field. Unknown extra fields appear as
+`<unknown>`; whole-response errors appear as `<root>`. Rejected values, dynamic keys,
+raw validator messages, prompts, and generated text are never included. Field diagnostics
+cannot be recovered from older reports; their summary displays `not_recorded_in_older_report`.
+
+For the observed schema failures, rerun just four threads after installing this update:
+
+```powershell
+portfolio-analyzer benchmark-inference --model-dir C:\Models\Qwen2.5-0.5B-Instruct --threads 4 --repetitions 1 --output .\thread-4-fields.json
+portfolio-analyzer benchmark-summary --input .\thread-4-fields.json
+```
+
+Use a fresh output filename. This performs three warm-up requests and three timed
+requests, each allowing one repair. It does not require staged applications or another
+full thread matrix. Share only the summary if your organization's policy permits it.
+Prompts, output budgets, and repair behavior are unchanged by this diagnostic update.

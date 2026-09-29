@@ -812,3 +812,28 @@ def test_provider_counts_validation_repairs_without_exposing_values(
     assert payload["validation_retry_rate"] == 1
     assert [item["attempt"] for item in payload["generations"]] == [1, 2]
     assert "PRIVATE-INVALID-VALUE" not in json.dumps(payload)
+    assert payload["generations"][0]["validation_issues"] == [
+        {"category": "invalid_enum", "field": "status", "count": 1},
+    ]
+    assert payload["generations"][1]["validation_issues"] == []
+
+
+def test_malformed_attempt_diagnostics_do_not_contaminate_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_runtime(monkeypatch, tmp_path, responses=[
+        'SECRET not JSON', '{"status":"abstain"}',
+    ], generated_token_count=64)
+    provider = LocalQwenProvider(_runtime(tmp_path))
+    result = generate_validated_json(
+        provider, response_model=_Answer, schema_name="Answer",
+        system="Analyze", user="{}", max_output_tokens=64,
+    )
+    assert isinstance(result, StructuredGenerationSuccess)
+    events = provider.performance.payload()["generations"]
+    assert events[0]["validation_issues"] == [
+        {"category": "malformed_json", "field": "<root>", "count": 1},
+        {"category": "truncation", "field": "<root>", "count": 1},
+    ]
+    assert events[1]["validation_issues"] == []
+    assert "SECRET" not in json.dumps(events)

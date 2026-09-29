@@ -49,6 +49,15 @@ def measured[**P, R](name: Phase) -> Callable[[Callable[P, R]], Callable[P, R]]:
 
 
 @dataclass(slots=True)
+class ValidationDiagnostic:
+    """Only code-owned categories and top-level schema property names."""
+
+    category: str
+    field: str
+    count: int = 1
+
+
+@dataclass(slots=True)
 class GenerationMeasurement:
     application: int | None
     unit: int | None
@@ -64,6 +73,7 @@ class GenerationMeasurement:
     generation_seconds: float = 0.0
     hit_output_limit: bool = False
     outcome: str = "interrupted"
+    validation_issues: list[ValidationDiagnostic] = field(default_factory=list)
 
 
 def distribution(values: Sequence[int | float]) -> dict[str, int | float | None]:
@@ -262,6 +272,7 @@ class PerformanceRecorder:
             }
         return {
             "schema_version": "inference-performance-v1", "outcome": self.outcome,
+            "validation_diagnostics_version": "schema-fields-v1",
             "elapsed_seconds": elapsed, "phase_seconds": phases,
             "phase_percent": {
                 key: 100 * value / elapsed if elapsed else 0 for key, value in phases.items()

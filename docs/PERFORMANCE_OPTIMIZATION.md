@@ -105,3 +105,33 @@ No compact-prompt, repair-prompt, output-budget, batching, deterministic-enrichm
 deduplication, dtype, backend, or model-change experiment has been promoted. The next
 decision requires metadata-only results from the operator's target Windows machine;
 the ten-minute success target has not yet been demonstrated.
+
+## Operator microbenchmark observation (2026-09-29)
+
+The operator supplied console summaries from Windows, using the approved model path,
+threads 1–4, and one timed repetition of each of three microbenchmark cases. These
+are screenshot/transcribed observations; the underlying report and hardware metadata
+have not been independently inspected.
+
+| Threads | Reported median generation seconds | Timed requests | Final valid requests | Repairs |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 102.68 | 3 | 1 | 3 |
+| 2 | 65.57 | 3 | 1 | 3 |
+| 3 | 58.02 | 3 | 1 | 3 |
+| 4 | 50.56 | 3 | 1 | 3 |
+
+The original PowerShell summary reported 16.7% using generation attempts as the
+denominator; final request validity is 1/3 (33.3%). Every timed request required repair.
+Case 2 succeeded after repair at each thread setting; cases 1 and 3 failed. Aggregate
+categories include missing fields, extra fields, and invalid enums, but do not identify
+which attempt or field failed. Four threads is the provisional fastest tested setting;
+this small sample does not establish stable performance or production semantic quality.
+
+The next measurement adds safe per-attempt schema-field diagnostics and a validated
+`benchmark-summary` command. It changes no prompts or inference policy. Unknown field
+names and nested dynamic keys are masked. A four-thread rerun can distinguish failure
+fields on initial and repair attempts without exporting generated content.
+
+Application runtime, cold/warm loading costs, token distributions, first-token latency,
+decode throughput, peak memory, and production quality remain unmeasured here. There is
+no before/after optimization comparison yet; the ten-minute target remains unverified.

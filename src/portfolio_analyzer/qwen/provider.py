@@ -12,6 +12,7 @@ import os
 import re
 import threading
 import time
+from collections import Counter
 from collections.abc import Mapping
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ValidationError
 
-from portfolio_analyzer.performance import PerformanceRecorder, measured
+from portfolio_analyzer.performance import PerformanceRecorder, ValidationDiagnostic, measured
 from portfolio_analyzer.progress import (
     AnalysisProgressReporter,
     GenerationHeartbeat,
@@ -163,6 +164,7 @@ def generate_validated_json[ResponseModelT: BaseModel](
 
     for attempt in (1, 2):
         typed_attempt: Literal[1, 2] = attempt
+        previous_generations = len(metrics.generations) if metrics is not None else 0
         if metrics is not None:
             metrics.attempt = attempt
         progress.detail(
@@ -179,6 +181,12 @@ def generate_validated_json[ResponseModelT: BaseModel](
         except QwenOutputError:
             if metrics is not None:
                 metrics.failures["malformed_json"] += 1
+                if len(metrics.generations) > previous_generations:
+                    event = metrics.generations[-1]
+                    event.outcome = "invalid"
+                    event.validation_issues.append(ValidationDiagnostic("malformed_json", "<root>"))
+                    if event.hit_output_limit:
+                        event.validation_issues.append(ValidationDiagnostic("truncation", "<root>"))
             progress.detail(
                 f"Structured generation {requested_schema_name}: malformed JSON"
             )
@@ -195,8 +203,11 @@ def generate_validated_json[ResponseModelT: BaseModel](
             except ValidationError as exc:
                 if metrics is not None:
                     metrics.failures.update(_validation_details(exc))
-                    if metrics.generations:
+                    if len(metrics.generations) > previous_generations:
                         metrics.generations[-1].outcome = "invalid"
+                        metrics.generations[-1].validation_issues = _validation_field_details(
+                            exc, output_schema,
+                        )
                 progress.detail(
                     f"Structured generation {requested_schema_name}: schema validation failed"
                 )
@@ -209,7 +220,7 @@ def generate_validated_json[ResponseModelT: BaseModel](
                 progress.detail(
                     f"Structured generation {requested_schema_name}: validation succeeded"
                 )
-                if metrics is not None and metrics.generations:
+                if metrics is not None and len(metrics.generations) > previous_generations:
                     metrics.generations[-1].outcome = "valid"
                 return StructuredGenerationSuccess(value=validated, attempts=typed_attempt)
 
@@ -840,3 +851,27 @@ def _validation_details(error: ValidationError) -> tuple[str, ...]:
             }.get(item.get("msg", ""), "schema")
         details.append(code)
     return tuple(details) or ("schema",)
+
+
+def _validation_field_details(
+    error: ValidationError, schema: Mapping[str, Any],
+) -> list[ValidationDiagnostic]:
+    """Attribute errors to code-owned top-level fields, never to generated keys/values.
+
+    Nested paths, dictionary keys, array indices, union labels, and unknown extra fields
+    are intentionally not copied. Nested issues identify only their enclosing field.
+    """
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        properties = {}
+    counts: Counter[tuple[str, str]] = Counter()
+    errors = error.errors(include_input=False, include_url=False, include_context=False)
+    for item, category in zip(errors, _validation_details(error), strict=True):
+        location = item.get("loc", ())
+        field_name = "<root>" if not location else "<unknown>"
+        if location:
+            # Emit the schema key itself, never a string taken from rejected input.
+            field_name = next((name for name in properties if name == location[0]), field_name)
+        counts[category, field_name] += 1
+    return [ValidationDiagnostic(category, name, count)
+            for (category, name), count in sorted(counts.items())]

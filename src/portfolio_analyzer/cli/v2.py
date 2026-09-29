@@ -838,6 +838,21 @@ def _estimate_workspace(
     }
 
 
+@app.command("benchmark-summary")
+def benchmark_summary(
+    report_path: Path = typer.Option(..., "--input", exists=True, dir_okay=False, readable=True),
+) -> None:
+    """Summarize microbenchmark validity, timing, and safe per-attempt field diagnostics."""
+    from portfolio_analyzer.qwen.benchmark_summary import summarize_micro_benchmark
+
+    try:
+        summary = summarize_micro_benchmark(report_path)
+    except (OSError, ValueError):
+        typer.echo("Expected a valid microbenchmark matrix report; no report contents displayed.")
+        raise typer.Exit(code=1) from None
+    typer.echo(summary)
+
+
 @app.command("benchmark-inference")
 def benchmark_inference(
     model_dir: Path = typer.Option(..., exists=True, file_okay=False, readable=True),
