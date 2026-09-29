@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -64,11 +65,24 @@ _SETUP_MESSAGES = {
 }
 
 
-class EvaluationSetupError(ValueError):
-    """Only fixed diagnostic codes/messages can cross the CLI boundary."""
+@dataclass(frozen=True)
+class IncompleteExtraction:
+    """Local operator details; never serialized into performance reports."""
 
-    def __init__(self, code: str) -> None:
+    ordinal: int
+    application_id: str
+    application_name: str
+    status: RunStatus
+
+
+class EvaluationSetupError(ValueError):
+    """Fixed public message, with explicitly local-only incomplete application details."""
+
+    def __init__(
+        self, code: str, *, incomplete: tuple[IncompleteExtraction, ...] = (),
+    ) -> None:
         self.code = code
+        self.incomplete = incomplete
         super().__init__(_SETUP_MESSAGES[code])
 
 
@@ -130,8 +144,13 @@ def evaluate_applications(
                 if application is None or item.application_id == application]
     if not selected:
         raise EvaluationSetupError("selection_not_found")
-    if any(records[item.application_id].status != RunStatus.COMPLETE for _, item in selected):
-        raise EvaluationSetupError("extraction_incomplete")
+    incomplete = tuple(
+        IncompleteExtraction(ordinal, item.application_id, item.application_name,
+                             records[item.application_id].status)
+        for ordinal, item in selected if records[item.application_id].status != RunStatus.COMPLETE
+    )
+    if incomplete:
+        raise EvaluationSetupError("extraction_incomplete", incomplete=incomplete)
 
     metrics = PerformanceRecorder(max_calls_per_application=max_calls)
     source.performance = metrics

@@ -868,6 +868,18 @@ def evaluate_applications_command(
         )
     except EvaluationSetupError as exc:
         typer.echo(f"Evaluation setup failed [{exc.code}]: {exc}")
+        if exc.incomplete:
+            typer.echo("LOCAL ONLY: incomplete application identifiers/names; do not export.")
+            typer.echo("Ordinal | Application ID | Application name | Extraction status")
+            for item in exc.incomplete:
+                # Quote/escape control characters and redact credential patterns in inventory text.
+                identifier = json.dumps(
+                    redact_sensitive_text(item.application_id), ensure_ascii=True,
+                )
+                name = json.dumps(redact_sensitive_text(item.application_name), ensure_ascii=True)
+                typer.echo(f"{item.ordinal} | {identifier} | {name} | {item.status.value}")
+            typer.echo("Retry extraction for a listed ID with extract --workspace <workspace> "
+                       "--application <ID>, or evaluate a fully extracted application.")
         raise typer.Exit(code=1) from None
     except KeyboardInterrupt:
         typer.echo("Evaluation interrupted before application processing.")

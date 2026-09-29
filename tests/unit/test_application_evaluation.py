@@ -271,3 +271,68 @@ def test_resume_check_only_preserves_evaluation_files(environment: dict[str, Any
     assert len(environment["calls"]) == calls
     assert before == {p.relative_to(destination): p.read_bytes()
                       for p in destination.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize("status", ["failed", "partial"])
+def test_incomplete_extraction_lists_local_identity_without_errors_or_writes(
+    environment: dict[str, Any], monkeypatch: pytest.MonkeyPatch, status: str,
+) -> None:
+    from portfolio_analyzer.v2.state import RunPhase, RunStatus
+
+    original = evaluation.V2StateStore.load_current_run
+
+    def load(store: Any, phase: Any) -> Any:
+        manifest = original(store, phase)
+        if phase == RunPhase.EXTRACT:
+            record = manifest.applications[0].model_copy(update={
+                "status": RunStatus(status), "errors": ("PRIVATE-PATH Password=SECRET",),
+            })
+            return manifest.model_copy(update={"applications": (record,)})
+        return manifest
+
+    monkeypatch.setattr(evaluation.V2StateStore, "load_current_run", load)
+    args = _arguments(environment)
+    workspace = args["workspace"]
+    before = {p.relative_to(workspace): p.read_bytes() for p in workspace.rglob("*") if p.is_file()}
+    result = CliRunner().invoke(v2.app, [
+        "evaluate-applications", "--workspace", str(workspace),
+        "--model-dir", str(args["model_dir"]), "--evaluation-dir", str(args["evaluation_dir"]),
+        "--check-only",
+    ])
+    assert result.exit_code == 1
+    assert "[extraction_incomplete]" in result.output
+    assert "LOCAL ONLY" in result.output
+    assert f'1 | "PRIVATE-APP" | "PRIVATE-NAME" | {status}' in result.output
+    assert "PRIVATE-PATH" not in result.output
+    assert "SECRET" not in result.output
+    assert "--application <ID>" in result.output
+    assert environment["calls"] == []
+    assert not args["evaluation_dir"].exists()
+    assert before == {
+        p.relative_to(workspace): p.read_bytes() for p in workspace.rglob("*") if p.is_file()
+    }
+    with pytest.raises(evaluation.EvaluationSetupError) as error:
+        evaluation.evaluate_applications(**args, check_only=True)
+    assert "PRIVATE" not in str(error.value)
+    assert error.value.incomplete[0].application_id == "PRIVATE-APP"
+
+
+def test_incomplete_local_details_escape_controls_and_redact_credentials(
+    environment: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from portfolio_analyzer.v2.state import RunStatus
+
+    def fail(**_kwargs: Any) -> Any:
+        raise evaluation.EvaluationSetupError("extraction_incomplete", incomplete=(
+            evaluation.IncompleteExtraction(1, "APP\nESC\x1b", "Password=SECRET", RunStatus.FAILED),
+        ))
+
+    monkeypatch.setattr(evaluation, "evaluate_applications", fail)
+    args = _arguments(environment)
+    result = CliRunner().invoke(v2.app, [
+        "evaluate-applications", "--workspace", str(args["workspace"]),
+        "--model-dir", str(args["model_dir"]), "--evaluation-dir", str(args["evaluation_dir"]),
+    ])
+    assert result.exit_code == 1
+    assert "SECRET" not in result.output
+    assert "APP\\nESC\\u001b" in result.output

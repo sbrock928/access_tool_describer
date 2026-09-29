@@ -326,3 +326,19 @@ or acquire a writer lock; those are checked during execution.
   locks and filesystem permissions. Do not delete checkpoints as a troubleshooting step.
 
 After a successful check, repeat the same command without `--check-only` to evaluate.
+
+When setup reports `extraction_incomplete`, it now lists every selected incomplete
+application's ordinal, inventory application ID, name, and extraction status (`failed`
+or `partial`). This section is marked LOCAL ONLY and must remain local, unlike metadata
+summaries. It omits paths and raw extraction errors, escapes terminal control characters,
+and redacts credential patterns. No model verification, inference or evaluation writes
+occur when this preflight fails. Names/IDs are not added to exported performance reports.
+
+Use a listed inventory ID to retry only that application's extraction:
+
+```powershell
+portfolio-analyzer extract --workspace .\workspace-v2 --application "YOUR_APPLICATION_ID"
+```
+
+Alternatively, evaluate an already fully extracted application using `--application ID`.
+The incomplete list respects that selection and does not list unselected applications.
