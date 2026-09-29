@@ -262,3 +262,31 @@ validation does not adjudicate unsupported claims, capability recall or appropri
 abstention. The reviewed quality-check/calibration limitation is unchanged. Only metrics
 files can be exported under local policy; evidence, cache and LOCAL-REVIEW artifacts
 contain application data and must remain inside the enterprise boundary.
+
+## Extraction blocker: bounded DAO parameter reads
+
+The operator's latest Windows screenshot shows a 900-second **total artifact** timeout
+with the last reported operation at DAO query parameter enumeration, after progress
+through more than 800 query definitions. It does not measure that operation's individual
+duration or prove the cause of the delay. No application inference comparison completed.
+
+Extractor v11 separates base query definitions from parameter enrichment. A reusable
+spawned child verifies the staged artifact and opens read-only DAO; per-query parameter
+reads are bounded at ten seconds, with a separate 30-second child startup deadline.
+Timeout cleanup kills the child before another query uses a fresh process. Query ordinal
+and sanitized name are checked together before collecting parameters. The original
+artifact deadline and staged integrity checks remain in force.
+
+Unavailable parameter metadata is explicit: retain each query's source, attach an
+unavailable status, record a warning, and mark snapshot coverage partial. This is an
+extraction resilience change, not semantic inference or a deterministic semantic fallback.
+Warnings and properties flow into the evidence bundle. A saved snapshot is not evidence
+of complete parameter coverage or a passed application quality gate. Older extractor
+snapshots are invalidated. No inference prompt, model, output budget or backend is changed.
+
+Local tests cover child reuse, termination/restart, worker failure, query identity,
+read-only opening, staged tampering, retained SQL, partial snapshot coverage and credential
+redaction. Windows COM execution, extraction before/after runtime, memory overhead, count
+of unavailable parameters, and semantic effects remain **unmeasured**. Many slow parameter
+reads may still exhaust the total deadline; this does not provide durable incremental
+extraction checkpoints. Performance promotion still requires same-workload Windows results.

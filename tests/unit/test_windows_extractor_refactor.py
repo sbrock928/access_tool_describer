@@ -656,3 +656,21 @@ def test_query_progress_precedes_every_com_property_and_parameter_enumeration(
     assert json.loads(result.properties["parameters"])[0]["name"] == "pId"
     assert reads[-4:] == ["Parameters", "parameter.Name", "parameter.Type", "parameter.Direction"]
     assert "SELECT 1" not in "\n".join(messages)
+
+
+def test_deferred_query_extraction_never_touches_parameters(tmp_path: Path) -> None:
+    class Query(_PropertyFailureQuery):
+        ODBCTimeout = 60
+
+        @property
+        def Parameters(self) -> Any:  # noqa: N802
+            pytest.fail("base extraction must not read potentially blocking parameters")
+
+    extractor = WindowsAccessExtractor(
+        AnalyzerSettings(workspace=tmp_path / "workspace"), defer_query_parameters=True,
+    )
+    errors: list[str] = []
+    result = extractor._query_object(Query(), 0, errors, None)
+    assert errors == []
+    assert result.definition == "SELECT * FROM LocalTable"
+    assert result.properties["parameter_metadata_status"] == "deferred"

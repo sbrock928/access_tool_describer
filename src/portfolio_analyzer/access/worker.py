@@ -110,11 +110,16 @@ def _worker(
                 redact_sensitive_text(message), encoding="utf-8"
             )
 
-        extracted = WindowsAccessExtractor(settings).extract(
+        extracted = WindowsAccessExtractor(settings, defer_query_parameters=True).extract(
             artifact,
             Path(destination),
             progress=progress,
             cleanup=True,
+        )
+        from portfolio_analyzer.access.query_parameters import enrich_query_parameters
+
+        extracted = enrich_query_parameters(
+            extracted, artifact, Path(destination), settings, progress=progress,
         )
         result: dict[str, Any] = {
             "status": "ok",

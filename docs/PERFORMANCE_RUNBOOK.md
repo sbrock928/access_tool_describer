@@ -383,3 +383,37 @@ not fix a hung COM call, skip evidence, or change read-only DAO/export security 
 Successful compatible extractions are reused; `--force` is not needed to retry failed
 artifacts. If it times out again, inspect the newly recorded operation before extending
 the deadline further. The missing-snapshot message is a consequence of the failed worker.
+
+### A longer retry still stops at DAO parameter enumeration
+
+Do not keep increasing the total deadline when the last operation is `.Parameters`.
+Extractor v11 reads query SQL and other properties before parameter enrichment. A reusable
+child opens the same hash-verified staged database through read-only DAO; each query's
+parameter read has a ten-second deadline. A timed-out child is terminated before the next
+query uses a fresh child. Child startup has a separate 30-second limit. The enclosing
+artifact's total deadline still applies, including cleanup. No query SQL is executed.
+
+After updating the checkout/install, retry the affected application without `--force`:
+
+```powershell
+portfolio-analyzer extract --workspace .\workspace-v2 --application "YOUR_APPLICATION_ID"
+```
+
+Run this second command after extraction finishes:
+
+```powershell
+portfolio-analyzer extraction-status --workspace .\workspace-v2 --application "YOUR_APPLICATION_ID" --details
+```
+
+If a parameter read cannot finish, the saved query retains its SQL and other metadata,
+with `parameter_metadata_status=unavailable_timeout` (or `unavailable_error`). Snapshot
+coverage is explicitly partial, and its warnings remain in the evidence bundle. An empty
+parameter array with this marker is unknown metadata, not proof that the query has no
+parameters. Review these warnings locally before using the application for quality
+comparison. This change does not waive coverage or semantic quality gates.
+
+The extractor version change invalidates older extraction snapshots. Once the targeted
+retry is checked, rerun `extract --workspace .\workspace-v2` to refresh all selected
+applications under the same version. A total timeout elsewhere still fails the artifact;
+there is no durable per-query extraction checkpoint. Windows timings and COM behavior for
+this change require operator verification; local tests use simulated worker failures.

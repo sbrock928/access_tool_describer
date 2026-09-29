@@ -66,15 +66,17 @@ class _ExportLaneOutcome:
 
 
 class WindowsAccessExtractor:
-    version = "windows-dao-static-v10"
+    version = "windows-dao-static-v11"
 
     def __init__(
         self,
         settings: AnalyzerSettings,
         *,
         export_gate: ExportSafetyGate | None = None,
+        defer_query_parameters: bool = False,
     ) -> None:
         self.settings = settings
+        self.defer_query_parameters = defer_query_parameters
         self.export_gate = export_gate or EnvironmentExportSafetyGate()
 
     def extract(
@@ -500,7 +502,15 @@ class WindowsAccessExtractor:
             normalized_type = _query_kind(int(type_code))
         except ValueError:
             normalized_type = "unknown"
+        parameter_error_count = len(errors)
+        parameters = [] if self.defer_query_parameters else _parameter_metadata(
+            query, errors, context, progress=progress,
+        )
+        parameter_status = "deferred" if self.defer_query_parameters else (
+            "unavailable_error" if len(errors) > parameter_error_count else "available"
+        )
         properties = {
+            "dao_query_index": str(index),
             "dao_type_code": type_code,
             "query_kind": normalized_type,
             "connect": _redact_connection(connect, errors, context),
@@ -510,10 +520,11 @@ class WindowsAccessExtractor:
             "max_records": max_records,
             "attributes": attributes,
             "parameters": json.dumps(
-                _parameter_metadata(query, errors, context, progress=progress),
+                parameters,
                 sort_keys=True,
                 separators=(",", ":"),
             ),
+            "parameter_metadata_status": parameter_status,
             "hidden": str(hidden).lower(),
             "system": str(system).lower(),
         }
