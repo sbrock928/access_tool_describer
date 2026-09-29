@@ -847,10 +847,16 @@ def evaluate_applications_command(
     threads: int = typer.Option(4, min=1, max=4),
     application: str | None = typer.Option(None, help="Optional staged application ID."),
     resume: bool = typer.Option(False, help="Reuse this evaluation's own checkpoints."),
+    check_only: bool = typer.Option(
+        False, help="Check setup and model integrity without inference or evaluation writes.",
+    ),
     max_inference_calls_per_application: int | None = typer.Option(None, min=1),
 ) -> None:
     """Evaluate extracted applications in isolation; keep detailed artifacts local."""
-    from portfolio_analyzer.qwen.application_evaluation import evaluate_applications
+    from portfolio_analyzer.qwen.application_evaluation import (
+        EvaluationSetupError,
+        evaluate_applications,
+    )
 
     typer.echo("Evaluating local extraction; detailed artifacts stay in the evaluation directory.")
     try:
@@ -858,7 +864,11 @@ def evaluate_applications_command(
             workspace=workspace, evaluation_dir=evaluation_dir, model_dir=model_dir,
             experiment=experiment, threads=threads, application=application, resume=resume,
             max_calls=max_inference_calls_per_application, progress=typer.echo,
+            check_only=check_only,
         )
+    except EvaluationSetupError as exc:
+        typer.echo(f"Evaluation setup failed [{exc.code}]: {exc}")
+        raise typer.Exit(code=1) from None
     except KeyboardInterrupt:
         typer.echo("Evaluation interrupted before application processing.")
         raise typer.Exit(code=130) from None
@@ -866,6 +876,10 @@ def evaluate_applications_command(
         typer.echo("Evaluation setup failed; check extraction, separate paths, policy and runtime. "
                    "No source analysis was published; no exception content displayed.")
         raise typer.Exit(code=1) from None
+    if check_only:
+        typer.echo(f"Preflight passed: {report['applications_selected']} application(s). "
+                   "No inference or evaluation files written. Write permissions are untested.")
+        return
     from portfolio_analyzer.qwen.benchmark_summary import _summarize_applications
 
     typer.echo(_summarize_applications(json.dumps(report).encode("utf-8")))

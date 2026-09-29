@@ -295,3 +295,34 @@ Designate a typical application locally before interpreting the ten-minute targe
 report larger apps separately. Record source identity and cache scenario when comparing
 metrics; review results inside the enterprise environment. There is no automatic promotion
 or production report publication from evaluation directories.
+
+### Evaluation setup troubleshooting
+
+If evaluation stops before `Starting application`, it has not begun inference. Updated
+versions print a fixed setup code and action instead of an ambiguous generic error. Raw
+exception text is never displayed. To diagnose without inference or evaluation writes:
+
+```powershell
+portfolio-analyzer evaluate-applications --workspace .\workspace-v2 --model-dir C:\Models\Qwen2.5-0.5B-Instruct --evaluation-dir .\eval-baseline --experiment baseline --threads 4 --check-only
+```
+
+Use the same paths as your intended run. Full model-file integrity verification still
+runs, but weights are not loaded. A successful preflight does not test write permissions
+or acquire a writer lock; those are checked during execution.
+
+- `output_exists`: preserve the existing directory. Use `--resume` only for that existing
+  evaluation, or a new directory for a cold comparison. An empty/partially initialized
+  directory from an interrupted setup may not have a resumable identity.
+- `current_stage_unavailable` / `stage_index_invalid`: check the selected workspace's
+  staging state. A visible folder alone does not establish a valid current stage.
+- `current_extraction_unavailable` / `extraction_stale` / `extraction_incomplete`: evaluation
+  requires completed current extraction, not just staging. Complete extraction in the
+  same workspace, or select a completely extracted application with `--application`.
+- `model_verification_failed` / `runtime_provenance_failed`: check the approved model path
+  and activated inference environment previously used for benchmark-inference.
+- `resume_identity_mismatch`: source/selection/runtime/policy settings changed. Restore
+  the original settings for a resume, or choose a new directory.
+- `evaluation_lock_unavailable` / `output_initialization_failed`: check concurrent runs,
+  locks and filesystem permissions. Do not delete checkpoints as a troubleshooting step.
+
+After a successful check, repeat the same command without `--check-only` to evaluate.

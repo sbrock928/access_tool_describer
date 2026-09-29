@@ -192,3 +192,82 @@ def test_application_summary_accepts_other_schema_fields_without_displaying_cont
     summary = summarize_micro_benchmark(path)
     assert "PRIVATE" not in summary
     assert "Application evaluation" in summary
+
+
+def test_check_only_is_read_only_and_never_generates(environment: dict[str, Any]) -> None:
+    args = _arguments(environment)
+    workspace = args["workspace"]
+    before = {p.relative_to(workspace): p.read_bytes() for p in workspace.rglob("*") if p.is_file()}
+    report, code = evaluation.evaluate_applications(**args, check_only=True)
+    assert code == 0
+    assert report == {"applications_selected": 1, "outcome": "preflight_passed"}
+    assert environment["calls"] == []
+    assert not args["evaluation_dir"].exists()
+    assert before == {
+        p.relative_to(workspace): p.read_bytes() for p in workspace.rglob("*") if p.is_file()
+    }
+
+
+@pytest.mark.parametrize("phase,code", [
+    ("stage", "current_stage_unavailable"), ("extract", "current_extraction_unavailable"),
+])
+def test_setup_errors_identify_phase_without_raw_exception(
+    environment: dict[str, Any], monkeypatch: pytest.MonkeyPatch, phase: str, code: str,
+) -> None:
+    original = evaluation.V2StateStore.load_current_run
+
+    def load(store: Any, selected_phase: Any) -> Any:
+        if selected_phase.value == phase:
+            raise FileNotFoundError("PRIVATE-SERVER PRIVATE-APP Password=SECRET")
+        return original(store, selected_phase)
+
+    monkeypatch.setattr(evaluation.V2StateStore, "load_current_run", load)
+    args = _arguments(environment)
+    result = CliRunner().invoke(v2.app, [
+        "evaluate-applications", "--workspace", str(args["workspace"]),
+        "--model-dir", str(args["model_dir"]), "--evaluation-dir", str(args["evaluation_dir"]),
+        "--check-only",
+    ])
+    assert result.exit_code == 1
+    assert f"[{code}]" in result.output
+    assert "PRIVATE" not in result.output
+    assert "SECRET" not in result.output
+    assert not args["evaluation_dir"].exists()
+
+
+def test_existing_directory_message_preserves_files(environment: dict[str, Any]) -> None:
+    args = _arguments(environment)
+    args["evaluation_dir"].mkdir()
+    keep = args["evaluation_dir"] / "keep.txt"
+    keep.write_text("PRIVATE-EXISTING")
+    with pytest.raises(evaluation.EvaluationSetupError) as error:
+        evaluation.evaluate_applications(**args, check_only=True)
+    assert error.value.code == "output_exists"
+    assert "--resume" in str(error.value)
+    assert keep.read_text() == "PRIVATE-EXISTING"
+
+
+def test_model_setup_exception_is_safe_and_distinct(
+    environment: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*_args: Any, **_kwargs: Any) -> Any:
+        raise ValueError("PRIVATE-MODEL-PATH")
+
+    monkeypatch.setattr(evaluation, "LocalQwenProvider", fail)
+    with pytest.raises(evaluation.EvaluationSetupError) as error:
+        evaluation.evaluate_applications(**_arguments(environment), check_only=True)
+    assert error.value.code == "model_verification_failed"
+    assert "PRIVATE" not in str(error.value)
+
+
+def test_resume_check_only_preserves_evaluation_files(environment: dict[str, Any]) -> None:
+    args = _arguments(environment)
+    assert evaluation.evaluate_applications(**args)[1] == 0
+    destination = args["evaluation_dir"]
+    before = {p.relative_to(destination): p.read_bytes()
+              for p in destination.rglob("*") if p.is_file()}
+    calls = len(environment["calls"])
+    assert evaluation.evaluate_applications(**args, resume=True, check_only=True)[1] == 0
+    assert len(environment["calls"]) == calls
+    assert before == {p.relative_to(destination): p.read_bytes()
+                      for p in destination.rglob("*") if p.is_file()}

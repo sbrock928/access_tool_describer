@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -26,11 +27,73 @@ from portfolio_analyzer.v2.state import (
 )
 from portfolio_analyzer.v2.workflow import ExtractedArtifactSnapshot, StageIndex
 
+_SETUP_MESSAGES = {
+    "unsupported_policy": "Use baseline or contract-private with one to four threads.",
+    "invalid_call_limit": "The inference call ceiling must be a positive integer.",
+    "overlapping_paths": "Choose an evaluation directory outside the source workspace and model.",
+    "output_exists": "The evaluation directory already exists. Use --resume for that evaluation "
+                     "or choose a new directory for a cold run. Existing files were preserved.",
+    "resume_missing": "The evaluation directory does not exist. Omit --resume for a new run.",
+    "source_workspace_invalid": "The source folder is not a readable V2 workspace. "
+                                "Use the folder containing the current staged/extracted state.",
+    "current_stage_unavailable": "Current stage state is missing or failed integrity checks. "
+                                 "Check that staging completed in this workspace.",
+    "stage_index_invalid": "The current stage inventory failed integrity/schema checks.",
+    "current_extraction_unavailable": "Current extraction state is missing or failed integrity "
+                                      "checks. Complete extraction in the same workspace first.",
+    "extraction_stale": "Current extraction does not match current staging. "
+                        "Run extract for this workspace before evaluation.",
+    "selection_not_found": "No staged application matches the selection.",
+    "extraction_incomplete": "One or more selected applications lack complete extraction. "
+                             "Complete extraction or select a fully extracted application.",
+    "model_verification_failed": "Approved local model verification failed. Use the verified "
+                                 "model directory that passed benchmark-inference.",
+    "runtime_provenance_failed": "Inference runtime provenance could not be constructed. "
+                                 "Check the activated environment's inference dependencies.",
+    "output_initialization_failed": "Cannot initialize the evaluation directory. "
+                                    "Check write permissions; existing files were preserved.",
+    "evaluation_workspace_invalid": "The evaluation directory is not a readable V2 evaluation "
+                                    "workspace. Use a new directory if setup never completed.",
+    "resume_identity_unavailable": "The evaluation identity file is missing or unreadable. "
+                                   "Use a new directory; do not delete existing checkpoints.",
+    "resume_identity_mismatch": "Source, selection, model/policy, runtime or threads changed. "
+                                "Restore the original settings or use a new evaluation directory.",
+    "evaluation_lock_unavailable": "Cannot acquire the evaluation writer lock. Check for another "
+                                   "running evaluation or an existing lock before retrying.",
+    "identity_write_failed": "Cannot write the evaluation identity. Check directory permissions.",
+}
+
+
+class EvaluationSetupError(ValueError):
+    """Only fixed diagnostic codes/messages can cross the CLI boundary."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(_SETUP_MESSAGES[code])
+
+
+@contextmanager
+def _setup_step(code: str) -> Iterator[None]:
+    try:
+        yield
+    except EvaluationSetupError:
+        raise
+    except Exception as exc:
+        raise EvaluationSetupError(code) from exc
+
+
+def _check_resume_identity(path: Path, identity: dict[str, Any]) -> None:
+    with _setup_step("resume_identity_unavailable"):
+        existing = path.read_bytes()
+    if existing != canonical_json_bytes(identity):
+        raise EvaluationSetupError("resume_identity_mismatch")
+
 
 def evaluate_applications(
     *, workspace: Path, evaluation_dir: Path, model_dir: Path, experiment: str,
     threads: int = 4, application: str | None = None, resume: bool = False,
     max_calls: int | None = None, progress: Callable[[str], None] | None = None,
+    check_only: bool = False,
 ) -> tuple[dict[str, Any], int]:
     """Return metadata and exit status; detailed validated artifacts stay in evaluation_dir."""
     from portfolio_analyzer.cli.v2 import _model_provenance, _reference_by_schema
@@ -39,62 +102,79 @@ def evaluate_applications(
         path.resolve() for path in (workspace, evaluation_dir, model_dir)
     )
     if experiment not in {"baseline", "contract-private"} or threads not in {1, 2, 3, 4}:
-        raise ValueError("unsupported application evaluation policy")
+        raise EvaluationSetupError("unsupported_policy")
     if max_calls is not None and max_calls < 1:
-        raise ValueError("invalid call ceiling")
+        raise EvaluationSetupError("invalid_call_limit")
     for protected in (workspace, model_dir):
         if evaluation_dir.is_relative_to(protected) or protected.is_relative_to(evaluation_dir):
-            raise ValueError("evaluation directory must be separate from source and model")
+            raise EvaluationSetupError("overlapping_paths")
     if evaluation_dir.exists() != resume:
-        raise ValueError("use a new evaluation directory, or resume an existing evaluation")
+        raise EvaluationSetupError("resume_missing" if resume else "output_exists")
 
     # Pin immutable manifests before inference. All source operations are reads.
-    source = V2StateStore(workspace)
-    stage = source.load_current_run(RunPhase.STAGE)
-    stage_ref = _reference_by_schema(stage, "stage-index-v2")
-    index = source.load(stage_ref, StageIndex)
-    extraction = source.load_current_run(RunPhase.EXTRACT)
+    with _setup_step("source_workspace_invalid"):
+        source = V2StateStore(workspace)
+    with _setup_step("current_stage_unavailable"):
+        stage = source.load_current_run(RunPhase.STAGE)
+    with _setup_step("stage_index_invalid"):
+        stage_ref = _reference_by_schema(stage, "stage-index-v2")
+        index = source.load(stage_ref, StageIndex)
+    with _setup_step("current_extraction_unavailable"):
+        extraction = source.load_current_run(RunPhase.EXTRACT)
     records = {record.application_id: record for record in extraction.applications}
     if stage_ref not in extraction.input_references or set(records) != {
         item.application_id for item in index.applications
     }:
-        raise ValueError("extraction does not match current staging")
+        raise EvaluationSetupError("extraction_stale")
     selected = [(ordinal, item) for ordinal, item in enumerate(index.applications, 1)
                 if application is None or item.application_id == application]
-    if not selected or any(records[item.application_id].status != RunStatus.COMPLETE
-                           for _, item in selected):
-        raise ValueError("selected applications require complete current extraction")
+    if not selected:
+        raise EvaluationSetupError("selection_not_found")
+    if any(records[item.application_id].status != RunStatus.COMPLETE for _, item in selected):
+        raise EvaluationSetupError("extraction_incomplete")
 
     metrics = PerformanceRecorder(max_calls_per_application=max_calls)
     source.performance = metrics
-    provider = LocalQwenProvider(
-        ResolvedQwenRuntime(model_dir=model_dir, device="cpu", cpu_threads=threads,
-                            cpu_interop_threads=1),
-        progress=AnalysisProgressReporter(performance=metrics),
-    )
+    with _setup_step("model_verification_failed"):
+        provider = LocalQwenProvider(
+            ResolvedQwenRuntime(model_dir=model_dir, device="cpu", cpu_threads=threads,
+                                cpu_interop_threads=1),
+            progress=AnalysisProgressReporter(performance=metrics),
+        )
     provider.experiment = EXPERIMENTS[experiment]
-    provenance = _model_provenance(provider)
+    with _setup_step("runtime_provenance_failed"):
+        provenance = _model_provenance(provider)
     identity = {
         "version": "application-evaluation-v1",
         "source": canonical_sha256({"stage": stage, "extraction": extraction}),
         "applications": [ordinal for ordinal, _ in selected],
         "provenance": canonical_sha256(provenance), "experiment": experiment, "threads": threads,
     }
+    if check_only:
+        if resume:
+            with _setup_step("evaluation_workspace_invalid"):
+                V2StateStore(evaluation_dir)
+            _check_resume_identity(evaluation_dir / "evaluation-identity.json", identity)
+        return {"applications_selected": len(selected), "outcome": "preflight_passed"}, 0
     if not resume:
-        evaluation_dir.mkdir(parents=True, exist_ok=False)
-        initialize_workspace(evaluation_dir)
-    target = V2StateStore(evaluation_dir)
+        with _setup_step("output_initialization_failed"):
+            evaluation_dir.mkdir(parents=True, exist_ok=False)
+            initialize_workspace(evaluation_dir)
+    with _setup_step("evaluation_workspace_invalid"):
+        target = V2StateStore(evaluation_dir)
     target.performance = metrics
     local_records: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
     exit_code = 0
-    with target.exclusive_lock():
+    with ExitStack() as stack:
+        with _setup_step("evaluation_lock_unavailable"):
+            stack.enter_context(target.exclusive_lock())
         identity_path = evaluation_dir / "evaluation-identity.json"
         if resume:
-            if identity_path.read_bytes() != canonical_json_bytes(identity):
-                raise ValueError("evaluation input or policy changed; use a new directory")
+            _check_resume_identity(identity_path, identity)
         else:
-            _atomic_write_bytes(identity_path, canonical_json_bytes(identity))
+            with _setup_step("identity_write_failed"):
+                _atomic_write_bytes(identity_path, canonical_json_bytes(identity))
         attempt = 1
         while (evaluation_dir / f"metrics-{attempt:04}.json").exists():
             attempt += 1
