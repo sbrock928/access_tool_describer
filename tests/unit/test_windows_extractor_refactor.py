@@ -28,6 +28,10 @@ from portfolio_analyzer.staging.hashing import sha256_file
 from portfolio_analyzer.v2.workflow import snapshot_from_extraction_result
 
 
+def _parameters(items: list[Any]) -> SimpleNamespace:
+    return SimpleNamespace(Count=len(items), Item=items.__getitem__)
+
+
 class _DefinitionDatabase:
     def __init__(self, documents: dict[str, list[Any]]) -> None:
         self._documents = documents
@@ -100,7 +104,7 @@ class _PropertyFailureQuery:
     ReturnsRecords = True
     MaxRecords = 0
     Attributes = 0
-    Parameters: list[Any] = []
+    Parameters = _parameters([])
 
     @property
     def ODBCTimeout(self) -> int:  # noqa: N802 - mirrors COM
@@ -172,6 +176,7 @@ def _query(**overrides: Any) -> SimpleNamespace:
         "Parameters": [],
     }
     values.update(overrides)
+    values["Parameters"] = _parameters(values["Parameters"])
     return SimpleNamespace(**values)
 
 
@@ -333,7 +338,7 @@ def test_querydef_attributes_and_parameter_property_failures_are_preserved_safel
         {"direction": "", "name": "pAccount", "ordinal": "0", "type": "10"},
         {"direction": "1", "name": "pAsOf", "ordinal": "1", "type": "8"},
     ]
-    assert any("Parameters[0].Direction unavailable" in error for error in errors)
+    assert any("parameter_direction_unavailable" in error for error in errors)
 
 
 def test_export_lane_retains_mutated_copy_hash_when_export_fails(
@@ -642,8 +647,8 @@ def test_query_progress_precedes_every_com_property_and_parameter_enumeration(
         def __getattr__(self, name: str) -> Any:
             reads.append(name)
             if name == "Parameters":
-                assert messages[-1] == "Enumerating DAO parameters: QueryDef[0].Parameters"
-                return [Parameter()]
+                assert messages[-1] == "Reading DAO parameter collection: QueryDef[0].Parameters"
+                return _parameters([Parameter()])
             assert messages[-1] == f"Reading DAO property: QueryDef[0].{name}"
             return {"Name": "qSynthetic", "SQL": "SELECT 1", "Type": "0", "Attributes": "0",
                     "Connect": "", "ReturnsRecords": "True", "ODBCTimeout": "60",
@@ -687,16 +692,80 @@ def test_parameter_diagnostics_distinguish_property_failure_from_enumeration_fai
         def Direction(self) -> int:  # noqa: N802
             raise RuntimeError("Password=secret-canary")
 
-    class Query:
-        @property
-        def Parameters(self) -> Any:  # noqa: N802
-            yield Parameter()
+    class Collection:
+        Count = 2
+
+        def Item(self, index: int) -> Any:  # noqa: N802
+            if index == 0:
+                return Parameter()
             raise RuntimeError("connection=private-server")
+
+    class Query:
+        Parameters = Collection()
 
     errors: list[str] = []
     codes: dict[str, int] = {}
     parameters = _parameter_metadata(Query(), errors, "QueryDef", diagnostics=codes)
     assert parameters == [{"ordinal": "0", "name": "pKnown", "type": "10", "direction": ""}]
-    assert codes == {"parameter_direction_unavailable": 1, "parameters_enumeration_failed": 1}
+    assert codes == {"parameter_direction_unavailable": 1, "parameter_item_failed": 1}
     assert "secret-canary" not in str(errors)
     assert "private-server" not in json.dumps(codes)
+
+
+def test_indexed_parameter_reads_bypass_iterator_and_continue_after_failed_item() -> None:
+    from portfolio_analyzer.access.windows_extractor import _parameter_metadata
+
+    class Collection:
+        Count = 3
+
+        def __iter__(self) -> Any:
+            pytest.fail("COM iteration must not be used")
+
+        def Item(self, index: int) -> Any:  # noqa: N802
+            if index == 1:
+                raise RuntimeError("unavailable")
+            return SimpleNamespace(Name=f"p{index}", Type=4, Direction=1)
+
+    errors: list[str] = []
+    diagnostics: dict[str, int] = {}
+    result = _parameter_metadata(SimpleNamespace(Parameters=Collection()), errors, "QueryDef",
+                                 diagnostics=diagnostics)
+    assert [parameter["ordinal"] for parameter in result] == ["0", "2"]
+    assert [parameter["name"] for parameter in result] == ["p0", "p2"]
+    assert diagnostics == {"parameter_item_failed": 1}
+
+
+@pytest.mark.parametrize("stage", ["access", "count", "item"])
+def test_parameter_access_count_and_item_failures_have_distinct_codes(stage: str) -> None:
+    from portfolio_analyzer.access.windows_extractor import _parameter_metadata
+
+    class ComFailure(Exception):
+        hresult = -2147352567
+        excepinfo = (0, "PRIVATE", "PWD=SECRET-CANARY", "PRIVATE-PATH", 0, 0x800A0001)
+
+    class Collection:
+        @property
+        def Count(self) -> int:  # noqa: N802
+            if stage == "count":
+                raise ComFailure()
+            return 1
+
+        def Item(self, _index: int) -> Any:  # noqa: N802
+            raise ComFailure()
+
+    class Query:
+        @property
+        def Parameters(self) -> Any:  # noqa: N802
+            if stage == "access":
+                raise ComFailure()
+            return Collection()
+
+    errors: list[str] = []
+    diagnostics: dict[str, int] = {}
+    com_errors: dict[str, int] = {}
+    assert _parameter_metadata(Query(), errors, "QueryDef", diagnostics=diagnostics,
+                               com_errors=com_errors) == []
+    expected = "parameter_item_failed" if stage == "item" else f"parameters_{stage}_failed"
+    assert diagnostics == {expected: 1}
+    assert com_errors == {"hresult:80020009": 1, "scode:800a0001": 1}
+    assert "SECRET-CANARY" not in json.dumps(com_errors)

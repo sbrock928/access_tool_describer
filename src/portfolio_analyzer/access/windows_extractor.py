@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from portfolio_analyzer.access.com_diagnostics import record_com_error
 from portfolio_analyzer.access.export_safety import (
     EnvironmentExportSafetyGate,
     ExportSafetyGate,
@@ -66,7 +67,7 @@ class _ExportLaneOutcome:
 
 
 class WindowsAccessExtractor:
-    version = "windows-dao-static-v12"
+    version = "windows-dao-static-v13"
 
     def __init__(
         self,
@@ -643,35 +644,54 @@ def _parameter_metadata(
     instance: Any, errors: list[str], context: str, *,
     progress: Callable[[str], None] | None = None,
     diagnostics: dict[str, int] | None = None,
+    com_errors: dict[str, int] | None = None,
 ) -> list[dict[str, str]]:
     parameters: list[dict[str, str]] = []
 
-    def parameter_property(parameter: Any, name: str, parameter_context: str) -> str:
-        before = len(errors)
-        value = _property(parameter, name, errors, parameter_context, progress=progress)
-        if diagnostics is not None and len(errors) > before:
-            code = f"parameter_{name.lower()}_unavailable"
-            diagnostics[code] = diagnostics.get(code, 0) + 1
-        return value
-
-    _progress(progress, f"Enumerating DAO parameters: {context}.Parameters")
-    try:
-        for index, parameter in enumerate(instance.Parameters):
-            parameter_context = f"{context}.Parameters[{index}]"
-            parameters.append(
-                {
-                    "ordinal": str(index),
-                    "name": parameter_property(parameter, "Name", parameter_context),
-                    "type": parameter_property(parameter, "Type", parameter_context),
-                    "direction": parameter_property(parameter, "Direction", parameter_context),
-                }
-            )
-            _progress(progress, f"Enumerating next DAO parameter: {context}.Parameters")
-    except Exception as exc:
-        errors.append(f"{context}.Parameters enumeration failed: {_safe_error(exc)}")
+    def failed(code: str, exc: Exception) -> None:
+        errors.append(f"{context}.{code}: {_safe_error(exc)}")
         if diagnostics is not None:
-            code = "parameters_enumeration_failed"
             diagnostics[code] = diagnostics.get(code, 0) + 1
+        if com_errors is not None:
+            record_com_error(exc, com_errors)
+
+    def parameter_property(parameter: Any, name: str, parameter_context: str) -> str:
+        _progress(progress, f"Reading DAO property: {parameter_context}.{name}")
+        try:
+            value = getattr(parameter, name)
+            return "" if value is None else str(value)
+        except Exception as exc:
+            failed(f"parameter_{name.lower()}_unavailable", exc)
+            return ""
+
+    _progress(progress, f"Reading DAO parameter collection: {context}.Parameters")
+    try:
+        collection = instance.Parameters
+    except Exception as exc:
+        failed("parameters_access_failed", exc)
+        return parameters
+    _progress(progress, f"Reading DAO parameter count: {context}.Parameters.Count")
+    try:
+        count = collection.Count
+        if type(count) is not int or count < 0:
+            raise ValueError("invalid DAO parameter count")
+    except Exception as exc:
+        failed("parameters_count_failed", exc)
+        return parameters
+    for index in range(count):
+        parameter_context = f"{context}.Parameters[{index}]"
+        _progress(progress, f"Reading DAO parameter item: {parameter_context}")
+        try:
+            parameter = collection.Item(index)
+        except Exception as exc:
+            failed("parameter_item_failed", exc)
+            continue
+        parameters.append({
+            "ordinal": str(index),
+            "name": parameter_property(parameter, "Name", parameter_context),
+            "type": parameter_property(parameter, "Type", parameter_context),
+            "direction": parameter_property(parameter, "Direction", parameter_context),
+        })
     return parameters
 
 

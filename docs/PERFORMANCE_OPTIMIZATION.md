@@ -313,3 +313,33 @@ unknown diagnostic keys, attempted versus unattempted queries, read-only coverag
 and preservation of warnings on cache reuse. The existing offline extraction boundaries
 and partial-coverage markers remain intact. Application quality and performance promotion
 remain pending; no inference configuration is promoted by this diagnostic change.
+
+### V12 Windows follow-up: parameter collection enumeration
+
+The operator's next screenshot reports 845 query parameter outcomes: 60 available,
+783 unavailable errors, and two timeouts. Diagnostic counts identify all 783 errors as
+`parameters_enumeration_failed`; there are no reported query-identity or startup failures.
+The application snapshot remains partial, with 1,631 total warnings. Warning counts are
+not a count of missing source definitions; the unavailable parameter reads retain SQL.
+The screenshot does not expose the underlying COM error or establish an inference result.
+
+V13 replaces Python COM collection iteration with explicit `Parameters.Count` and indexed
+`Parameters.Item` reads. [DAO documents the collection count](https://learn.microsoft.com/en-us/office/client-developer/access/desktop-database-reference/parameters-members-dao).
+This tests the iterator-compatibility hypothesis while keeping actual DAO evidence reads.
+It does not assume that hypothesis is true: obtaining the collection, reading its count,
+and fetching an item have separate failure categories. Failed items retain ordinal gaps;
+successfully read items remain available. Property failures remain explicit. No Refresh,
+query execution, recordsets, parameter values, or inferred parameters are introduced.
+
+Numeric COM HRESULT, SCODE and nonzero WCODE counts accompany failures when supplied by
+COM. Exception descriptions, source strings, paths and arguments are not transported by
+this diagnostic channel. Code keys and counts are validated at IPC and display boundaries;
+per-query numeric diagnostics retain at most 32 distinct codes. This permits a target
+retry to diagnose a database/dependency error if indexed reads also fail. The staged-file
+checks, per-query deadlines, and total artifact deadline remain unchanged. Extractor
+version invalidation prevents older snapshots from bypassing the new reads.
+
+Local tests use COM-shaped Count/Item collections, including failed iterators/items,
+access/count errors and secret canaries in exception fields. Windows recovery rate,
+extraction speed and memory, remaining timeout causes, and semantic quality impact are
+still unmeasured. There is no new inference policy or production performance claim.

@@ -122,7 +122,7 @@ def setup(
 
 
 def response(name: str = "pId") -> dict[str, Any]:
-    return {"status": "available", "diagnostics": {}, "parameters": [
+    return {"status": "available", "diagnostics": {}, "com_errors": {}, "parameters": [
         {"ordinal": "0", "name": name, "type": "4", "direction": "1"},
     ]}
 
@@ -229,7 +229,7 @@ def test_child_verifies_stage_opens_read_only_and_checks_query_identity(
 
     def query(index: int) -> Any:
         reads.append(index)
-        return SimpleNamespace(Name="q0", Parameters=[])
+        return SimpleNamespace(Name="q0", Parameters=SimpleNamespace(Count=0))
 
     database = SimpleNamespace(QueryDefs=query, Close=lambda: closes.append(True))
 
@@ -254,6 +254,7 @@ def test_child_verifies_stage_opens_read_only_and_checks_query_identity(
     assert connection.sent == ["ready", {
         "status": "available" if matching_name else "unavailable_error", "parameters": [],
         "diagnostics": {} if matching_name else {"query_identity_mismatch": 1},
+        "com_errors": {},
     }]
 
 

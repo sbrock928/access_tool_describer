@@ -14,6 +14,7 @@ from pathlib import Path
 
 import typer
 
+from portfolio_analyzer.access.com_diagnostics import validate_com_error_counts
 from portfolio_analyzer.access.libraries import resolve_approved_libraries
 from portfolio_analyzer.access.query_parameters import PARAMETER_DIAGNOSTIC_CODES
 from portfolio_analyzer.access.windows_extractor import WindowsAccessExtractor
@@ -377,6 +378,7 @@ def _echo_extraction_status(
 def _echo_parameter_summary(snapshots: list[ExtractedArtifactSnapshot]) -> None:
     statuses: Counter[str] = Counter()
     diagnostics: Counter[str] = Counter()
+    com_errors: Counter[str] = Counter()
     for snapshot in snapshots:
         for obj in snapshot.objects:
             if obj.object_type != "query":
@@ -385,6 +387,12 @@ def _echo_parameter_summary(snapshots: list[ExtractedArtifactSnapshot]) -> None:
             if status not in {"available", "unavailable_error", "unavailable_timeout", "deferred"}:
                 status = "legacy_unknown"
             statuses[status] += 1
+            try:
+                com_errors.update(validate_com_error_counts(json.loads(
+                    obj.sanitized_properties.get("parameter_metadata_com_errors", "{}"),
+                )))
+            except (ValueError, TypeError):
+                diagnostics["legacy_unclassified"] += 1
             raw = obj.sanitized_properties.get("parameter_metadata_diagnostics")
             if raw is None:
                 if status != "available":
@@ -407,6 +415,11 @@ def _echo_parameter_summary(snapshots: list[ExtractedArtifactSnapshot]) -> None:
     if diagnostics:
         typer.echo("  Parameter diagnostic counts (property failures may repeat per query): " +
                    ", ".join(f"{key}={value}" for key, value in sorted(diagnostics.items())))
+
+    if com_errors:
+        typer.echo("  Parameter COM codes: " + ", ".join(
+            f"{key}={value}" for key, value in sorted(com_errors.items())
+        ))
 
 
 @app.command("extraction-status")

@@ -10,6 +10,7 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
 
+from portfolio_analyzer.access.com_diagnostics import record_com_error, validate_com_error_counts
 from portfolio_analyzer.access.safety import validate_access_extraction_request
 from portfolio_analyzer.config import AnalyzerSettings
 from portfolio_analyzer.models import (
@@ -25,6 +26,7 @@ STARTUP_TIMEOUT_SECONDS = 30
 # Only code-owned categories may cross into parameter diagnostics. Never exception text.
 PARAMETER_DIAGNOSTIC_CODES = frozenset({
     "query_lookup_failed", "query_identity_mismatch", "query_timeout",
+    "parameters_access_failed", "parameters_count_failed", "parameter_item_failed",
     "parameter_name_unavailable", "parameter_type_unavailable",
     "parameter_direction_unavailable", "parameters_enumeration_failed",
     "worker_startup_timeout", "worker_startup_failed", "worker_protocol_error",
@@ -61,22 +63,25 @@ def _parameter_worker(
                 raise ValueError("invalid parameter request")
             errors: list[str] = []
             diagnostics: dict[str, int] = {}
+            com_errors: dict[str, int] = {}
             parameters: list[dict[str, str]] = []
             try:
                 query = database.QueryDefs(request["index"])
                 actual_name = redact_sensitive_text(str(query.Name))
-            except Exception:
+            except Exception as exc:
                 diagnostics["query_lookup_failed"] = 1
+                record_com_error(exc, com_errors)
             else:
                 if actual_name != request["name"]:
                     diagnostics["query_identity_mismatch"] = 1
                 else:
                     parameters = _parameter_metadata(
-                        query, errors, "QueryDef", diagnostics=diagnostics,
+                        query, errors, "QueryDef", diagnostics=diagnostics, com_errors=com_errors,
                     )
             status = "unavailable_error" if diagnostics else "available"
             connection.send_bytes(json.dumps({
                 "status": status, "parameters": parameters, "diagnostics": diagnostics,
+                "com_errors": com_errors,
             }, ensure_ascii=True).encode("utf-8"))
     except (EOFError, BrokenPipeError):
         pass
@@ -134,6 +139,7 @@ def enrich_query_parameters(
             parameters: list[dict[str, str]] = []
             status = "unavailable_error"
             diagnostics = {"worker_unavailable_not_attempted": 1}
+            com_errors = {}
             if not unavailable_worker:
                 try:
                     if process is None:
@@ -182,7 +188,9 @@ def enrich_query_parameters(
                                     for key, count in codes.items()
                                 ) or bool(codes) != (value["status"] == "unavailable_error"):
                                     raise ValueError("invalid parameter diagnostics")
+                                error_counts = validate_com_error_counts(value["com_errors"])
                                 status, parameters = value["status"], candidate
+                                com_errors = error_counts
                                 diagnostics = codes
                             else:
                                 diagnostics = {"worker_protocol_error": 1}
@@ -198,6 +206,7 @@ def enrich_query_parameters(
                 parameters=json.dumps(parameters, sort_keys=True, separators=(",", ":")),
                 parameter_metadata_status=status,
                 parameter_metadata_diagnostics=json.dumps(diagnostics, sort_keys=True),
+                parameter_metadata_com_errors=json.dumps(com_errors, sort_keys=True),
             )
             objects.append(AccessExtractedObject.model_validate({
                 **obj.model_dump(), "properties": properties,

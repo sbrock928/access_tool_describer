@@ -429,6 +429,8 @@ def test_status_separates_snapshot_completion_from_partial_evidence_and_preserve
                 properties={"parameter_metadata_status": "unavailable_error",
                             "parameter_metadata_diagnostics": json.dumps({
                                 "parameter_direction_unavailable": 2,
+                            }), "parameter_metadata_com_errors": json.dumps({
+                                "hresult:80020009": 2,
                             })},
             )],
         )
@@ -453,6 +455,7 @@ def test_status_separates_snapshot_completion_from_partial_evidence_and_preserve
     assert "warnings=1" in result.output
     assert "unavailable_error=1" in result.output
     assert "parameter_direction_unavailable=2" in result.output
+    assert "Parameter COM codes: hresult:80020009=2" in result.output
     assert "Parameter metadata incomplete" in result.output
     after = {p.relative_to(workspace): p.read_bytes() for p in workspace.rglob("*") if p.is_file()}
     assert after == before

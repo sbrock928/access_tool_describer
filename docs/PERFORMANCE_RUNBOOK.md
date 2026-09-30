@@ -440,3 +440,24 @@ parameter warnings. This retry does not load the model or run inference benchmar
 Read the two summary lines before undertaking another full-workspace extraction. Preserve
 partial evidence and warnings; do not suppress failures or treat missing direction/type
 metadata as successfully extracted. A successful snapshot does not waive the quality gate.
+
+### V12 reports mostly `parameters_enumeration_failed`
+
+V13 uses explicit collection Count/Item reads. It preserves the same query SQL, parameter
+fields and timeout boundaries. Check the installed extractor version before the targeted
+retry; it should print `windows-dao-static-v13`:
+
+```powershell
+python -c "from portfolio_analyzer.access.windows_extractor import WindowsAccessExtractor; print(WindowsAccessExtractor.version)"
+```
+
+Then use the targeted extraction and status commands above. Inspect `Query parameter
+coverage`, `Parameter diagnostic counts`, and, if present, `Parameter COM codes`. Access,
+count, item and property failures are separate. COM diagnostics contain only numeric codes
+and counts, never exception descriptions, object names or connection details. Numeric
+codes can repeat per query and should not be equated with a query count.
+
+If coverage stays partial, preserve the snapshot and use those summary lines to identify
+the remaining cause. Do not enable linked-database access, refresh links, or execute queries
+to make metadata reads succeed. An iterator compatibility improvement is a hypothesis
+until verified on the target; Access may instead be unable to resolve a dependency.

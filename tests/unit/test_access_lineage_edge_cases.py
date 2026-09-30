@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from portfolio_analyzer.access.windows_extractor import WindowsAccessExtractor
 from portfolio_analyzer.analysis.bundle import build_application_evidence_bundles
@@ -49,7 +50,7 @@ class _UnknownConnectQuery:
     ODBCTimeout = 60
     MaxRecords = 0
     Attributes = 0
-    Parameters: tuple[object, ...] = ()
+    Parameters = SimpleNamespace(Count=0)
 
     @property
     def Connect(self) -> str:  # noqa: N802 - mirrors COM
